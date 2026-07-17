@@ -1,0 +1,16 @@
+[Unit]
+Description=Finyl-DCP FastAPI backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/finyl-dcp/backend
+ExecStart=/home/ubuntu/finyl-dcp/backend/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8300
+Restart=on-failure
+RestartSec=3
+StandardOutput=append:/home/ubuntu/finyl-dcp/backend/finyl-dcp.log
+StandardError=append:/home/ubuntu/finyl-dcp/backend/finyl-dcp.log
+
+[Install]
+WantedBy=multi-user.target

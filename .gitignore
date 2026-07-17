@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+backend/venv/
+.venv/
+
+# Secrets — never commit real credentials
+.env
+backend/.env
+
+# Node / Vite
+frontend/node_modules/
+frontend/dist/
+
+# Misc
+*.log
+.DS_Store
+finyl-dcp.log
