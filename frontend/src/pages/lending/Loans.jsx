@@ -27,7 +27,7 @@ function SurveyModal({ borrowerId, onDone, onClose }) {
   return (
     <Modal title="Impact Survey Required" onClose={onClose}>
       <p className="text-sm text-gray-500 mb-4">
-        This borrower is applying for a <b>repeat loan cycle</b>. Per policy, an impact survey
+        This client is applying for a <b>repeat loan cycle</b>. Per policy, an impact survey
         must be captured before the application can proceed.
       </p>
       <form onSubmit={submit} className="space-y-3">
@@ -67,7 +67,7 @@ function ApplyModal({ onClose, onCreated }) {
   const [surveyFor, setSurveyFor] = useState(null); // borrower_id when 428 hit
 
   useEffect(() => {
-    api(`/api/v1/lending/borrowers?search=${encodeURIComponent(bSearch)}&page_size=50`)
+    api(`/api/v1/clients?search=${encodeURIComponent(bSearch)}&page_size=50`)
       .then((d) => setBorrowers(d.items)).catch(() => {});
   }, [bSearch]);
   useEffect(() => {
@@ -104,10 +104,10 @@ function ApplyModal({ onClose, onCreated }) {
       <form onSubmit={submit} className="space-y-3">
         {err && <div className="text-sm text-red-600 bg-red-50 rounded-lg p-2">{err}</div>}
         <div>
-          <label className="label">Borrower *</label>
-          <input className="input mb-1.5" placeholder="Type to filter borrowers…" value={bSearch} onChange={(e) => setBSearch(e.target.value)} />
+          <label className="label">Client *</label>
+          <input className="input mb-1.5" placeholder="Type to filter clients…" value={bSearch} onChange={(e) => setBSearch(e.target.value)} />
           <select className="input" required value={f.borrower_id} onChange={(e) => setF({ ...f, borrower_id: e.target.value })}>
-            <option value="">Select borrower…</option>
+            <option value="">Select client…</option>
             {borrowers.map((b) => <option key={b.id} value={b.id}>{b.full_name} — {b.phone}</option>)}
           </select>
         </div>
@@ -163,14 +163,14 @@ export default function Loans() {
           <select className="input !w-auto" value={status} onChange={(e) => { setStatus(e.target.value); setPage(1); }}>
             {STATUSES.map((s) => <option key={s} value={s}>{s ? s : "All statuses"}</option>)}
           </select>
-          <input className="input max-w-xs" placeholder="Search account / borrower…"
+          <input className="input max-w-xs" placeholder="Search account / client…"
             value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} />
         </div>
         {!data ? <Spinner /> : data.items.length === 0 ? <Empty /> : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead><tr>
-                <th className="th">Account</th><th className="th">Borrower</th><th className="th">Product</th>
+                <th className="th">Account</th><th className="th">Client</th><th className="th">Product</th>
                 <th className="th">Principal</th><th className="th">Outstanding</th><th className="th">Status</th>
                 <th className="th">Cycle</th><th className="th">Due date</th>
               </tr></thead>

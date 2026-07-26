@@ -33,6 +33,27 @@ class Settings(BaseSettings):
     SMS_API_URL: str = "placeholder"
     SMS_API_KEY: str = "placeholder"
 
+    # --- Client document storage ---------------------------------------------
+    # Local filesystem by default; point at a mounted volume in Docker/K8s or
+    # swap app/services/storage.py for S3/GCS without touching the routers.
+    STORAGE_DIR: str = "storage"
+    MAX_UPLOAD_MB: int = 10
+
+    # --- OCR (National ID "Process ID" action) --------------------------------
+    # Local Tesseract by default — no cloud dependency, no per-page cost.
+    OCR_PROVIDER: str = "tesseract"          # tesseract | (add your vendor here)
+    TESSERACT_CMD: str = "tesseract"         # absolute path if not on PATH
+    OCR_LANGUAGES: str = "eng"
+
+    # --- eKYC identity-verification provider placeholders ----------------------
+    # Shapes mirror Creditinfo IDM (username/password + strategy id). Swap in real
+    # credentials and flip EKYC_MOCK=false to hit the live provider.
+    EKYC_BASE_URL: str = "https://api.creditinfo-idm.example/v1"
+    EKYC_USERNAME: str = "placeholder"
+    EKYC_PASSWORD: str = "placeholder"
+    EKYC_STRATEGY_ID: str = "placeholder"
+    EKYC_MOCK: bool = True
+
     class Config:
         env_file = ".env"
         extra = "ignore"

@@ -22,7 +22,7 @@ export default function CallCenter() {
   useEffect(() => {
     api("/api/v1/call-center/meta").then(setMeta).catch(() => {});
     api("/api/v1/call-center/scorecard").then(setScorecard).catch(() => {});
-    api("/api/v1/lending/borrowers?page_size=100").then((d) => setBorrowers(d.items)).catch(() => {});
+    api("/api/v1/clients?page_size=100").then((d) => setBorrowers(d.items)).catch(() => {});
   }, []);
   useEffect(() => {
     api(`/api/v1/call-center/calls?agent_id=${agentId}&outcome=${outcome}&page=${page}`).then(setCalls).catch(() => {});
@@ -125,7 +125,7 @@ export default function CallCenter() {
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead><tr>
-                    <th className="th">When</th><th className="th">Agent</th><th className="th">Borrower</th>
+                    <th className="th">When</th><th className="th">Agent</th><th className="th">Client</th>
                     <th className="th">Duration</th><th className="th">Outcome</th><th className="th">Promise</th><th className="th">Notes</th>
                   </tr></thead>
                   <tbody>{calls.items.map((c) => (
@@ -151,9 +151,9 @@ export default function CallCenter() {
         <Modal title="Log Call" onClose={() => setLogging(false)}>
           <form onSubmit={logCall} className="space-y-3">
             {err && <div className="text-sm text-red-600 bg-red-50 rounded-lg p-2">{err}</div>}
-            <div><label className="label">Borrower *</label>
+            <div><label className="label">Client *</label>
               <select className="input" required value={form.borrower_id} onChange={(e) => setForm({ ...form, borrower_id: e.target.value })}>
-                <option value="">Select borrower…</option>
+                <option value="">Select client…</option>
                 {borrowers.map((b) => <option key={b.id} value={b.id}>{b.full_name} — {b.phone}</option>)}
               </select></div>
             <div className="grid grid-cols-2 gap-3">

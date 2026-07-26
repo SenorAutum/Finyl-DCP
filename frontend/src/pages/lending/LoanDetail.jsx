@@ -1,4 +1,4 @@
-// Loan detail: borrower profile, lifecycle transitions (approval auto-disburses
+// Loan detail: client profile, lifecycle transitions (approval auto-disburses
 // via mock Daraja B2C), repayment schedule/history, STK-push collection prompt.
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
@@ -103,7 +103,7 @@ export default function LoanDetail() {
         </div>
 
         <div className="card p-5 space-y-2.5">
-          <h3 className="font-bold">Borrower</h3>
+          <h3 className="font-bold">Client</h3>
           {[
             ["Name", loan.borrower.full_name], ["National ID", loan.borrower.national_id],
             ["Phone", loan.borrower.phone], ["Sector", loan.borrower.business_sector || "—"],

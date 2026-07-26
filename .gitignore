@@ -16,3 +16,4 @@ frontend/dist/
 *.log
 .DS_Store
 finyl-dcp.log
+backend/storage/

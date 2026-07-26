@@ -15,6 +15,7 @@ from app.core.deps import get_current_user, require_module
 from app.models import (Borrower, Branch, ImpactSurvey, Loan, PaymentTransaction,
                         Product, Region, Repayment, Staff, User)
 from app.schemas import BorrowerCreate, LoanApplication, LoanStatusUpdate, ProductCreate
+from app.routers.clients import _client_dict as _borrower_dict
 from app.services import mpesa, sms
 
 router = APIRouter(prefix="/api/v1/lending", tags=["lending"])
@@ -42,21 +43,7 @@ def org_reference(tenant_id: int = Depends(require_module("lending")), db: Sessi
     }
 
 
-# ---------- Borrower registry ----------------------------------------------------
-
-def _borrower_dict(b: Borrower, loan_count: int | None = None) -> dict:
-    return {
-        "id": b.id, "full_name": b.full_name, "first_name": b.first_name,
-        "middle_name": b.middle_name, "last_name": b.last_name,
-        "national_id": b.national_id, "phone": b.phone, "gender": b.gender,
-        "date_of_birth": b.date_of_birth, "region_id": b.region_id, "branch_id": b.branch_id,
-        "business_sector": b.business_sector,
-        "baseline_monthly_sales": float(b.baseline_monthly_sales or 0),
-        "baseline_employees": b.baseline_employees,
-        "kyc_status": b.kyc_status, "credit_score": b.credit_score,
-        **({"loan_count": loan_count} if loan_count is not None else {}),
-    }
-
+# ---------- Client registry (legacy borrower paths — see routers/clients.py) ----
 
 @router.get("/borrowers")
 def list_borrowers(tenant_id: int = Depends(require_module("lending")),

@@ -28,6 +28,29 @@ export async function api(path, { method = "GET", body, raw } = {}) {
   return data;
 }
 
+// Multipart upload — the browser must set its own multipart boundary, so we
+// deliberately do NOT send a Content-Type header here.
+export async function upload(path, formData) {
+  const headers = {};
+  const token = getToken();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const tenant = getTenantOverride();
+  if (tenant) headers["X-Tenant-Id"] = tenant;
+
+  const res = await fetch(`${BASE}${path}`, { method: "POST", headers, body: formData });
+  if (res.status === 401) { setToken(null); window.location.href = "/login"; throw new ApiError(401, "Session expired"); }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new ApiError(res.status, data.detail || `Upload failed (${res.status})`);
+  return data;
+}
+
+// Authenticated blob URL — used to preview saved document images inline.
+export async function blobUrl(path) {
+  const res = await api(path, { raw: true });
+  if (!res.ok) throw new ApiError(res.status, "Could not load file");
+  return URL.createObjectURL(await res.blob());
+}
+
 export async function download(path, filename) {
   const res = await api(path, { raw: true });
   if (!res.ok) throw new ApiError(res.status, "Download failed");

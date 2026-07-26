@@ -9,8 +9,21 @@ from app.core.database import Base
 
 LOAN_STATUSES = ["pending", "underwriting", "approved", "active", "paid", "overdue", "defaulted", "rejected"]
 
+# Reference lists surfaced to the UI (kept as text columns rather than DB enums so
+# a tenant can extend them without a migration).
+WALLET_OPERATORS = ["M-Pesa", "Airtel Money", "T-Kash", "Equitel"]
+NEXT_OF_KIN_RELATIONSHIPS = ["Spouse", "Parent", "Sibling", "Child", "Guardian", "Other"]
+DOC_TYPES = ["national_id_front", "national_id_back", "passport", "kra_pin",
+             "business_permit", "payslip", "bank_statement", "other"]
+
 
 class Borrower(Base):
+    """The client record.
+
+    NOTE: the table name stays `borrowers` on purpose — existing analytics views,
+    joins and foreign keys across the platform reference it. Everything the API
+    and UI expose is named "client".
+    """
     __tablename__ = "borrowers"
 
     id = Column(Integer, primary_key=True)
@@ -31,7 +44,38 @@ class Borrower(Base):
     credit_score = Column(Integer, default=0)          # 0-900 CRB-style score
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    # --- KYC / National ID details (all additive & nullable) -------------------
+    serial_number = Column(String(30))          # ID booklet serial (OCR: "SERIAL NUMBER")
+    district_of_birth = Column(String(60))
+    place_of_issue = Column(String(60))
+    date_of_issue = Column(Date)
+    district = Column(String(60))
+    division = Column(String(60))
+    location = Column(String(60))
+    sub_location = Column(String(60))
+    current_credit_rating = Column(String(20))  # free text e.g. "A", "B+", "CRB clear"
+    is_active = Column(Boolean, default=True)
+    onboarded_by = Column(String(120))          # staff/user name that captured the record
+    approved_by_user_id = Column(Integer, ForeignKey("users.id"))
+
+    # --- M-Pesa name-lookup validation ---------------------------------------
+    mpesa_validated = Column(Boolean, default=False)
+    mpesa_validation_name = Column(String(120))
+    mpesa_validated_at = Column(DateTime)
+
+    # --- External eKYC provider verification ---------------------------------
+    ekyc_status = Column(String(20))            # verified | not_verified | error | pending
+    ekyc_reference = Column(String(60))
+    ekyc_checked_at = Column(DateTime)
+
     loans = relationship("Loan", back_populates="borrower")
+    wallets = relationship("ClientMobileWallet", back_populates="client",
+                           cascade="all, delete-orphan")
+    next_of_kin = relationship("ClientNextOfKin", back_populates="client",
+                               cascade="all, delete-orphan")
+    documents = relationship("ClientDocument", back_populates="client",
+                             cascade="all, delete-orphan")
+    approved_by = relationship("User", foreign_keys=[approved_by_user_id])
 
     @property
     def full_name(self):

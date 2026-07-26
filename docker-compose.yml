@@ -26,6 +26,10 @@ services:
       # Overrides .env so the container talks to the bundled Postgres
       DATABASE_URL: postgresql://finyl:finyl@db:5432/finyl_dcp
       DB_SCHEMA: public
+      STORAGE_DIR: /app/storage
+    volumes:
+      # Uploaded client documents survive container rebuilds
+      - docstore:/app/storage
     depends_on:
       db:
         condition: service_healthy
@@ -41,3 +45,4 @@ services:
 
 volumes:
   pgdata:
+  docstore:

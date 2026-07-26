@@ -13,13 +13,13 @@ function Investor() {
   return (
     <div className="p-4 space-y-5">
       <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
-        <KpiCard label="Jobs created" value={t.total_jobs_created ?? 0} tone="good" sub="Across surveyed borrowers" />
-        <KpiCard label="Sales improved" value={`${t.pct_sales_improved ?? 0}%`} sub="Borrowers reporting growth" />
-        <KpiCard label="Repeat retention" value={`${t.repeat_borrower_retention_pct ?? 0}%`} sub="Borrowers on 2nd+ cycle" />
+        <KpiCard label="Jobs created" value={t.total_jobs_created ?? 0} tone="good" sub="Across surveyed clients" />
+        <KpiCard label="Sales improved" value={`${t.pct_sales_improved ?? 0}%`} sub="Clients reporting growth" />
+        <KpiCard label="Repeat retention" value={`${t.repeat_borrower_retention_pct ?? 0}%`} sub="Clients on 2nd+ cycle" />
         <KpiCard label="Surveys collected" value={t.surveys_collected ?? 0} sub="Forced on repeat cycles" />
       </div>
       <div className="card p-4">
-        <h4 className="text-sm font-bold mb-1">Impact by Borrower Age Group</h4>
+        <h4 className="text-sm font-bold mb-1">Impact by Client Age Group</h4>
         <p className="text-xs text-gray-400 mb-3">Revenue growth % and jobs created, segmented for investor reporting.</p>
         <ResponsiveContainer width="100%" height={280}>
           <BarChart data={data.age_groups} margin={{ left: -15 }}>
@@ -64,7 +64,7 @@ function Surveys() {
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead><tr>
-              <th className="th">Survey</th><th className="th">Borrower</th><th className="th">Cycle</th>
+              <th className="th">Survey</th><th className="th">Client</th><th className="th">Cycle</th>
               <th className="th">Sales before</th><th className="th">Sales now</th><th className="th">Growth</th>
               <th className="th">Jobs</th><th className="th">Date</th>
             </tr></thead>

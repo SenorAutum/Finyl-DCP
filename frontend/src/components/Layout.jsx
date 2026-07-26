@@ -11,7 +11,7 @@ const NAV = [
     { to: "/", label: "Dashboard", module: "dashboard", icon: "▦" },
   ]},
   { group: "Transactions", items: [
-    { to: "/borrowers", label: "Borrowers", module: "lending", icon: "👥" },
+    { to: "/clients", label: "Clients", module: "lending", icon: "👥" },
     { to: "/loans", label: "Loans", module: "lending", icon: "📋" },
     { to: "/payments", label: "Payments & SMS", module: "payments", icon: "₿" },
   ]},

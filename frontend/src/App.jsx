@@ -5,7 +5,8 @@ import Layout from "./components/Layout";
 import { AuthProvider, useAuth } from "./hooks/useAuth";
 import Login from "./pages/Login";
 import Dashboard from "./pages/dashboard/Dashboard";
-import Borrowers from "./pages/lending/Borrowers";
+import Clients from "./pages/clients/Clients";
+import ClientDetail from "./pages/clients/ClientDetail";
 import Loans from "./pages/lending/Loans";
 import LoanDetail from "./pages/lending/LoanDetail";
 import Products from "./pages/lending/Products";
@@ -20,7 +21,7 @@ import { Spinner } from "./components/ui";
 
 // Ordered fallbacks: first module the user can access becomes their home page.
 const HOME_ORDER = [
-  ["dashboard", "/"], ["lending", "/loans"], ["call_center", "/call-center"],
+  ["dashboard", "/"], ["lending", "/clients"], ["call_center", "/call-center"],
   ["complaints", "/complaints"], ["crm", "/crm"], ["payments", "/payments"],
 ];
 
@@ -78,7 +79,10 @@ export default function App() {
           <Route path="/login" element={<Login />} />
           <Route element={<Shell />}>
             <Route index element={<HomeRedirect />} />
-            <Route path="/borrowers" element={<Guard module="lending"><Borrowers /></Guard>} />
+            <Route path="/clients" element={<Guard module="lending"><Clients /></Guard>} />
+            <Route path="/clients/:id" element={<Guard module="lending"><ClientDetail /></Guard>} />
+            {/* Legacy path kept so old bookmarks/links still resolve. */}
+            <Route path="/borrowers" element={<Navigate to="/clients" replace />} />
             <Route path="/loans" element={<Guard module="lending"><Loans /></Guard>} />
             <Route path="/loans/:id" element={<Guard module="lending"><LoanDetail /></Guard>} />
             <Route path="/products" element={<Guard module="lending"><Products /></Guard>} />

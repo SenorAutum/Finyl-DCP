@@ -46,7 +46,7 @@ export default function Complaints() {
   useEffect(() => {
     api("/api/v1/complaints/meta").then(setMeta).catch(() => {});
     api("/api/v1/lending/org").then((o) => setStaff(o.staff)).catch(() => {});
-    api("/api/v1/lending/borrowers?page_size=100").then((d) => setBorrowers(d.items)).catch(() => {});
+    api("/api/v1/clients?page_size=100").then((d) => setBorrowers(d.items)).catch(() => {});
   }, []);
 
   const [form, setForm] = useState({ borrower_id: "", category: "other", description: "", assigned_staff_id: "" });
@@ -105,7 +105,7 @@ export default function Complaints() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead><tr>
-                <th className="th">Ticket</th><th className="th">Borrower</th><th className="th">Category</th>
+                <th className="th">Ticket</th><th className="th">Client</th><th className="th">Category</th>
                 <th className="th">Status</th><th className="th">SLA (14 days)</th><th className="th">Assigned</th><th className="th"></th>
               </tr></thead>
               <tbody>{data.items.map((c) => (
@@ -131,7 +131,7 @@ export default function Complaints() {
         <Modal title="Log New Complaint" onClose={() => setCreating(false)}>
           <form onSubmit={create} className="space-y-3">
             {err && <div className="text-sm text-red-600 bg-red-50 rounded-lg p-2">{err}</div>}
-            <div><label className="label">Borrower (optional)</label>
+            <div><label className="label">Client (optional)</label>
               <select className="input" value={form.borrower_id} onChange={(e) => setForm({ ...form, borrower_id: e.target.value })}>
                 <option value="">Anonymous / walk-in</option>
                 {borrowers.map((b) => <option key={b.id} value={b.id}>{b.full_name} — {b.phone}</option>)}
@@ -166,7 +166,7 @@ export default function Complaints() {
               <select className="input" value={detail.status} onChange={(e) => setDetail({ ...detail, status: e.target.value })}>
                 {meta.statuses.map((s) => <option key={s} value={s}>{s.replace("_", " ")}</option>)}
               </select>
-              <p className="text-xs text-gray-400 mt-1">Marking resolved/closed sends a confirmation SMS to the borrower.</p></div>
+              <p className="text-xs text-gray-400 mt-1">Marking resolved/closed sends a confirmation SMS to the client.</p></div>
             <div><label className="label">Assigned staff</label>
               <select className="input" value={detail.assigned_staff_id || ""} onChange={(e) => setDetail({ ...detail, assigned_staff_id: e.target.value })}>
                 <option value="">Unassigned</option>

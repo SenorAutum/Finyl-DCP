@@ -420,6 +420,10 @@ def main(force=False):
         db.add_all(users)
         db.commit()
 
+        # Fill the KYC onboarding fields (ID details, wallets, next of kin)
+        from app.seeds.client_kyc import enrich
+        print("Client KYC enrichment:", enrich(db))
+
         # Run AML scan for each tenant to materialise flags from the structuring seeds
         from app.services.aml import run_aml_scan
         for tenant in all_t:
@@ -429,7 +433,8 @@ def main(force=False):
         # Summary
         for tbl in ["tenants", "users", "regions", "branches", "staff", "products", "borrowers",
                     "loans", "repayments", "crm_leads", "site_visits", "call_logs", "complaints",
-                    "impact_surveys", "sms_logs", "payment_transactions", "aml_flags"]:
+                    "impact_surveys", "sms_logs", "payment_transactions", "aml_flags",
+                    "client_mobile_wallets", "client_next_of_kin", "client_documents"]:
             n = db.execute(text(f"SELECT count(*) FROM {tbl}")).scalar()
             print(f"  {tbl}: {n}")
         print("Seed complete. Login password for all users:", PASSWORD)

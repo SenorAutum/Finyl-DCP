@@ -28,6 +28,7 @@ class ModuleToggle(BaseModel):
 
 # ---- Lending -----------------------------------------------------------------
 class BorrowerCreate(BaseModel):
+    """Legacy/basic client payload — kept for the /lending/borrowers alias."""
     first_name: str
     middle_name: Optional[str] = None
     last_name: str
@@ -41,6 +42,79 @@ class BorrowerCreate(BaseModel):
     baseline_monthly_sales: float = 0
     baseline_employees: int = 0
     kyc_status: str = "draft"
+
+
+# ---- Clients (KYC onboarding) --------------------------------------------------
+class MobileWalletIn(BaseModel):
+    id: Optional[int] = None
+    mobile_number: Optional[str] = None
+    wallet_number: Optional[str] = None
+    operator: Optional[str] = None      # M-Pesa | Airtel Money | T-Kash | Equitel
+    active: bool = True
+
+
+class NextOfKinIn(BaseModel):
+    id: Optional[int] = None
+    full_name: Optional[str] = None
+    relationship: Optional[str] = None  # Spouse | Parent | Sibling | Child | Guardian | Other
+    mobile_number: Optional[str] = None
+    national_id: Optional[str] = None
+    address: Optional[str] = None
+    active: bool = True
+
+
+class ClientCreate(BaseModel):
+    """Full client payload — ID details, business/impact profile and the nested
+    Mobile Wallet / Next of Kin collections saved in the same request."""
+    # Identity
+    serial_number: Optional[str] = None
+    national_id: str
+    phone: Optional[str] = ""
+    first_name: str
+    middle_name: Optional[str] = None
+    last_name: str
+    date_of_birth: Optional[date] = None
+    gender: Optional[str] = None
+    district_of_birth: Optional[str] = None
+    place_of_issue: Optional[str] = None
+    date_of_issue: Optional[date] = None
+    district: Optional[str] = None
+    division: Optional[str] = None
+    location: Optional[str] = None
+    sub_location: Optional[str] = None
+    kyc_status: str = "draft"
+    current_credit_rating: Optional[str] = None
+    is_active: bool = True
+    onboarded_by: Optional[str] = None
+    approved_by_user_id: Optional[int] = None
+    # Business & profile (pre-existing impact fields)
+    region_id: Optional[int] = None
+    branch_id: Optional[int] = None
+    business_sector: Optional[str] = None
+    baseline_monthly_sales: float = 0
+    baseline_employees: int = 0
+    credit_score: Optional[int] = 0
+    # Nested collections
+    wallets: list[MobileWalletIn] = []
+    next_of_kin: list[NextOfKinIn] = []
+
+
+class ValidateMpesaRequest(BaseModel):
+    """Validate an arbitrary number/ID pair (draft form) or an existing client."""
+    client_id: Optional[int] = None
+    phone: Optional[str] = None
+    national_id: Optional[str] = None
+    expected_name: Optional[str] = None
+
+
+class EkycVerifyRequest(BaseModel):
+    client_id: Optional[int] = None
+    national_id: Optional[str] = None
+    first_name: Optional[str] = None
+    middle_name: Optional[str] = None
+    last_name: Optional[str] = None
+    date_of_birth: Optional[date] = None
+    phone: Optional[str] = None
 
 
 class ProductCreate(BaseModel):

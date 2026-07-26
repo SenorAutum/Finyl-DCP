@@ -10,3 +10,6 @@ pandas>=2.2
 python-dotenv>=1.0
 pydantic-settings>=2.2
 python-multipart>=0.0.9
+pytesseract>=0.3.10   # OCR wrapper — needs the `tesseract-ocr` system binary
+pillow>=10.3          # image decoding / pre-processing for OCR
+pdf2image>=1.17       # renders PDF IDs to images — needs `poppler-utils`

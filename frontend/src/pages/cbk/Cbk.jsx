@@ -14,7 +14,7 @@ const fmtDT = (d) => (d ? new Date(d).toLocaleString("en-KE", { dateStyle: "medi
 const EXPORTS = [
   { key: "asset-quality", title: "Asset Quality Return", desc: "Portfolio classification: normal / watch / substandard / doubtful / loss with provisioning.", file: () => `asset_quality_${new Date().toISOString().slice(0, 10)}.csv`, fmt: "CSV" },
   { key: "capital-adequacy", title: "Capital Adequacy Return", desc: "Core capital vs risk-weighted assets with computed CAR ratios.", file: () => `capital_adequacy_${new Date().toISOString().slice(0, 10)}.csv`, fmt: "CSV" },
-  { key: "crb-daily", title: "CRB Daily Submission", desc: "Pipe-delimited borrower/loan performance file for Credit Reference Bureau upload.", file: () => `crb_daily_${new Date().toISOString().slice(0, 10)}.txt`, fmt: "TXT" },
+  { key: "crb-daily", title: "CRB Daily Submission", desc: "Pipe-delimited client/loan performance file for Credit Reference Bureau upload.", file: () => `crb_daily_${new Date().toISOString().slice(0, 10)}.txt`, fmt: "TXT" },
 ];
 
 export default function Cbk() {
@@ -85,7 +85,7 @@ export default function Cbk() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead><tr>
-                <th className="th">Flagged</th><th className="th">Borrower</th><th className="th">Type</th>
+                <th className="th">Flagged</th><th className="th">Client</th><th className="th">Type</th>
                 <th className="th">Severity</th><th className="th">Details</th><th className="th">Status</th><th className="th"></th>
               </tr></thead>
               <tbody>{flags.map((f) => (
