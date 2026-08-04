@@ -6,6 +6,8 @@ import { useAuth } from "../hooks/useAuth";
 import { api } from "../lib/api";
 import AiPanel from "./AiPanel";
 
+// Nav items gate on a tenant module flag (`module`) and/or a permission key
+// (`perm` = require one, `anyPerm` = hold any of). Items with neither are always shown.
 const NAV = [
   { group: "Overview", items: [
     { to: "/", label: "Dashboard", module: "dashboard", icon: "▦" },
@@ -15,14 +17,31 @@ const NAV = [
     { to: "/loans", label: "Loans", module: "lending", icon: "📋" },
     { to: "/payments", label: "Payments & SMS", module: "payments", icon: "₿" },
   ]},
+  { group: "Approvals", items: [
+    { to: "/approvals", label: "Approvals Inbox", icon: "✅",
+      anyPerm: ["loans.approve", "clients.approve", "disburse.approve", "refund.approve"] },
+  ]},
   { group: "Engagement", items: [
     { to: "/crm", label: "CRM Pipeline", module: "crm", icon: "🧭" },
     { to: "/call-center", label: "Call Center", module: "call_center", icon: "☎" },
     { to: "/complaints", label: "Complaints", module: "complaints", icon: "⚠" },
     { to: "/impact", label: "Impact & Investors", module: "impact", icon: "🌱" },
   ]},
+  { group: "Reporting", items: [
+    { to: "/reporting", label: "HQ Reporting", icon: "📊",
+      anyPerm: ["reports.export", "reports.schedule", "reports.template", "reports.flag"] },
+  ]},
   { group: "Compliance", items: [
     { to: "/cbk", label: "CBK Reporting", module: "cbk_reporting", icon: "🏛" },
+  ]},
+  { group: "Administration", items: [
+    { to: "/access/users", label: "Users & Access", perm: "users.view", icon: "👤" },
+    { to: "/access/roles", label: "Roles & Permissions", perm: "roles.view", icon: "🔑" },
+    { to: "/access/org", label: "Branches & Regions", perm: "org.view", icon: "🏢" },
+    { to: "/access/thresholds", label: "Approval Thresholds", perm: "thresholds.view", icon: "⚖" },
+    { to: "/access/payments", label: "Payment Upload", perm: "payments.upload", icon: "📥" },
+    { to: "/access/backups", label: "Backups & Integrity", perm: "backups.manage", icon: "🗄" },
+    { to: "/access/audit", label: "Audit Trail", perm: "audit.view", icon: "📜" },
   ]},
   { group: "Configuration", items: [
     { to: "/products", label: "Loan Products", module: "lending", icon: "⚙" },
@@ -30,7 +49,7 @@ const NAV = [
 ];
 
 export default function Layout() {
-  const { user, logout, canAccess, switchTenant } = useAuth();
+  const { user, logout, canAccess, can, switchTenant } = useAuth();
   const [open, setOpen] = useState(false);       // mobile sidebar
   const [aiOpen, setAiOpen] = useState(false);
   const [tenants, setTenants] = useState([]);
@@ -43,7 +62,10 @@ export default function Layout() {
   const NavItems = () => (
     <nav className="flex-1 overflow-y-auto px-3 pb-4 space-y-4">
       {NAV.map((g) => {
-        const items = g.items.filter((i) => canAccess(i.module));
+        const items = g.items.filter((i) =>
+          (i.module ? canAccess(i.module) : true) &&
+          (i.perm ? can(i.perm) : true) &&
+          (i.anyPerm ? can(...i.anyPerm) : true));
         if (!items.length) return null;
         return (
           <div key={g.group}>

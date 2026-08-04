@@ -424,6 +424,10 @@ def main(force=False):
         from app.seeds.client_kyc import enrich
         print("Client KYC enrichment:", enrich(db))
 
+        # RBAC demo users, approval thresholds and portfolio/scoping wiring
+        from app.seeds.rbac_seed import seed_rbac
+        print("RBAC seed:", seed_rbac(db))
+
         # Run AML scan for each tenant to materialise flags from the structuring seeds
         from app.services.aml import run_aml_scan
         for tenant in all_t:

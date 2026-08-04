@@ -17,6 +17,15 @@ import CallCenter from "./pages/callcenter/CallCenter";
 import Impact from "./pages/impact/Impact";
 import Cbk from "./pages/cbk/Cbk";
 import Admin from "./pages/admin/Admin";
+import Approvals from "./pages/approvals/Approvals";
+import Users from "./pages/access/Users";
+import RolesPermissions from "./pages/access/RolesPermissions";
+import BranchesRegions from "./pages/access/BranchesRegions";
+import Thresholds from "./pages/access/Thresholds";
+import PaymentUpload from "./pages/access/PaymentUpload";
+import Backups from "./pages/access/Backups";
+import AuditLog from "./pages/access/AuditLog";
+import Reporting from "./pages/reporting/Reporting";
 import { Spinner } from "./components/ui";
 
 // Ordered fallbacks: first module the user can access becomes their home page.
@@ -25,8 +34,19 @@ const HOME_ORDER = [
   ["complaints", "/complaints"], ["crm", "/crm"], ["payments", "/payments"],
 ];
 
-function homePath(canAccess, role) {
+// Permission-based home fallbacks for RBAC roles with no enabled module dashboard
+// (e.g. disbursement/reconciliation/HQ ops/system-admin land on a valid screen).
+const PERM_HOME = [
+  ["users.view", "/access/users"],
+  ["loans.approve", "/approvals"], ["clients.approve", "/approvals"],
+  ["disburse.approve", "/approvals"], ["refund.approve", "/approvals"],
+  ["reports.export", "/reporting"],
+  ["loans.view_portfolio", "/loans"], ["clients.view_portfolio", "/clients"],
+];
+
+function homePath(canAccess, can, role) {
   for (const [mod, path] of HOME_ORDER) if (canAccess(mod)) return path;
+  for (const [perm, path] of PERM_HOME) if (can(perm)) return path;
   return role === "super_admin" ? "/admin" : "/login";
 }
 
@@ -56,12 +76,33 @@ function AdminGuard({ children }) {
   return children;
 }
 
+// Permission-based route guard (RBAC). Accepts one or more permission keys;
+// passes if the user holds ANY of them (super_admin always passes).
+function PermGuard({ perms, children }) {
+  const { user, loading, can } = useAuth();
+  if (loading) return <div className="min-h-screen flex items-center justify-center"><Spinner /></div>;
+  if (!user) return <Navigate to="/login" replace />;
+  const keys = Array.isArray(perms) ? perms : [perms];
+  if (!can(...keys)) {
+    return (
+      <div className="card p-8 text-center max-w-md mx-auto mt-10">
+        <div className="text-3xl mb-2">🔒</div>
+        <h2 className="font-bold text-lg">Access denied</h2>
+        <p className="text-sm text-gray-400 mt-1">
+          You do not have permission to view this page. Contact your System Administrator.
+        </p>
+      </div>
+    );
+  }
+  return children;
+}
+
 function HomeRedirect() {
-  const { user, loading, canAccess } = useAuth();
+  const { user, loading, canAccess, can } = useAuth();
   if (loading) return <div className="min-h-screen flex items-center justify-center"><Spinner /></div>;
   if (!user) return <Navigate to="/login" replace />;
   if (canAccess("dashboard")) return <Guard module="dashboard"><Dashboard /></Guard>;
-  return <Navigate to={homePath(canAccess, user.role)} replace />;
+  return <Navigate to={homePath(canAccess, can, user.role)} replace />;
 }
 
 function Shell() {
@@ -92,6 +133,16 @@ export default function App() {
             <Route path="/call-center" element={<Guard module="call_center"><CallCenter /></Guard>} />
             <Route path="/impact" element={<Guard module="impact"><Impact /></Guard>} />
             <Route path="/cbk" element={<Guard module="cbk_reporting"><Cbk /></Guard>} />
+            {/* RBAC: approvals, administration & reporting (permission-gated) */}
+            <Route path="/approvals" element={<PermGuard perms={["loans.approve", "clients.approve", "disburse.approve", "refund.approve"]}><Approvals /></PermGuard>} />
+            <Route path="/access/users" element={<PermGuard perms="users.view"><Users /></PermGuard>} />
+            <Route path="/access/roles" element={<PermGuard perms="roles.view"><RolesPermissions /></PermGuard>} />
+            <Route path="/access/org" element={<PermGuard perms="org.view"><BranchesRegions /></PermGuard>} />
+            <Route path="/access/thresholds" element={<PermGuard perms="thresholds.view"><Thresholds /></PermGuard>} />
+            <Route path="/access/payments" element={<PermGuard perms="payments.upload"><PaymentUpload /></PermGuard>} />
+            <Route path="/access/backups" element={<PermGuard perms="backups.manage"><Backups /></PermGuard>} />
+            <Route path="/access/audit" element={<PermGuard perms="audit.view"><AuditLog /></PermGuard>} />
+            <Route path="/reporting" element={<PermGuard perms={["reports.export", "reports.schedule", "reports.template", "reports.flag"]}><Reporting /></PermGuard>} />
             <Route path="/admin" element={<AdminGuard><Admin /></AdminGuard>} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>

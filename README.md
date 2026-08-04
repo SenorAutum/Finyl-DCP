@@ -10,7 +10,7 @@ Vanilla **React (Vite) + Tailwind CSS** frontend · **FastAPI (Python)** backend
 
 | Module key | What it does |
 |---|---|
-| `lending` | **Client registry with full KYC onboarding** (ID-document capture, Tesseract OCR "Process ID", eKYC identity check, M-Pesa number validation, mobile wallets, next of kin), loan products, full loan lifecycle (`pending → underwriting → approved → active → paid/overdue/defaulted`). Approval **auto-disburses via mock Daraja B2C** and fires an SMS. Repeat-cycle applications are blocked with **HTTP 428** until an impact survey is captured. |
+| `lending` | **Client registry with full KYC onboarding** (ID-document capture, Tesseract OCR "Process ID", eKYC identity check, M-Pesa number validation, mobile wallets, next of kin), loan products, full loan lifecycle (`pending → underwriting → approved → active → paid/overdue/defaulted`). Approval and disbursement are **separate, permission-gated steps** (approval no longer auto-disburses): a manager approves via the **Approvals** inbox up to their configurable threshold, then a Disbursement Officer disburses via mock Daraja B2C (with **maker-checker** above the disbursement threshold). Repeat-cycle applications are blocked with **HTTP 428** until an impact survey is captured. |
 | `payments` | Mock Safaricom Daraja M-Pesa: B2C disbursement, STK-push collections, C2B repayment webhook (splits principal/interest, updates balances, sends receipt SMS). SMS hub with dispatch log + scheduled jobs (repayment reminders, overdue alerts). |
 | `dashboard` | Executive dashboard: PAR 1/30/90, disbursement volume, repayment rate, portfolio yield, monthly trends, status mix, **product × region success heatmap**, **staff net-margin league table** (interest recovered − defaults − cost). Filters: region/branch/product/staff/date. |
 | `complaints` | Consumer-protection registry with a **14-day SLA countdown** per ticket (amber ≤ 3 days, red = breached), remedial actions, resolution SMS. |
@@ -23,8 +23,48 @@ Vanilla **React (Vite) + Tailwind CSS** frontend · **FastAPI (Python)** backend
 ## Multi-tenancy & feature flags
 
 - Every row carries a `tenant_id`; every module router is wrapped in `require_module("<key>")` — a disabled flag returns **HTTP 403** and the frontend hides the module from navigation.
-- **Roles:** `super_admin` (platform-wide, tenant switcher, module matrix), `tenant_admin`, `loan_officer`, `call_agent`.
 - Super Admin → **Module Matrix**: a tenant × module switch grid that toggles flags live.
+
+## Role-based access control (RBAC)
+
+Access is **permission-driven**, not role-hardcoded. A central registry
+(`backend/app/core/permissions.py`) defines every fine-grained permission key
+(e.g. `loans.approve`, `disburse.execute`, `clients.edit_locked`, `audit.view`)
+and maps each **role → set of permissions**. The backend gates endpoints with a
+`require_permission("perm.key", ...)` dependency (any-of / all-of); the frontend
+loads the signed-in user's permission set at login and gates navigation, routes
+and action buttons with a `can(...keys)` helper and `<Can>` wrapper. Adding a
+capability to a role is a one-line change to the map — no endpoint edits.
+
+**Roles (per tenant):**
+
+| Role | Can do | Scope |
+|---|---|---|
+| `super_admin` | Everything, across **all** tenants (tenant switcher, module matrix). | platform |
+| `tenant_admin` | Broad superset of all tenant permissions. | tenant |
+| `system_admin` | User & access management, branches/regions, role assignment, approval thresholds, payment-file uploads, audit log, backups & data integrity. **Cannot approve loans.** | tenant |
+| `relationship_officer` | Create/edit clients (except locked primary fields), initiate loan applications. | **own portfolio only** |
+| `branch_manager` | Approve clients & loans up to the branch threshold, reassign loans, edit locked client fields, write-offs. | **branch** |
+| `regional_manager` | Approve above the branch limit up to the regional limit. | **region** |
+| `disbursement_officer` | Company-wide read + execute M-Pesa B2C disbursement (maker-checker above threshold). | company (read) |
+| `reconciliation_officer` | Company-wide read + reconcile payments + issue refunds (maker-checker above threshold). | company (read) |
+| `hq_operations` | **Read-only** company-wide dashboards, export & schedule reports, report templates, flag anomalies, view audit. | company (read-only) |
+
+Legacy roles are preserved: `loan_officer` maps to `relationship_officer`
+permissions and `call_agent` to a minimal engagement set.
+
+- **Data scoping** is enforced at the query layer: portfolio roles see only their
+  own clients/loans, branch roles only their branch, regional roles only their
+  region, company roles everything (read).
+- **Approval thresholds** live in a configurable table (`approval_thresholds`,
+  editable by System Admin) keyed by scope (`role`/`branch`/`region`/`all`).
+  Requests over a role's limit are **blocked or auto-escalated**
+  branch → region → HQ (`escalation_level` on the loan).
+- **Maker-checker:** money movements above the disbursement/refund threshold
+  create a `PendingApproval` that a *different* officer must approve
+  (initiator ≠ approver is enforced server-side).
+- **Audit:** every sensitive action writes an `audit_logs` row; System Admin has
+  a filterable **Audit** screen and HQ Operations has read-only access.
 
 ## Demo logins (password: `Finyl@2026`)
 
@@ -32,9 +72,13 @@ Vanilla **React (Vite) + Tailwind CSS** frontend · **FastAPI (Python)** backend
 |---|---|---|
 | superadmin@finyl.app | super_admin | platform (can switch tenants) |
 | admin@mularcredit.co.ke | tenant_admin | Mular Credit |
-| officer@mularcredit.co.ke | loan_officer | Mular Credit |
-| agent@mularcredit.co.ke | call_agent | Mular Credit |
-| admin@pesaflow.co.ke | tenant_admin | PesaFlow Capital |
+| sysadmin@mularcredit.co.ke | system_admin | Mular Credit |
+| ro@mularcredit.co.ke | relationship_officer | Mular Credit |
+| branchmgr@mularcredit.co.ke | branch_manager | Mular Credit |
+| regionalmgr@mularcredit.co.ke | regional_manager | Mular Credit |
+| disburse@mularcredit.co.ke | disbursement_officer | Mular Credit |
+| reconcile@mularcredit.co.ke | reconciliation_officer | Mular Credit |
+| hqops@mularcredit.co.ke | hq_operations | Mular Credit |
 | admin@jengamicro.co.ke | tenant_admin | Jenga Micro *(CRM + Impact intentionally disabled to demo flag gating)* |
 
 ## Quickstart (Docker)
@@ -102,7 +146,10 @@ backend/
                   storage (client documents), analytics (pandas), aml,
                   mentorship, cbk_exports, ai_agent
   app/seeds/      demo data generator (+ client KYC enrichment)
-  migrations/     additive SQL migrations (002_clients_kyc.sql adds the KYC columns/tables)
+  migrations/     additive SQL migrations (002_clients_kyc.sql adds the KYC
+                  columns/tables; 003_rbac.sql adds approval_thresholds,
+                  audit_logs, pending_approvals, report schedules/templates,
+                  anomaly flags + loan/borrower scoping columns)
 deploy/           systemd unit + nginx vhost used for the live VM deployment
 ```
 
@@ -113,6 +160,9 @@ deploy/           systemd unit + nginx vhost used for the live VM deployment
 ```bash
 psql "$DATABASE_URL" -f backend/migrations/002_clients_kyc.sql
 python -m app.seeds.client_kyc          # backfill realistic KYC values on existing clients
+
+psql "$DATABASE_URL" -f backend/migrations/003_rbac.sql   # RBAC tables + scoping columns (idempotent)
+python -m app.seeds.rbac_seed           # seed RBAC demo users, thresholds & scope assignments
 ```
 
 ## Environment variables

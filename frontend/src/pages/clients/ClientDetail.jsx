@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, download, fmtDate, fmtKES } from "../../lib/api";
 import { Badge, Empty, KpiCard, PageHeader, Spinner } from "../../components/ui";
+import { useAuth } from "../../hooks/useAuth";
 import ClientForm from "./ClientForm";
 
 const bytes = (n) => (n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
@@ -20,6 +21,7 @@ function Row({ label, value }) {
 export default function ClientDetail() {
   const { id } = useParams();
   const nav = useNavigate();
+  const { can } = useAuth();
   const [c, setC] = useState(null);
   const [err, setErr] = useState("");
   const [editing, setEditing] = useState(false);
@@ -40,7 +42,7 @@ export default function ClientDetail() {
         actions={
           <>
             <button className="btn-ghost" onClick={() => nav("/clients")}>← Back to Clients</button>
-            <button className="btn-primary" onClick={() => setEditing(true)}>Edit client</button>
+            {can("clients.edit") && <button className="btn-primary" onClick={() => setEditing(true)}>Edit client</button>}
           </>
         } />
 
@@ -68,6 +70,13 @@ export default function ClientDetail() {
           <Row label="Location" value={c.location} />
           <Row label="Sub Location" value={c.sub_location} />
           <Row label="Onboarded By" value={c.onboarded_by} />
+          <Row label="Profile Status" value={
+            c.profile_status === "pending_approval"
+              ? <span className="inline-flex px-2 py-0.5 rounded-full text-[11px] font-semibold bg-amber-100 text-amber-700">pending approval</span>
+              : c.profile_status === "rejected"
+              ? <span className="inline-flex px-2 py-0.5 rounded-full text-[11px] font-semibold bg-red-100 text-red-700">rejected</span>
+              : <span className="inline-flex px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-100 text-emerald-700">approved</span>
+          } />
           <Row label="eKYC" value={c.ekyc_status ? `${c.ekyc_status.replace(/_/g, " ")}${c.ekyc_reference ? ` · ${c.ekyc_reference}` : ""}` : "—"} />
           <Row label="Business Sector" value={c.business_sector} />
           <Row label="Baseline Monthly Sales" value={fmtKES(c.baseline_monthly_sales)} />

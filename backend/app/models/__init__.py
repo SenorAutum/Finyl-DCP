@@ -5,6 +5,9 @@ from app.models.lending import (Borrower, Loan, Repayment, PaymentTransaction, S
                                 LOAN_STATUSES, WALLET_OPERATORS,
                                 NEXT_OF_KIN_RELATIONSHIPS, DOC_TYPES)
 from app.models.client_kyc import ClientMobileWallet, ClientNextOfKin, ClientDocument
+from app.models.rbac import (ApprovalThreshold, AuditLog, PendingApproval,
+                             ReportSchedule, ReportTemplate, AnomalyFlag,
+                             THRESHOLD_TYPES, SCOPE_TYPES)
 from app.models.engagement import (
     CrmLead, SiteVisit, CallLog, Complaint, ImpactSurvey, AmlFlag,
     CRM_STAGES, CALL_OUTCOMES, COMPLAINT_CATEGORIES, COMPLAINT_STATUSES, SLA_DAYS,

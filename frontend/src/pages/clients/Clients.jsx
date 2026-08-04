@@ -4,10 +4,12 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, fmtKES } from "../../lib/api";
 import { Badge, Empty, PageHeader, Pagination, Spinner } from "../../components/ui";
+import { useAuth } from "../../hooks/useAuth";
 import ClientForm from "./ClientForm";
 
 export default function Clients() {
   const nav = useNavigate();
+  const { can } = useAuth();
   const [data, setData] = useState(null);
   const [search, setSearch] = useState("");
   const [kyc, setKyc] = useState("");
@@ -24,7 +26,7 @@ export default function Clients() {
   return (
     <div>
       <PageHeader title="Clients" crumbs={["Lending", "Clients"]}
-        actions={<button className="btn-primary" onClick={() => setCreating(true)}>+ New Client</button>} />
+        actions={can("clients.create") ? <button className="btn-primary" onClick={() => setCreating(true)}>+ New Client</button> : null} />
 
       {err && <div className="mb-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">{err}</div>}
 
@@ -44,7 +46,7 @@ export default function Clients() {
               <thead><tr>
                 <th className="th">Name</th><th className="th">National ID</th><th className="th">Mobile</th>
                 <th className="th">M-Pesa</th><th className="th">Sector</th><th className="th">Baseline Sales</th>
-                <th className="th">KYC</th><th className="th">eKYC</th><th className="th">Score</th><th className="th"></th>
+                <th className="th">KYC</th><th className="th">Profile</th><th className="th">eKYC</th><th className="th">Score</th><th className="th"></th>
               </tr></thead>
               <tbody>
                 {data.items.map((c) => (
@@ -60,6 +62,13 @@ export default function Clients() {
                     <td className="td capitalize">{c.business_sector || "—"}</td>
                     <td className="td">{fmtKES(c.baseline_monthly_sales)}</td>
                     <td className="td"><Badge value={c.kyc_status} /></td>
+                    <td className="td">
+                      {c.profile_status === "pending_approval"
+                        ? <span className="inline-flex px-2 py-0.5 rounded-full text-[11px] font-semibold bg-amber-100 text-amber-700">pending approval</span>
+                        : c.profile_status === "rejected"
+                        ? <span className="inline-flex px-2 py-0.5 rounded-full text-[11px] font-semibold bg-red-100 text-red-700">rejected</span>
+                        : <span className="inline-flex px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-100 text-emerald-700">approved</span>}
+                    </td>
                     <td className="td">
                       {c.ekyc_status
                         ? <Badge value={c.ekyc_status === "verified" ? "validated" : "pending"}>{c.ekyc_status.replace(/_/g, " ")}</Badge>

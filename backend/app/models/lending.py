@@ -56,7 +56,9 @@ class Borrower(Base):
     current_credit_rating = Column(String(20))  # free text e.g. "A", "B+", "CRB clear"
     is_active = Column(Boolean, default=True)
     onboarded_by = Column(String(120))          # staff/user name that captured the record
+    officer_staff_id = Column(Integer, ForeignKey("staff.id"))  # owning relationship officer (portfolio scope)
     approved_by_user_id = Column(Integer, ForeignKey("users.id"))
+    profile_status = Column(String(20), default="approved")  # draft | pending_approval | approved | rejected
 
     # --- M-Pesa name-lookup validation ---------------------------------------
     mpesa_validated = Column(Boolean, default=False)
@@ -103,6 +105,12 @@ class Loan(Base):
     outstanding_balance = Column(Numeric(12, 2), default=0)
     loan_cycle_number = Column(Integer, default=1)   # borrower's Nth loan — drives impact survey gate
     created_at = Column(DateTime, default=datetime.utcnow)
+
+    # --- RBAC approval / maker-checker / escalation (additive & nullable) ----
+    approved_by_user_id = Column(Integer, ForeignKey("users.id"))
+    escalation_level = Column(String(10))    # null | region | hq  (pending higher-tier approval)
+    decision_note = Column(Text)
+    disbursed_by_user_id = Column(Integer, ForeignKey("users.id"))
 
     borrower = relationship("Borrower", back_populates="loans")
     product = relationship("Product")

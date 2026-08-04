@@ -140,7 +140,7 @@ function ApplyModal({ onClose, onCreated }) {
 }
 
 export default function Loans() {
-  const { canAccess } = useAuth();
+  const { can } = useAuth();
   const [data, setData] = useState(null);
   const [status, setStatus] = useState("");
   const [search, setSearch] = useState("");
@@ -156,7 +156,7 @@ export default function Loans() {
   return (
     <div>
       <PageHeader title="Loan Book" crumbs={["Lending", "Loans"]}
-        actions={<button className="btn-primary" onClick={() => setApplying(true)}>+ New Application</button>} />
+        actions={can("loans.create") && <button className="btn-primary" onClick={() => setApplying(true)}>+ New Application</button>} />
 
       <div className="card overflow-hidden">
         <div className="p-3 border-b border-border flex flex-wrap gap-2">
@@ -196,7 +196,7 @@ export default function Loans() {
         {data && <Pagination page={page} total={data.total} onPage={setPage} />}
       </div>
 
-      {applying && canAccess("lending") && (
+      {applying && can("loans.create") && (
         <ApplyModal onClose={() => setApplying(false)} onCreated={() => { setApplying(false); load(); }} />
       )}
     </div>

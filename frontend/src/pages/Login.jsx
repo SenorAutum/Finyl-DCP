@@ -6,8 +6,13 @@ import { useAuth } from "../hooks/useAuth";
 const DEMO = [
   ["superadmin@finyl.app", "Super Admin (all tenants)"],
   ["admin@mularcredit.co.ke", "Tenant Admin — Mular Credit"],
-  ["officer@mularcredit.co.ke", "Loan Officer — Mular Credit"],
-  ["agent@mularcredit.co.ke", "Call Agent — Mular Credit"],
+  ["sysadmin@mularcredit.co.ke", "System Admin — users, access, thresholds, audit"],
+  ["ro@mularcredit.co.ke", "Relationship Officer — own portfolio, initiate loans"],
+  ["branchmgr@mularcredit.co.ke", "Branch Manager — approvals inbox (branch)"],
+  ["regionalmgr@mularcredit.co.ke", "Regional Manager — approvals (region)"],
+  ["disburse@mularcredit.co.ke", "Disbursement Officer — B2C disburse (maker-checker)"],
+  ["reconcile@mularcredit.co.ke", "Reconciliation Officer — reconcile & refunds"],
+  ["hqops@mularcredit.co.ke", "HQ Operations — read-only dashboards & reports"],
   ["admin@jengamicro.co.ke", "Tenant Admin — Jenga Micro (CRM & Impact disabled)"],
 ];
 

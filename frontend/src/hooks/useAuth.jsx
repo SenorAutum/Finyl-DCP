@@ -28,11 +28,25 @@ export function AuthProvider({ children }) {
 
   const switchTenant = async (tenantId) => { setTenantOverride(tenantId); await refresh(); };
 
-  // Role-based sidebar visibility (feature flags handled separately via user.modules)
+  // Module -> permission keys. A role may use a module if it holds ANY of these.
+  // This keeps the tenant feature-flag (user.modules) as the outer gate while the
+  // permission model decides which roles see each module.
+  const MODULE_PERMS = {
+    dashboard: ["dashboard.company", "dashboard.region", "dashboard.branch", "dashboard.portfolio"],
+    lending: ["clients.view_all", "clients.view_portfolio", "loans.view_all", "loans.view_portfolio"],
+    payments: ["payments.upload", "disburse.execute", "reconcile.execute", "refund.execute"],
+    impact: ["dashboard.company"],
+  };
+
+  // Role-based sidebar visibility (feature flags handled separately via user.modules).
+  // Permission-driven for the core modules; legacy role fallback for engagement ones.
   const roleAllows = (moduleKey) => {
     if (!user) return false;
     const role = user.role;
     if (role === "super_admin" || role === "tenant_admin") return true;
+    const perms = user.permissions || [];
+    if (MODULE_PERMS[moduleKey]) return MODULE_PERMS[moduleKey].some((p) => perms.includes(p));
+    // Engagement modules stay role-scoped (legacy behaviour).
     if (role === "loan_officer") return ["lending", "crm", "dashboard", "payments", "impact"].includes(moduleKey);
     if (role === "call_agent") return ["call_center", "complaints"].includes(moduleKey);
     return false;
@@ -40,11 +54,43 @@ export function AuthProvider({ children }) {
 
   const canAccess = (moduleKey) => !!user?.modules?.[moduleKey] && roleAllows(moduleKey);
 
+  // Permission-driven access — the primary RBAC gate. super_admin always passes.
+  const can = useCallback((...keys) => {
+    if (!user) return false;
+    if (user.role === "super_admin") return true;
+    const perms = user.permissions || [];
+    if (perms.includes("*")) return true;
+    // any-of semantics: pass if the user holds ANY of the requested keys
+    return keys.some((k) => perms.includes(k));
+  }, [user]);
+
+  // all-of semantics helper
+  const canAll = useCallback((...keys) => {
+    if (!user) return false;
+    if (user.role === "super_admin") return true;
+    const perms = user.permissions || [];
+    if (perms.includes("*")) return true;
+    return keys.every((k) => perms.includes(k));
+  }, [user]);
+
+  const scope = user?.scope || null;
+
   return (
-    <AuthCtx.Provider value={{ user, loading, login, logout, switchTenant, canAccess }}>
+    <AuthCtx.Provider value={{ user, loading, login, logout, switchTenant, canAccess, can, canAll, scope }}>
       {children}
     </AuthCtx.Provider>
   );
 }
 
 export const useAuth = () => useContext(AuthCtx);
+
+/** Conditionally render children when the user holds the given permission(s).
+ *  <Can perm="users.manage">…</Can>  or  <Can any={["disburse.approve","refund.approve"]}>…</Can> */
+export function Can({ perm, any, all, children, fallback = null }) {
+  const { can, canAll } = useAuth();
+  let ok = false;
+  if (perm) ok = can(perm);
+  else if (any) ok = can(...any);
+  else if (all) ok = canAll(...all);
+  return ok ? children : fallback;
+}

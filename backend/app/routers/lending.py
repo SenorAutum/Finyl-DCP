@@ -11,12 +11,15 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.database import get_db
-from app.core.deps import get_current_user, require_module
+from app.core.deps import (get_current_user, require_module, require_permission,
+                           get_scope, UserScope, write_audit)
 from app.models import (Borrower, Branch, ImpactSurvey, Loan, PaymentTransaction,
                         Product, Region, Repayment, Staff, User)
-from app.schemas import BorrowerCreate, LoanApplication, LoanStatusUpdate, ProductCreate
+from app.schemas import (BorrowerCreate, LoanApplication, LoanStatusUpdate, ProductCreate,
+                         ReassignRequest)
 from app.routers.clients import _client_dict as _borrower_dict
 from app.services import mpesa, sms
+from fastapi import Request
 
 router = APIRouter(prefix="/api/v1/lending", tags=["lending"])
 
@@ -47,9 +50,10 @@ def org_reference(tenant_id: int = Depends(require_module("lending")), db: Sessi
 
 @router.get("/borrowers")
 def list_borrowers(tenant_id: int = Depends(require_module("lending")),
-                   db: Session = Depends(get_db),
+                   db: Session = Depends(get_db), scope: UserScope = Depends(get_scope),
                    search: str = "", page: int = 1, page_size: int = 20):
     q = db.query(Borrower).filter(Borrower.tenant_id == tenant_id)
+    q = scope.apply_client(q, Borrower)
     if search:
         like = f"%{search}%"
         q = q.filter(or_(Borrower.first_name.ilike(like), Borrower.last_name.ilike(like),
@@ -133,14 +137,19 @@ def _loan_dict(l: Loan) -> dict:
         "disbursement_date": l.disbursement_date, "due_date": l.due_date,
         "outstanding_balance": float(l.outstanding_balance or 0),
         "total_due": round(l.total_due, 2), "loan_cycle_number": l.loan_cycle_number,
+        "escalation_level": getattr(l, "escalation_level", None),
+        "approved_by_user_id": getattr(l, "approved_by_user_id", None),
+        "decision_note": getattr(l, "decision_note", None),
     }
 
 
 @router.get("/loans")
 def list_loans(tenant_id: int = Depends(require_module("lending")), db: Session = Depends(get_db),
+               scope: UserScope = Depends(get_scope),
                status: str = "", search: str = "", page: int = 1, page_size: int = 20):
     q = (db.query(Loan).options(joinedload(Loan.borrower), joinedload(Loan.product), joinedload(Loan.staff))
          .filter(Loan.tenant_id == tenant_id))
+    q = scope.apply_loan(q, Loan)
     if status:
         q = q.filter(Loan.status == status)
     if search:
@@ -154,12 +163,14 @@ def list_loans(tenant_id: int = Depends(require_module("lending")), db: Session 
 
 @router.get("/loans/{loan_id}")
 def loan_detail(loan_id: int, tenant_id: int = Depends(require_module("lending")),
-                db: Session = Depends(get_db)):
+                db: Session = Depends(get_db), scope: UserScope = Depends(get_scope)):
     l = (db.query(Loan).options(joinedload(Loan.borrower), joinedload(Loan.product),
                                 joinedload(Loan.staff), joinedload(Loan.repayments))
          .filter(Loan.id == loan_id, Loan.tenant_id == tenant_id).first())
     if not l:
         raise HTTPException(404, "Loan not found")
+    if not scope.can_see_loan(l):
+        raise HTTPException(403, "Loan is outside your data scope")
     d = _loan_dict(l)
     d["borrower"] = _borrower_dict(l.borrower)
     d["repayments"] = [{
@@ -182,7 +193,8 @@ def loan_detail(loan_id: int, tenant_id: int = Depends(require_module("lending")
 
 @router.post("/loans/apply")
 def apply_for_loan(body: LoanApplication, tenant_id: int = Depends(require_module("lending")),
-                   db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+                   db: Session = Depends(get_db),
+                   user: User = Depends(require_permission("loans.create"))):
     borrower = db.query(Borrower).filter(Borrower.id == body.borrower_id,
                                          Borrower.tenant_id == tenant_id).first()
     if not borrower:
@@ -223,31 +235,60 @@ def apply_for_loan(body: LoanApplication, tenant_id: int = Depends(require_modul
 @router.post("/loans/{loan_id}/transition")
 def transition_loan(loan_id: int, body: LoanStatusUpdate,
                     tenant_id: int = Depends(require_module("lending")),
-                    db: Session = Depends(get_db)):
+                    db: Session = Depends(get_db),
+                    scope: UserScope = Depends(get_scope),
+                    request: Request = None):
+    """Generic lifecycle transitions (e.g. active → paid/overdue/defaulted).
+
+    NOTE: Loan APPROVAL is no longer performed here (it moved to the Approvals
+    inbox at /api/v1/approvals with threshold + escalation enforcement) and
+    DISBURSEMENT moved to /api/v1/payments/disburse (maker-checker). This
+    endpoint therefore refuses the approve/disburse steps.
+    """
     loan = (db.query(Loan).options(joinedload(Loan.borrower), joinedload(Loan.product))
             .filter(Loan.id == loan_id, Loan.tenant_id == tenant_id).first())
     if not loan:
         raise HTTPException(404, "Loan not found")
+    if not scope.can_see_loan(loan):
+        raise HTTPException(403, "Loan is outside your data scope")
     allowed = VALID_TRANSITIONS.get(loan.status, [])
     if body.status not in allowed:
         raise HTTPException(400, f"Cannot move loan from '{loan.status}' to '{body.status}'. Allowed: {allowed}")
-
-    loan.status = body.status
     if body.status == "approved":
-        loan.approval_date = date.today()
-        # === AUTO-DISBURSEMENT: approval triggers a mock Daraja B2C payout ===
-        payload = mpesa.b2c_disburse(loan.borrower.phone, float(loan.principal),
-                                     f"Disbursement {loan.account_number}")
-        db.add(PaymentTransaction(
-            tenant_id=tenant_id, type="b2c", loan_id=loan.id, amount=loan.principal,
-            phone=loan.borrower.phone, mpesa_ref=payload["result"]["TransactionReceipt"],
-            status="success", raw_payload=payload,
-        ))
-        loan.status = "active"
-        loan.disbursement_date = date.today()
-        step = 7 if loan.product.tenure_unit == "weeks" else 30
-        loan.due_date = date.today() + timedelta(days=step * max(1, loan.product.tenure_value))
-        loan.outstanding_balance = round(loan.total_due, 2)
-        sms.sms_loan_approval(db, tenant_id, loan.borrower, loan)
+        raise HTTPException(409, "Use the Approvals inbox (/api/v1/approvals/loans) to approve loans.")
+    if body.status == "active":
+        raise HTTPException(409, "Use disbursement (/api/v1/payments/disburse) to activate an approved loan.")
+
+    prev = loan.status
+    loan.status = body.status
+    write_audit(db, tenant_id=tenant_id, user=scope.user, action="loan.transition",
+                entity_type="loan", entity_id=loan.id,
+                details={"from": prev, "to": body.status}, request=request)
+    db.commit()
+    return _loan_dict(loan)
+
+
+@router.post("/loans/{loan_id}/reassign")
+def reassign_loan(loan_id: int, body: ReassignRequest,
+                  tenant_id: int = Depends(require_module("lending")),
+                  db: Session = Depends(get_db),
+                  user: User = Depends(require_permission("loans.reassign")),
+                  scope: UserScope = Depends(get_scope),
+                  request: Request = None):
+    """Reassign a loan to another officer (branch/regional managers)."""
+    loan = db.query(Loan).filter(Loan.id == loan_id, Loan.tenant_id == tenant_id).first()
+    if not loan:
+        raise HTTPException(404, "Loan not found")
+    if not scope.can_see_loan(loan):
+        raise HTTPException(403, "Loan is outside your data scope")
+    staff = db.query(Staff).filter(Staff.id == body.staff_id, Staff.tenant_id == tenant_id).first()
+    if not staff:
+        raise HTTPException(404, "Target officer not found")
+    prev = loan.staff_id
+    loan.staff_id = body.staff_id
+    write_audit(db, tenant_id=tenant_id, user=user, action="loan.reassign",
+                entity_type="loan", entity_id=loan.id,
+                details={"from_staff_id": prev, "to_staff_id": body.staff_id,
+                         "reason": body.reason}, request=request)
     db.commit()
     return _loan_dict(loan)

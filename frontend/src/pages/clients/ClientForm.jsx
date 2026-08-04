@@ -50,8 +50,12 @@ function Field({ label, children, hint }) {
 }
 
 export default function ClientForm({ clientId, onClose, onSaved }) {
-  const { user } = useAuth();
+  const { user, can } = useAuth();
   const fileRef = useRef(null);
+  // Primary-identity fields (phone / national_id / date_of_birth) are locked on
+  // an existing client unless the officer holds clients.edit_locked. Creation is
+  // always allowed so these are only frozen when editing a saved record.
+  const locked = !!clientId && !can("clients.edit_locked");
 
   const [form, setForm] = useState({ ...EMPTY_CLIENT, onboarded_by: user?.full_name || "" });
   const [ref, setRef] = useState({ wallet_operators: [], relationships: [], doc_types: [], kyc_statuses: [], approvers: [] });
@@ -408,7 +412,7 @@ export default function ClientForm({ clientId, onClose, onSaved }) {
                 Confirms the mobile number is registered to the same National ID before disbursement.
               </div>
             </div>
-            <input className="input max-w-[200px] bg-white" placeholder="2547XXXXXXXX"
+            <input className="input max-w-[200px] bg-white" placeholder="2547XXXXXXXX" disabled={locked}
               value={form.phone} onChange={set("phone")} />
             <button type="button" className="btn-primary" onClick={validateMpesa} disabled={mpesaBusy}>
               {mpesaBusy ? "Checking…" : "Validate M-Pesa"}
@@ -427,14 +431,20 @@ export default function ClientForm({ clientId, onClose, onSaved }) {
             <h2 className="font-bold text-base mb-4">Client ID Details</h2>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               <Field label="Serial Number"><input className="input" value={form.serial_number || ""} onChange={set("serial_number")} /></Field>
-              <Field label="National ID *"><input className="input" required value={form.national_id || ""} onChange={set("national_id")} /></Field>
-              <Field label="Mobile Number"><input className="input" placeholder="2547XXXXXXXX" value={form.phone || ""} onChange={set("phone")} /></Field>
+              <Field label="National ID *" hint={locked ? "🔒 Locked — requires elevated approval to edit." : undefined}>
+                <input className="input" required disabled={locked} value={form.national_id || ""} onChange={set("national_id")} />
+              </Field>
+              <Field label="Mobile Number" hint={locked ? "🔒 Locked — requires elevated approval to edit." : undefined}>
+                <input className="input" placeholder="2547XXXXXXXX" disabled={locked} value={form.phone || ""} onChange={set("phone")} />
+              </Field>
 
               <Field label="First Name *"><input className="input" required value={form.first_name || ""} onChange={set("first_name")} /></Field>
               <Field label="Middle Name"><input className="input" value={form.middle_name || ""} onChange={set("middle_name")} /></Field>
               <Field label="Last Name *"><input className="input" required value={form.last_name || ""} onChange={set("last_name")} /></Field>
 
-              <Field label="Date of Birth"><input type="date" className="input" value={form.date_of_birth || ""} onChange={set("date_of_birth")} /></Field>
+              <Field label="Date of Birth" hint={locked ? "🔒 Locked — requires elevated approval to edit." : undefined}>
+                <input type="date" className="input" disabled={locked} value={form.date_of_birth || ""} onChange={set("date_of_birth")} />
+              </Field>
               <Field label="Gender">
                 <select className="input" value={form.gender || ""} onChange={set("gender")}>
                   <option value="">—</option><option value="female">Female</option><option value="male">Male</option>

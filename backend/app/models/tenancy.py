@@ -41,17 +41,30 @@ class TenantModule(Base):
 
 
 class User(Base):
-    """Auth principal. Roles: super_admin | tenant_admin | loan_officer | call_agent."""
+    """Auth principal.
+
+    Roles (permission-driven, see app.core.permissions): super_admin,
+    system_admin, relationship_officer, branch_manager, regional_manager,
+    disbursement_officer, reconciliation_officer, hq_operations. Legacy roles
+    tenant_admin / loan_officer / call_agent are kept for backward compatibility.
+    """
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True)
     email = Column(String(160), nullable=False, unique=True, index=True)
     hashed_password = Column(String(200), nullable=False)
     full_name = Column(String(120), nullable=False)
-    role = Column(String(30), nullable=False, default="loan_officer")
+    role = Column(String(30), nullable=False, default="relationship_officer")
     tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)  # null for super_admin
     staff_id = Column(Integer, ForeignKey("staff.id"), nullable=True)
     active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+    # --- RBAC additions (all additive & nullable) ----------------------------
+    branch_id = Column(Integer, ForeignKey("branches.id"), nullable=True)   # scoping for branch_manager
+    region_id = Column(Integer, ForeignKey("regions.id"), nullable=True)    # scoping for regional_manager
+    is_locked = Column(Boolean, default=False)                              # admin lock-out
+    force_password_reset = Column(Boolean, default=False)
+    deactivated_at = Column(DateTime, nullable=True)
 
     tenant = relationship("Tenant", back_populates="users")

@@ -6,16 +6,132 @@ credentials/HTTP calls plug in.
 """
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.database import get_db
-from app.core.deps import require_module
-from app.models import Loan, PaymentTransaction, Repayment
-from app.schemas import B2CRequest, C2BCallback, StkPushRequest
+from app.core.deps import require_module, require_permission, write_audit
+from app.models import Loan, PaymentTransaction, PendingApproval, Repayment, User
+from app.schemas import (B2CRequest, C2BCallback, StkPushRequest, DisburseRequest,
+                         RefundRequest, ReconcileRequest)
 from app.services import mpesa, sms
+from app.services import rbac as rbac_svc
+from app.services.disbursement import execute_disbursement, execute_refund
 
 router = APIRouter(prefix="/api/v1/payments", tags=["payments"])
+
+
+# --------------------------------------------------------------------------- #
+# Disbursement (maker-checker) — disbursement_officer
+# --------------------------------------------------------------------------- #
+@router.post("/disburse")
+def disburse_loan(body: DisburseRequest,
+                  tenant_id: int = Depends(require_module("payments")),
+                  db: Session = Depends(get_db),
+                  user: User = Depends(require_permission("disburse.execute")),
+                  request: Request = None):
+    """Disburse an approved loan. Above the configured maker-checker threshold
+    the request is parked as a PendingApproval for a second authorized user."""
+    loan = (db.query(Loan).options(joinedload(Loan.borrower), joinedload(Loan.product))
+            .filter(Loan.id == body.loan_id, Loan.tenant_id == tenant_id).first())
+    if not loan:
+        raise HTTPException(404, "Loan not found")
+    if loan.status != "approved":
+        raise HTTPException(400, "Loan must be in 'approved' status to disburse")
+    amount = float(loan.principal)
+    if rbac_svc.requires_maker_checker(db, tenant_id, "disbursement", amount):
+        pending = PendingApproval(
+            tenant_id=tenant_id, action_type="disbursement", loan_id=loan.id,
+            amount=amount, phone=loan.borrower.phone, reason=body.reason,
+            status="pending_approval", maker_user_id=user.id, maker_at=datetime.utcnow(),
+            details={"account_number": loan.account_number},
+        )
+        db.add(pending)
+        write_audit(db, tenant_id=tenant_id, user=user, action="disburse.request",
+                    entity_type="loan", entity_id=loan.id,
+                    details={"amount": amount, "maker_checker": True}, request=request)
+        db.commit()
+        return {"status": "pending_approval", "pending_id": pending.id,
+                "message": "Disbursement exceeds threshold — awaiting a second approver."}
+    result = execute_disbursement(db, tenant_id, loan, user.id)
+    write_audit(db, tenant_id=tenant_id, user=user, action="disburse.execute",
+                entity_type="loan", entity_id=loan.id,
+                details={"amount": amount, **result}, request=request)
+    db.commit()
+    return {"status": "disbursed", **result}
+
+
+# --------------------------------------------------------------------------- #
+# Refund (maker-checker) — reconciliation_officer
+# --------------------------------------------------------------------------- #
+@router.post("/refund")
+def refund_payment(body: RefundRequest,
+                   tenant_id: int = Depends(require_module("payments")),
+                   db: Session = Depends(get_db),
+                   user: User = Depends(require_permission("refund.execute")),
+                   request: Request = None):
+    """Refund an over/mis-payment. Above the maker-checker threshold it is
+    parked for a second approver."""
+    amount = float(body.amount)
+    if amount <= 0:
+        raise HTTPException(400, "Refund amount must be positive")
+    if rbac_svc.requires_maker_checker(db, tenant_id, "refund", amount):
+        pending = PendingApproval(
+            tenant_id=tenant_id, action_type="refund", loan_id=body.loan_id,
+            amount=amount, phone=body.phone, reason=body.reason,
+            status="pending_approval", maker_user_id=user.id, maker_at=datetime.utcnow(),
+            details={},
+        )
+        db.add(pending)
+        write_audit(db, tenant_id=tenant_id, user=user, action="refund.request",
+                    entity_type="loan", entity_id=body.loan_id,
+                    details={"amount": amount, "maker_checker": True}, request=request)
+        db.commit()
+        return {"status": "pending_approval", "pending_id": pending.id,
+                "message": "Refund exceeds threshold — awaiting a second approver."}
+    result = execute_refund(db, tenant_id, amount, body.phone, body.loan_id, user.id, body.reason)
+    write_audit(db, tenant_id=tenant_id, user=user, action="refund.execute",
+                entity_type="loan", entity_id=body.loan_id,
+                details={"amount": amount, **result}, request=request)
+    db.commit()
+    return {"status": "refunded", **result}
+
+
+# --------------------------------------------------------------------------- #
+# Reconciliation — reconciliation_officer records a matched repayment
+# --------------------------------------------------------------------------- #
+@router.post("/reconcile")
+def reconcile_payment(body: ReconcileRequest,
+                      tenant_id: int = Depends(require_module("payments")),
+                      db: Session = Depends(get_db),
+                      user: User = Depends(require_permission("reconcile.execute")),
+                      request: Request = None):
+    """Manually reconcile a received payment against a loan."""
+    loan = (db.query(Loan).options(joinedload(Loan.borrower))
+            .filter(Loan.id == body.loan_id, Loan.tenant_id == tenant_id).first())
+    if not loan:
+        raise HTTPException(404, "Loan not found")
+    amount = float(body.amount)
+    if amount <= 0:
+        raise HTTPException(400, "Amount must be positive")
+    interest_share = loan.interest_rate / (100.0 + loan.interest_rate)
+    rep = Repayment(
+        tenant_id=tenant_id, loan_id=loan.id, amount=amount,
+        interest_component=round(amount * interest_share, 2),
+        principal_component=round(amount * (1 - interest_share), 2),
+        payment_date=datetime.utcnow(), method="reconciliation",
+        mpesa_ref=body.mpesa_ref,
+    )
+    db.add(rep)
+    loan.outstanding_balance = max(0, round(float(loan.outstanding_balance or 0) - amount, 2))
+    if loan.outstanding_balance <= 0 and loan.status in ("active", "overdue"):
+        loan.status = "paid"
+    write_audit(db, tenant_id=tenant_id, user=user, action="reconcile.execute",
+                entity_type="loan", entity_id=loan.id,
+                details={"amount": amount, "mpesa_ref": body.mpesa_ref}, request=request)
+    db.commit()
+    return {"status": "reconciled", "outstanding_balance": float(loan.outstanding_balance),
+            "loan_status": loan.status}
 
 
 @router.post("/mpesa-b2c")

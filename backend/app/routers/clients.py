@@ -23,8 +23,11 @@ from fastapi import (APIRouter, Depends, File, HTTPException, Query, Response,
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 
+from fastapi import Request
 from app.core.database import get_db
-from app.core.deps import get_current_user, require_module
+from app.core.deps import (get_current_user, require_module, require_permission,
+                           get_scope, UserScope, write_audit)
+from app.core.permissions import has_permission
 from app.models import (Borrower, ClientDocument, ClientMobileWallet,
                         ClientNextOfKin, DOC_TYPES, Loan, ImpactSurvey,
                         NEXT_OF_KIN_RELATIONSHIPS, PaymentTransaction, User,
@@ -32,6 +35,9 @@ from app.models import (Borrower, ClientDocument, ClientMobileWallet,
 from app.schemas import ClientCreate, EkycVerifyRequest, ValidateMpesaRequest
 from app.services import ekyc, mpesa, storage
 from app.services.ocr import OcrUnavailable, process_id_files
+
+# Primary identity fields locked from relationship officers (field-level lock).
+LOCKED_FIELDS = ("phone", "national_id", "date_of_birth")
 
 MAX_BYTES = storage.MAX_BYTES
 OCR_MIMES = ("image/jpeg", "image/jpg", "image/png", "image/webp", "application/pdf")
@@ -70,6 +76,8 @@ def _client_dict(b: Borrower, loan_count: int | None = None, nested: bool = Fals
         "date_of_issue": b.date_of_issue, "district": b.district, "division": b.division,
         "location": b.location, "sub_location": b.sub_location,
         "region_id": b.region_id, "branch_id": b.branch_id,
+        "officer_staff_id": getattr(b, "officer_staff_id", None),
+        "profile_status": getattr(b, "profile_status", "approved"),
         "business_sector": b.business_sector,
         "baseline_monthly_sales": float(b.baseline_monthly_sales or 0),
         "baseline_employees": b.baseline_employees,
@@ -180,10 +188,13 @@ def build_router(prefix: str, tag: str) -> APIRouter:
     # ---- list / read -------------------------------------------------------
     @router.get("")
     def list_clients(tenant_id: int = Depends(require_module("lending")),
-                     db: Session = Depends(get_db),
-                     search: str = "", kyc_status: str = "",
+                     db: Session = Depends(get_db), scope: UserScope = Depends(get_scope),
+                     search: str = "", kyc_status: str = "", profile_status: str = "",
                      page: int = 1, page_size: int = 20):
         q = db.query(Borrower).filter(Borrower.tenant_id == tenant_id)
+        q = scope.apply_client(q, Borrower)
+        if profile_status:
+            q = q.filter(Borrower.profile_status == profile_status)
         if search:
             like = f"%{search}%"
             q = q.filter(or_(Borrower.first_name.ilike(like), Borrower.last_name.ilike(like),
@@ -197,8 +208,10 @@ def build_router(prefix: str, tag: str) -> APIRouter:
 
     @router.get("/{client_id}")
     def client_detail(client_id: int, tenant_id: int = Depends(require_module("lending")),
-                      db: Session = Depends(get_db)):
+                      db: Session = Depends(get_db), scope: UserScope = Depends(get_scope)):
         c = _get_client(db, tenant_id, client_id)
+        if not scope.can_see_client(c):
+            raise HTTPException(403, "Client is outside your data scope")
         out = _client_dict(c, nested=True)
         loans = (db.query(Loan).filter(Loan.borrower_id == c.id)
                  .order_by(Loan.id.desc()).all())
@@ -221,14 +234,25 @@ def build_router(prefix: str, tag: str) -> APIRouter:
     def create_client(body: ClientCreate,
                       tenant_id: int = Depends(require_module("lending")),
                       db: Session = Depends(get_db),
-                      user: User = Depends(get_current_user)):
+                      user: User = Depends(require_permission("clients.create")),
+                      request: Request = None):
         client = Borrower(tenant_id=tenant_id)
         _apply_scalars(client, body)
         if not client.onboarded_by:
             client.onboarded_by = user.full_name
+        # A relationship officer owns the client they create, and their new
+        # profiles start pending branch-manager approval.
+        if user.role in ("relationship_officer", "loan_officer") and user.staff_id:
+            client.officer_staff_id = user.staff_id
+            client.profile_status = "pending_approval"
+        elif not getattr(client, "profile_status", None):
+            client.profile_status = "approved"
         db.add(client)
         db.flush()                     # need the id for the nested rows
         _sync_nested(db, client, tenant_id, body)
+        write_audit(db, tenant_id=tenant_id, user=user, action="client.create",
+                    entity_type="client", entity_id=client.id,
+                    details={"profile_status": client.profile_status}, request=request)
         db.commit()
         db.refresh(client)
         return _client_dict(client, nested=True)
@@ -236,10 +260,33 @@ def build_router(prefix: str, tag: str) -> APIRouter:
     @router.put("/{client_id}")
     def update_client(client_id: int, body: ClientCreate,
                       tenant_id: int = Depends(require_module("lending")),
-                      db: Session = Depends(get_db)):
+                      db: Session = Depends(get_db),
+                      user: User = Depends(require_permission("clients.edit")),
+                      scope: UserScope = Depends(get_scope),
+                      request: Request = None):
         client = _get_client(db, tenant_id, client_id)
+        if not scope.can_see_client(client):
+            raise HTTPException(403, "Client is outside your data scope")
+        # Field-level lock: primary identity fields can only be changed by users
+        # with clients.edit_locked (branch/regional managers, admins).
+        may_edit_locked = has_permission(user.role, "clients.edit_locked")
+        changed_locked = []
+        for f in LOCKED_FIELDS:
+            new_val = getattr(body, f, None)
+            old_val = getattr(client, f, None)
+            # normalise for comparison
+            if str(new_val or "") != str(old_val or ""):
+                changed_locked.append(f)
+        if changed_locked and not may_edit_locked:
+            raise HTTPException(
+                422, f"You are not permitted to change locked field(s): "
+                     f"{', '.join(changed_locked)}. Ask a branch manager.")
         _apply_scalars(client, body)
         _sync_nested(db, client, tenant_id, body)
+        write_audit(db, tenant_id=tenant_id, user=user, action="client.edit",
+                    entity_type="client", entity_id=client.id,
+                    details={"locked_override": changed_locked if may_edit_locked else []},
+                    request=request)
         db.commit()
         db.refresh(client)
         return _client_dict(client, nested=True)
@@ -261,7 +308,7 @@ def build_router(prefix: str, tag: str) -> APIRouter:
                                doc_types: str = Query("", description="Comma-separated doc_type per file"),
                                tenant_id: int = Depends(require_module("lending")),
                                db: Session = Depends(get_db),
-                               user: User = Depends(get_current_user)):
+                               user: User = Depends(require_permission("docs.upload"))):
         """Accepts ANY file type, several at a time. `doc_types` is a parallel,
         comma-separated list (missing entries default to 'other')."""
         _get_client(db, tenant_id, client_id)

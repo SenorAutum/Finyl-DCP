@@ -3,6 +3,7 @@
 #   cp .env.example .env        # fill in JWT_SECRET (and LLM_* for the AI agent)
 #   docker compose up --build
 #   docker compose exec backend python -m app.seeds.seed --force   # demo data
+#   docker compose exec backend python -m app.seeds.rbac_seed       # RBAC demo users + thresholds
 #   open http://localhost:8080  (login: superadmin@finyl.app / Finyl@2026)
 services:
   db:

@@ -236,3 +236,110 @@ class ImpactSurveyCreate(BaseModel):
 class AiChatRequest(BaseModel):
     message: str
     history: list[dict] = []
+
+
+
+# ---- RBAC: users / access management -----------------------------------------------------
+class UserCreate(BaseModel):
+    email: str
+    full_name: str
+    role: str = "relationship_officer"
+    password: Optional[str] = None          # defaults to platform demo password when omitted
+    branch_id: Optional[int] = None
+    region_id: Optional[int] = None
+    staff_id: Optional[int] = None
+    active: bool = True
+
+
+class UserUpdate(BaseModel):
+    full_name: Optional[str] = None
+    role: Optional[str] = None
+    branch_id: Optional[int] = None
+    region_id: Optional[int] = None
+    staff_id: Optional[int] = None
+    active: Optional[bool] = None
+
+
+class RoleAssign(BaseModel):
+    role: str
+
+
+class PasswordReset(BaseModel):
+    password: Optional[str] = None          # if omitted, forces a reset flag only
+
+
+# ---- RBAC: org structure -----------------------------------------------------------------
+class RegionCreate(BaseModel):
+    name: str
+
+
+class BranchCreate(BaseModel):
+    name: str
+    region_id: int
+
+
+# ---- RBAC: approval thresholds ------------------------------------------------------------
+class ThresholdCreate(BaseModel):
+    scope_type: str          # role | branch | region
+    scope_key: str           # role name OR branch/region id (as text)
+    threshold_type: str      # loan_approval | disbursement | refund
+    amount: float = 0
+
+
+# ---- RBAC: loan decisions & money movement -----------------------------------------------
+class LoanDecision(BaseModel):
+    action: str              # approve | reject | escalate
+    note: Optional[str] = None
+
+
+class DisburseRequest(BaseModel):
+    loan_id: int
+    reason: Optional[str] = None
+
+
+class RefundRequest(BaseModel):
+    loan_id: Optional[int] = None
+    amount: float
+    phone: Optional[str] = None
+    reason: Optional[str] = None
+
+
+class ReconcileRequest(BaseModel):
+    loan_id: int
+    amount: float
+    mpesa_ref: Optional[str] = None
+    method: str = "mpesa_c2b"
+
+
+class ApprovalDecision(BaseModel):
+    action: str              # approve | reject
+    note: Optional[str] = None
+
+
+class ClientProfileDecision(BaseModel):
+    action: str              # approve | reject
+    note: Optional[str] = None
+
+
+class ReassignRequest(BaseModel):
+    staff_id: int
+    reason: Optional[str] = None
+
+
+# ---- HQ Operations: reporting -------------------------------------------------------------
+class ReportScheduleCreate(BaseModel):
+    name: str
+    report_type: str = "loan_book"
+    frequency: str = "weekly"
+    recipients: Optional[str] = None
+
+
+class ReportTemplateCreate(BaseModel):
+    name: str
+    definition: dict = {}
+
+
+class AnomalyFlagCreate(BaseModel):
+    entity_type: Optional[str] = None
+    entity_id: Optional[str] = None
+    note: str

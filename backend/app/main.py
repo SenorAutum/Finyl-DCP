@@ -11,7 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.database import Base, engine, ensure_schema
 from app import models  # noqa: F401 — register all tables on Base.metadata
 from app.routers import (admin, ai, auth, call_center, cbk, clients, complaints, crm,
-                         dashboard, impact, lending, notifications, payments)
+                         dashboard, impact, lending, notifications, payments,
+                         access, approvals, reporting)
 
 app = FastAPI(
     title="Finyl-DCP API",
@@ -44,7 +45,8 @@ def health():
 
 
 for r in (auth, admin, clients, lending, payments, notifications, dashboard,
-          complaints, crm, call_center, impact, cbk, ai):
+          complaints, crm, call_center, impact, cbk, ai,
+          access, approvals, reporting):
     app.include_router(r.router)
 
 # Legacy /api/v1/borrowers alias — same handlers as /api/v1/clients so anything
