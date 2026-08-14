@@ -59,6 +59,35 @@ class CrbCheck(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class SmsRateCard(Base):
+    """Configurable SMS pricing. The single ``active=True`` row drives billing;
+    keeping history means a rate change is a new row (old one deactivated), so
+    past SmsLog snapshots stay accurate. Prices are per MESSAGE (not per segment)."""
+    __tablename__ = "sms_rate_cards"
+
+    id = Column(Integer, primary_key=True)
+    sell_price_kes = Column(Numeric(10, 4), nullable=False)   # charged to the DCP
+    cost_price_kes = Column(Numeric(10, 4), nullable=False)   # our cost from Uwazii
+    currency = Column(String(3), default="KES")
+    effective_from = Column(DateTime, default=datetime.utcnow)
+    active = Column(Boolean, default=True, index=True)
+    note = Column(String(200))
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class IntegrationTestLog(Base):
+    """Auditable history of 'Test connection' runs from the Integrations console."""
+    __tablename__ = "integration_test_logs"
+
+    id = Column(Integer, primary_key=True)
+    integration_key = Column(String(40), nullable=False, index=True)  # uwazii_sms | daraja_mpesa | ...
+    ok = Column(Boolean, default=False)
+    detail = Column(Text)
+    run_by_user_id = Column(Integer, ForeignKey("users.id"))
+    run_by_email = Column(String(120))
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
 class TenantIntegrationConfig(Base):
     """Per-tenant integration overrides captured from the DCP Setup screen.
 

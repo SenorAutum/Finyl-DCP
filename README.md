@@ -132,27 +132,78 @@ sudo apt-get install -y tesseract-ocr tesseract-ocr-eng poppler-utils
 
 The Docker image installs both automatically.
 
-## Live integrations & DCP Setup
+## Integrations module (registry, SMS revenue, message logs)
 
 Every external integration is **live and credential-gated** — the real client is
 always wired end-to-end and activates the moment its credentials are supplied. No
 mock success is ever returned; an unconfigured integration reports its status
 honestly and its endpoints return **HTTP 422**.
 
-**System Admin → DCP Setup** (`/dcp-setup`) is a tabbed console (mirroring the
-Cortex DCP-setup layout) that shows every integration's live status chip —
-**LIVE** (configured & production), **SANDBOX** (test environment) or
-**NOT CONFIGURED** (credential-gated) — with masked config and **Test connection**
-actions:
+**Platform → Integrations** (`/integrations`, super-admin) is the single home for
+every integration. It absorbs the former *DCP Setup* screen (`/dcp-setup` now
+redirects here) and adds SMS revenue tracking and message auditing. Three tabs:
 
-| Integration | Status source | Test action |
-|---|---|---|
-| **Uwazii SMS** | `UWAZII_ACCESS_TOKEN` present → LIVE | sends a real SMS |
-| **M-Pesa (Daraja)** | consumer key/secret + `DARAJA_ENV` → LIVE/SANDBOX | Daraja OAuth token |
-| **eKYC (Creditinfo IDM)** | IDM credentials → LIVE (`EKYC_MOCK` → SANDBOX) | runs an identity check |
-| **CRB** | selected provider's credentials → LIVE | runs a bureau check |
-| **ID OCR** | `LLM_API_KEY` → LIVE vision, Tesseract fallback | — |
-| **CBK Reporting** | per-tenant feature flag (Compliance) | — |
+1. **Registry** — a live status chip for every integration — **LIVE** (configured
+   & production), **SANDBOX** (test) or **NOT CONFIGURED** (credential-gated) —
+   with masked config, a real **Test connection** button and per-integration
+   **test history** (every run is persisted to `integration_test_logs`).
+2. **SMS Revenue** — per-DCP SMS usage & revenue with a platform roll-up: messages
+   sent, delivery rate, billable count and total sell / cost / margin in KES.
+3. **Message Logs** — the paginated, filterable SMS log (send status, delivery
+   status, trigger, phone, DCP) with per-message price.
+
+| Integration | Key | Status source | Test action |
+|---|---|---|---|
+| **Uwazii SMS** | `uwazii_sms` | `UWAZII_ACCESS_TOKEN`/two-step creds → LIVE | two-step auth + real send to `254700000000` (not billed) |
+| **M-Pesa (Daraja)** | `daraja_mpesa` | consumer key/secret + `DARAJA_ENV` → LIVE/SANDBOX | Daraja OAuth token |
+| **eKYC (Creditinfo IDM)** | `ekyc` | IDM credentials → LIVE (`EKYC_MOCK` → SANDBOX) | runs an identity check |
+| **CRB** | `crb` | selected provider's credentials → LIVE | runs a bureau check |
+| **ID OCR** | `ocr` | `LLM_API_KEY` → LIVE vision, Tesseract fallback | — (config-derived) |
+
+### SMS revenue & billing
+
+Each successfully **sent** message is **billable** and priced at send time from the
+active row of the **`sms_rate_cards`** table (seeded at sell **KES 0.80** / cost
+**KES 0.50** → margin **KES 0.30** per SMS). The price is *snapshotted* onto the
+`sms_logs` row (`sell_price_kes`, `cost_price_kes`, `margin_kes`, `billable`), so
+revenue is unaffected by later rate changes. Non-sent messages are non-billable
+with null prices. Rates are read from the table (60 s cache) — never hardcoded; to
+change pricing, insert a new active `sms_rate_cards` row (no code change).
+
+Revenue/usage API (RBAC-scoped — super-admin sees all DCPs + roll-up, other roles
+their own tenant):
+
+- `GET /api/v1/integrations/sms/usage?from&to&tenant_id&trigger_type`
+- `GET /api/v1/integrations/sms/logs?from&to&tenant_id&status&delivery_status&trigger_type&phone&page&page_size`
+- `GET /api/v1/integrations/sms/rate` — the current active rate.
+
+### SMS delivery reports (DLR callback)
+
+Uwazii delivery-report callbacks are received at an **unauthenticated** webhook
+that matches the message by `provider_ref` and records `delivery_status`
+(`delivered` / `failed` / `undelivered`) + `delivered_at`. It accepts JSON or
+form-encoded bodies, is defensive (ignores unknown ids, never errors) and lives at:
+
+```
+https://finyl-dcp.abacusai.cloud/api/v1/integrations/sms/dlr
+```
+
+Configure that URL as the delivery-report / callback URL in the Uwazii account.
+
+### Adding a new integration (extensibility)
+
+Integrations are **first-class and pluggable** — adding one is a *one-place* change
+on the backend, and the Registry UI renders it automatically:
+
+1. Implement the client in `backend/app/services/<name>.py` with an
+   `integration_status()` returning `"LIVE"` / `"SANDBOX"` / `"NOT CONFIGURED"`.
+2. Register it in the `REGISTRY` list in `backend/app/routers/integrations.py`
+   with `key`, `name`, `category`, `provider`, its `status` callable, a masked
+   `config` callable and an optional `test(db, user)` callable.
+
+No frontend change is needed: `GET /api/v1/integrations` lists it, the Registry tab
+renders its card + status chip, and (if `test` is provided) the Test button and
+persisted test history work out of the box.
 
 ### M-Pesa statement analysis (creditworthiness)
 
@@ -210,7 +261,7 @@ deploy/           systemd unit + nginx vhost used for the live VM deployment
 ```
 
 - **API prefix:** `/api/v1/...`, health check at `/api/health`, interactive docs at `/docs`.
-- **Live integrations, credential-gated:** M-Pesa (`mpesa.py`), SMS (`sms.py`, Uwazii), eKYC (`ekyc.py`, Creditinfo IDM) and CRB (`crb.py`) call the real providers. Each ships an `integration_status()` (LIVE / SANDBOX / NOT CONFIGURED) and **activates automatically** once its `DARAJA_*` / `UWAZII_*` / `EKYC_*` / `CRB_*` env vars are supplied — no code change. Unconfigured endpoints return **HTTP 422** rather than faking success. The **System Admin → DCP Setup** screen surfaces every status with **Test connection** actions.
+- **Live integrations, credential-gated:** M-Pesa (`mpesa.py`), SMS (`sms.py`, Uwazii), eKYC (`ekyc.py`, Creditinfo IDM) and CRB (`crb.py`) call the real providers. Each ships an `integration_status()` (LIVE / SANDBOX / NOT CONFIGURED) and **activates automatically** once its `DARAJA_*` / `UWAZII_*` / `EKYC_*` / `CRB_*` env vars are supplied — no code change. Unconfigured endpoints return **HTTP 422** rather than faking success. The **Platform → Integrations** module surfaces every status with **Test connection** actions, plus per-DCP SMS revenue and message logs.
 - **Schema migrations are additive.** `backend/migrations/002_clients_kyc.sql` is idempotent: it only adds nullable columns to `borrowers` plus the three new KYC tables, so it is safe to run against an existing database.
 
 ```bash
@@ -221,6 +272,7 @@ psql "$DATABASE_URL" -f backend/migrations/003_rbac.sql   # RBAC tables + scopin
 python -m app.seeds.rbac_seed           # seed RBAC demo users, thresholds & scope assignments
 
 psql "$DATABASE_URL" -f backend/migrations/004_live_integrations.sql   # SMS provider cols + statement/CRB/integration tables (idempotent)
+psql "$DATABASE_URL" -f backend/migrations/005_integrations_module.sql # sms_rate_cards + sms revenue/delivery cols + integration_test_logs (idempotent)
 ```
 
 ## Environment variables

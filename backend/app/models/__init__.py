@@ -13,7 +13,8 @@ from app.models.engagement import (
     CRM_STAGES, CALL_OUTCOMES, COMPLAINT_CATEGORIES, COMPLAINT_STATUSES, SLA_DAYS,
 )
 from app.models.integrations import (MpesaStatementAnalysis, CrbCheck,
-                                     TenantIntegrationConfig)
+                                     TenantIntegrationConfig, SmsRateCard,
+                                     IntegrationTestLog)
 
 # `Client` is the canonical business name; the ORM class (and its table) keep the
 # historical `Borrower`/`borrowers` naming so existing joins/analytics keep working.

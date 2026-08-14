@@ -25,9 +25,40 @@ import httpx
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models import SmsLog
+from app.models import SmsLog, SmsRateCard
 
 PROVIDER_NAME = "uwazii"
+
+# --- Active SMS rate cache ----------------------------------------------------
+# The active rate rarely changes; cache it briefly to avoid a query per message.
+_rate_cache: dict = {"rate": None, "fetched_at": 0.0}
+_RATE_TTL = 60  # seconds
+
+
+def get_active_rate(db: Session) -> dict | None:
+    """Return the current active SMS rate as
+    {sell_price_kes, cost_price_kes, margin_kes} (Decimal), or None if unset.
+    Cached in-process for a short TTL; never raises."""
+    import time as _t
+    now = _t.time()
+    if _rate_cache["rate"] is not None and (now - _rate_cache["fetched_at"]) < _RATE_TTL:
+        return _rate_cache["rate"]
+    try:
+        row = (db.query(SmsRateCard)
+               .filter(SmsRateCard.active == True)  # noqa: E712
+               .order_by(SmsRateCard.effective_from.desc()).first())
+    except Exception:
+        return _rate_cache["rate"]  # fall back to any cached value
+    if not row:
+        return None
+    rate = {
+        "sell_price_kes": row.sell_price_kes,
+        "cost_price_kes": row.cost_price_kes,
+        "margin_kes": (row.sell_price_kes or 0) - (row.cost_price_kes or 0),
+    }
+    _rate_cache["rate"] = rate
+    _rate_cache["fetched_at"] = now
+    return rate
 
 # Module-level in-memory access-token cache.
 _token_cache: dict = {"token": None, "expires_at": 0}
@@ -252,6 +283,22 @@ def send_sms(db: Session, tenant_id: int, phone: str, message: str,
         error=result.get("error"),
         sent_at=datetime.utcnow(),
     )
+
+    # Per-message billing: revenue is recognised on SENT (not delivered).
+    # Snapshot the CURRENT active rate onto the row so later rate changes never
+    # rewrite historical revenue. Non-sent messages are not billed.
+    if result["status"] == "sent":
+        rate = get_active_rate(db)
+        if rate:
+            log.billable = True
+            log.sell_price_kes = rate["sell_price_kes"]
+            log.cost_price_kes = rate["cost_price_kes"]
+            log.margin_kes = rate["margin_kes"]
+        else:
+            log.billable = True  # sent counts as billable even if rate not yet set
+    else:
+        log.billable = False
+
     db.add(log)
     db.flush()
     return log

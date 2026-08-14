@@ -52,3 +52,8 @@ for r in (auth, admin, clients, lending, payments, notifications, dashboard,
 # Legacy /api/v1/borrowers alias — same handlers as /api/v1/clients so anything
 # built against the old path keeps working after the Clients rename.
 app.include_router(clients.alias_router)
+
+# Integrations module: SMS revenue/usage + logs reporting API (RBAC-scoped, not
+# super-admin-gated) and the unauthenticated Uwazii delivery-report (DLR) webhook.
+app.include_router(integrations.reporting_router)
+app.include_router(integrations.webhook_router)

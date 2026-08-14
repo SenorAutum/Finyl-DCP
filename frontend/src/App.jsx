@@ -17,7 +17,7 @@ import CallCenter from "./pages/callcenter/CallCenter";
 import Impact from "./pages/impact/Impact";
 import Cbk from "./pages/cbk/Cbk";
 import Admin from "./pages/admin/Admin";
-import DcpSetup from "./pages/admin/DcpSetup";
+import Integrations from "./pages/admin/Integrations";
 import Approvals from "./pages/approvals/Approvals";
 import Users from "./pages/access/Users";
 import RolesPermissions from "./pages/access/RolesPermissions";
@@ -145,7 +145,9 @@ export default function App() {
             <Route path="/access/audit" element={<PermGuard perms="audit.view"><AuditLog /></PermGuard>} />
             <Route path="/reporting" element={<PermGuard perms={["reports.export", "reports.schedule", "reports.template", "reports.flag"]}><Reporting /></PermGuard>} />
             <Route path="/admin" element={<AdminGuard><Admin /></AdminGuard>} />
-            <Route path="/dcp-setup" element={<AdminGuard><DcpSetup /></AdminGuard>} />
+            <Route path="/integrations" element={<AdminGuard><Integrations /></AdminGuard>} />
+            {/* Legacy path — DCP Setup was absorbed into the Integrations module. */}
+            <Route path="/dcp-setup" element={<Navigate to="/integrations" replace />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>

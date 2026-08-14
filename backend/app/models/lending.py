@@ -169,3 +169,13 @@ class SmsLog(Base):
     provider_response = Column(Text)                       # raw provider response (truncated)
     error = Column(Text)                                   # failure reason (null on success)
     sent_at = Column(DateTime, default=datetime.utcnow)
+
+    # --- Delivery reporting (populated by the Uwazii DLR callback) ----------
+    delivery_status = Column(String(15), default="unknown")  # unknown | delivered | failed | undelivered
+    delivered_at = Column(DateTime)                          # set when a DLR marks it delivered
+
+    # --- Per-message billing (snapshot of the active rate at send time) -----
+    billable = Column(Boolean, default=False)                # True only for status='sent'
+    sell_price_kes = Column(Numeric(10, 4))                  # price charged to the DCP
+    cost_price_kes = Column(Numeric(10, 4))                  # our cost from Uwazii
+    margin_kes = Column(Numeric(10, 4))                      # sell - cost
