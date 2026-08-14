@@ -106,7 +106,140 @@ class TesseractOcrProvider(OcrProvider):
         return pytesseract.image_to_string(img, lang=settings.OCR_LANGUAGES)
 
 
-OCR_PROVIDERS: dict[str, type[OcrProvider]] = {"tesseract": TesseractOcrProvider}
+# --------------------------------------------------------------------------- #
+# Vision-LLM provider (primary) — reads the ID directly with a multimodal model
+# --------------------------------------------------------------------------- #
+# Fields the model must return. Kept in sync with parse_kenyan_id() output so the
+# frontend and Borrower model see an identical shape regardless of engine.
+VISION_FIELDS = [
+    "serial_number", "national_id", "first_name", "middle_name", "last_name",
+    "full_name", "date_of_birth", "sex", "district_of_birth", "place_of_issue",
+    "date_of_issue", "district", "division", "location", "sub_location",
+]
+
+_VISION_PROMPT = (
+    "You are a precise OCR engine for the Kenyan National ID card. You are given "
+    "one or more images (front and/or back of the same card). Read the printed "
+    "text and return ONLY a single minified JSON object — no markdown, no prose. "
+    "Use these exact keys: " + ", ".join(VISION_FIELDS) + ". "
+    "Rules: dates MUST be ISO format YYYY-MM-DD. 'sex' is 'male' or 'female'. "
+    "'national_id' is the ID NUMBER (7-9 digits), 'serial_number' is the longer "
+    "document serial. Merge front and back into one object. If a field is not "
+    "visible use null. Do not invent values."
+)
+
+
+class VisionLlmOcrProvider(OcrProvider):
+    """Multimodal-LLM National-ID reader via any OpenAI-compatible vision endpoint
+    (LLM_BASE_URL / LLM_API_KEY / LLM_VISION_MODEL|LLM_MODEL). Returns structured
+    fields directly (no regex parsing needed)."""
+
+    name = "vision_llm"
+
+    def available(self) -> tuple[bool, str]:
+        import re as _re
+        key = (settings.LLM_API_KEY or "").strip()
+        base = (settings.LLM_BASE_URL or "").strip()
+        if not key or key == "sk-placeholder" or "placeholder" in key.lower():
+            return False, "LLM_API_KEY not configured for vision OCR."
+        if not base or "api.openai.com" in base and key == "sk-placeholder":
+            return False, "LLM_BASE_URL not configured for vision OCR."
+        return True, ""
+
+    def image_to_text(self, data: bytes, mime_type: str, filename: str = "") -> str:
+        # Not used directly — vision path returns structured fields via process().
+        raise NotImplementedError
+
+    def _to_image_parts(self, files: list[tuple[str, str, bytes]]) -> list[dict]:
+        """Convert each upload to a data-URL image part. PDFs are rasterised."""
+        import base64
+        parts: list[dict] = []
+        for filename, mime, data in files:
+            is_pdf = (mime or "").endswith("pdf") or filename.lower().endswith(".pdf")
+            if is_pdf:
+                try:
+                    from pdf2image import convert_from_bytes
+                    pages = convert_from_bytes(data, dpi=200, first_page=1, last_page=2)
+                except Exception as exc:
+                    raise OcrUnavailable(f"PDF rasterise failed (poppler-utils?) ({exc})")
+                for pg in pages:
+                    buf = io.BytesIO()
+                    pg.convert("RGB").save(buf, format="JPEG", quality=85)
+                    b64 = base64.b64encode(buf.getvalue()).decode()
+                    parts.append({"type": "image_url",
+                                  "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
+            else:
+                use_mime = mime if (mime or "").startswith("image/") else "image/jpeg"
+                b64 = base64.b64encode(data).decode()
+                parts.append({"type": "image_url",
+                              "image_url": {"url": f"data:{use_mime};base64,{b64}"}})
+        return parts
+
+    def process(self, files: list[tuple[str, str, bytes]]) -> dict:
+        """Return {fields, confidence, raw_text} extracted by the vision model."""
+        import httpx
+
+        model = (settings.LLM_VISION_MODEL or settings.LLM_MODEL or "gpt-5.5-mini").strip()
+        content = [{"type": "text", "text": _VISION_PROMPT}] + self._to_image_parts(files)
+        resp = httpx.post(
+            f"{settings.LLM_BASE_URL.rstrip('/')}/chat/completions",
+            headers={"Authorization": f"Bearer {settings.LLM_API_KEY}",
+                     "Content-Type": "application/json"},
+            json={"model": model,
+                  "messages": [{"role": "user", "content": content}],
+                  "max_tokens": 900, "temperature": 0},
+            timeout=120,
+        )
+        resp.raise_for_status()
+        raw = resp.json()["choices"][0]["message"]["content"]
+        fields = _extract_json(raw)
+        if not fields:
+            raise OcrUnavailable("Vision model returned no parseable JSON.")
+
+        # Normalise → keep only known keys with truthy values; map sex→gender.
+        out: dict = {}
+        for k in VISION_FIELDS:
+            v = fields.get(k)
+            if v in (None, "", "null"):
+                continue
+            if k == "sex":
+                sv = str(v).strip().lower()
+                out["gender"] = "female" if sv.startswith("f") else ("male" if sv.startswith("m") else None)
+                if out["gender"] is None:
+                    out.pop("gender", None)
+            else:
+                out[k] = str(v).strip() if not isinstance(v, str) else v.strip()
+        # Vision extraction is high-confidence for populated fields.
+        confidence = {k: 0.95 for k in out}
+        return {"fields": out, "confidence": confidence,
+                "raw_text": raw[:20000]}
+
+
+def _extract_json(text: str) -> dict | None:
+    """Pull the first JSON object out of an LLM response (handles code fences)."""
+    if not text:
+        return None
+    import json as _json
+    t = text.strip()
+    if t.startswith("```"):
+        t = re.sub(r"^```(?:json)?", "", t).rsplit("```", 1)[0].strip()
+    try:
+        return _json.loads(t)
+    except Exception:
+        pass
+    m = re.search(r"\{.*\}", t, re.S)
+    if m:
+        try:
+            return _json.loads(m.group(0))
+        except Exception:
+            return None
+    return None
+
+
+OCR_PROVIDERS: dict[str, type[OcrProvider]] = {
+    "tesseract": TesseractOcrProvider,
+    "vision_llm": VisionLlmOcrProvider,
+}
 
 
 def get_provider() -> OcrProvider:
@@ -264,31 +397,64 @@ def merge_results(results: list[dict]) -> dict:
     return merged
 
 
-def process_id_files(files: list[tuple[str, str, bytes]]) -> dict:
-    """files = [(filename, mime_type, data)]. Returns extracted fields + raw text.
-
-    Raises OcrUnavailable when the engine is missing so the router can answer
-    with a clear 503 instead of a 500 stack trace.
-    """
-    provider = get_provider()
+def _tesseract_extract(files: list[tuple[str, str, bytes]]) -> dict:
+    """Run the local Tesseract engine over every file and regex-parse the text."""
+    provider = TesseractOcrProvider()
     ok, why = provider.available()
     if not ok:
         raise OcrUnavailable(why)
-
     per_file, raw_chunks = [], []
     for filename, mime, data in files:
         text = provider.image_to_text(data, mime, filename)
         raw_chunks.append(f"----- {filename} -----\n{text.strip()}")
         per_file.append({"file": filename, **parse_kenyan_id(text)})
-
     merged = merge_results(per_file)
     confidence = merged.pop("_confidence", {})
     merged.pop("file", None)
+    return {"engine": provider.name, "fields": merged, "confidence": confidence,
+            "raw_text": "\n\n".join(raw_chunks)}
+
+
+def process_id_files(files: list[tuple[str, str, bytes]]) -> dict:
+    """files = [(filename, mime_type, data)]. Returns merged National-ID fields +
+    per-field confidence + raw text + which engine produced them.
+
+    Hybrid strategy: when OCR_PROVIDER=vision_llm and the LLM is configured, the
+    multimodal model reads the ID directly (best accuracy on phone photos). If the
+    vision call is unconfigured or fails for any reason, it falls back to local
+    Tesseract. Raises OcrUnavailable only when NO engine can run, so the router
+    answers with a clear 503 instead of a 500.
+    """
+    engine_notes: list[str] = []
+
+    if settings.OCR_PROVIDER == "vision_llm":
+        vision = VisionLlmOcrProvider()
+        ok, why = vision.available()
+        if ok:
+            try:
+                result = vision.process(files)
+                return {
+                    "engine": "vision_llm",
+                    "engine_notes": engine_notes,
+                    "files_processed": len(files),
+                    "fields": result["fields"],
+                    "confidence": result["confidence"],
+                    "raw_text": result["raw_text"],
+                    "extracted_at": datetime.utcnow().isoformat() + "Z",
+                }
+            except Exception as exc:
+                engine_notes.append(f"Vision OCR failed, fell back to Tesseract ({exc}).")
+        else:
+            engine_notes.append(f"Vision OCR unavailable ({why}); using Tesseract.")
+
+    # Tesseract path (default fallback)
+    result = _tesseract_extract(files)
     return {
-        "engine": provider.name,
+        "engine": result["engine"],
+        "engine_notes": engine_notes,
         "files_processed": len(files),
-        "fields": merged,
-        "confidence": confidence,
-        "raw_text": "\n\n".join(raw_chunks),
+        "fields": result["fields"],
+        "confidence": result["confidence"],
+        "raw_text": result["raw_text"],
         "extracted_at": datetime.utcnow().isoformat() + "Z",
     }

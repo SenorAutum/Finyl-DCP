@@ -382,9 +382,12 @@ def main(force=False):
             db.commit()
 
         tenants_cfg = [
+            # Mular is the licensed / compliant DCP — CBK Reporting stays ON.
             ("Mular Credit", "MULAR", "#10B981", 1.0, ()),
-            ("PesaFlow Capital", "PESAF", "#0D9488", 0.45, ()),
-            ("Jenga Micro", "JENGA", "#F59E0B", 0.3, ("crm", "impact")),  # flags OFF to demo enforcement
+            # PesaFlow & Jenga are non-compliant DCPs — CBK Reporting OFF by default
+            # (a DCP must be CBK-licensed before it can file reports).
+            ("PesaFlow Capital", "PESAF", "#0D9488", 0.45, ("cbk_reporting",)),
+            ("Jenga Micro", "JENGA", "#F59E0B", 0.3, ("crm", "impact", "cbk_reporting")),  # flags OFF to demo enforcement
         ]
         all_t = []
         for name, code, color, scale, disabled in tenants_cfg:

@@ -144,8 +144,13 @@ def mpesa_b2c(body: B2CRequest, tenant_id: int = Depends(require_module("payment
         raise HTTPException(404, "Loan not found")
     if loan.status != "approved":
         raise HTTPException(400, "Loan must be in 'approved' status to disburse")
-    payload = mpesa.b2c_disburse(loan.borrower.phone, float(loan.principal),
-                                 f"Disbursement {loan.account_number}")
+    try:
+        payload = mpesa.b2c_disburse(loan.borrower.phone, float(loan.principal),
+                                     f"Disbursement {loan.account_number}")
+    except mpesa.DarajaNotConfigured as exc:
+        raise HTTPException(422, f"M-Pesa (Daraja) credentials required: {exc}")
+    except Exception as exc:
+        raise HTTPException(502, f"Daraja B2C request failed: {exc}")
     db.add(PaymentTransaction(tenant_id=tenant_id, type="b2c", loan_id=loan.id,
                               amount=loan.principal, phone=loan.borrower.phone,
                               mpesa_ref=payload["result"]["TransactionReceipt"],
@@ -169,7 +174,12 @@ def stk_push(body: StkPushRequest, tenant_id: int = Depends(require_module("paym
             .filter(Loan.id == body.loan_id, Loan.tenant_id == tenant_id).first())
     if not loan:
         raise HTTPException(404, "Loan not found")
-    payload = mpesa.stk_push(loan.borrower.phone, body.amount, loan.account_number)
+    try:
+        payload = mpesa.stk_push(loan.borrower.phone, body.amount, loan.account_number)
+    except mpesa.DarajaNotConfigured as exc:
+        raise HTTPException(422, f"M-Pesa (Daraja) credentials required: {exc}")
+    except Exception as exc:
+        raise HTTPException(502, f"Daraja STK push failed: {exc}")
     db.add(PaymentTransaction(tenant_id=tenant_id, type="stk_push", loan_id=loan.id,
                               amount=body.amount, phone=loan.borrower.phone,
                               mpesa_ref=payload["response"]["CheckoutRequestID"],

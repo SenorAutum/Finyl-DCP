@@ -1,79 +1,175 @@
 """
-Safaricom Daraja M-Pesa integration (MOCK).
+Safaricom Daraja M-Pesa integration — REAL client, credential-gated.
 
->>> PLACEHOLDER — REAL DARAJA INTEGRATION GOES HERE <<<
-Each function simulates the real Daraja request/response JSON shape. To go
-live: obtain an OAuth token with DARAJA_CONSUMER_KEY/SECRET, then call the
-real endpoints:
-  B2C        POST https://api.safaricom.co.ke/mpesa/b2c/v3/paymentrequest
-  STK Push   POST https://api.safaricom.co.ke/mpesa/stkpush/v1/processrequest
-  C2B        register confirmation/validation URLs pointing at our callback.
-Keep the return shapes identical and the rest of the app works unchanged.
+OAuth, STK push, B2C and C2B register all call the real Daraja endpoints. The
+base URL follows DARAJA_ENV (sandbox=https://sandbox.safaricom.co.ke,
+production=https://api.safaricom.co.ke).
+
+CREDENTIAL-GATED: while DARAJA_CONSUMER_KEY / _SECRET are placeholders the
+integration reports NOT CONFIGURED and each call raises DarajaNotConfigured
+(surfaced by the router as a clear 4xx) — it never fabricates a success. Add real
+sandbox credentials + restart and the SAME code flips to LIVE (SANDBOX).
+
+The return shapes are unchanged from the previous mock so routers/UI keep working.
 """
+import base64
 import random
 import string
 import uuid
 from datetime import datetime
 
+import httpx
+
 from app.core.config import settings
+
+SANDBOX_BASE = "https://sandbox.safaricom.co.ke"
+PROD_BASE = "https://api.safaricom.co.ke"
+
+
+class DarajaNotConfigured(RuntimeError):
+    """Raised when real Daraja credentials are absent."""
+
+
+def base_url() -> str:
+    return PROD_BASE if (settings.DARAJA_ENV or "sandbox").lower().startswith("prod") else SANDBOX_BASE
+
+
+def is_configured() -> bool:
+    for v in (settings.DARAJA_CONSUMER_KEY, settings.DARAJA_CONSUMER_SECRET):
+        if not v or str(v).strip().lower() == "placeholder":
+            return False
+    return True
+
+
+def integration_status() -> str:
+    if not is_configured():
+        return "NOT CONFIGURED"
+    return "LIVE" if base_url() == PROD_BASE else "SANDBOX"
 
 
 def _mpesa_ref() -> str:
-    """Generate a plausible M-Pesa receipt e.g. 'SGH7K2M9QX'."""
+    """Generate a plausible M-Pesa receipt (fallback for C2B when none supplied)."""
     return "".join(random.choices(string.ascii_uppercase + string.digits, k=10))
 
 
+def _timestamp() -> str:
+    return datetime.now().strftime("%Y%m%d%H%M%S")
+
+
+def get_access_token() -> str:
+    """OAuth client-credentials token from Daraja."""
+    if not is_configured():
+        raise DarajaNotConfigured("Daraja consumer key/secret required.")
+    resp = httpx.get(
+        f"{base_url()}/oauth/v1/generate?grant_type=client_credentials",
+        auth=(settings.DARAJA_CONSUMER_KEY, settings.DARAJA_CONSUMER_SECRET),
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json()["access_token"]
+
+
+def test_connection() -> dict:
+    """Used by DCP Setup 'Test connection' — attempts an OAuth token."""
+    if not is_configured():
+        return {"ok": False, "status": "NOT CONFIGURED",
+                "detail": "Daraja consumer key/secret not configured."}
+    try:
+        token = get_access_token()
+        return {"ok": True, "status": integration_status(),
+                "detail": "OAuth token acquired.", "token_preview": token[:8] + "…"}
+    except Exception as exc:
+        return {"ok": False, "status": "ERROR", "detail": str(exc)}
+
+
+def _stk_password(timestamp: str) -> str:
+    raw = f"{settings.DARAJA_SHORTCODE}{settings.DARAJA_PASSKEY}{timestamp}"
+    return base64.b64encode(raw.encode()).decode()
+
+
 def b2c_disburse(phone: str, amount: float, remarks: str) -> dict:
-    """Simulate a Daraja B2C payment request (disbursement to borrower)."""
-    _ = settings.DARAJA_CONSUMER_KEY  # placeholder creds read here in real impl
-    conversation_id = f"AG_{datetime.utcnow():%Y%m%d}_{uuid.uuid4().hex[:16]}"
-    return {
-        "request": {
-            "InitiatorName": "finyl-api",
-            "CommandID": "BusinessPayment",
-            "Amount": amount,
-            "PartyA": settings.DARAJA_SHORTCODE,
-            "PartyB": phone,
-            "Remarks": remarks,
-        },
-        "response": {
-            "ConversationID": conversation_id,
-            "OriginatorConversationID": str(uuid.uuid4()),
-            "ResponseCode": "0",
-            "ResponseDescription": "Accept the service request successfully.",
-        },
-        "result": {
-            "ResultCode": 0,
-            "ResultDesc": "The service request is processed successfully.",
-            "TransactionReceipt": _mpesa_ref(),
-            "TransactionAmount": amount,
-            "ReceiverPartyPublicName": phone,
-            "TransactionCompletedDateTime": datetime.utcnow().strftime("%d.%m.%Y %H:%M:%S"),
-        },
+    """Real Daraja B2C payment request (disbursement to borrower)."""
+    if not is_configured():
+        raise DarajaNotConfigured("Daraja not configured — cannot disburse via M-Pesa.")
+    token = get_access_token()
+    msisdn = normalise_msisdn(phone)
+    payload = {
+        "InitiatorName": settings.DARAJA_INITIATOR_NAME,
+        "SecurityCredential": settings.DARAJA_SECURITY_CREDENTIAL,
+        "CommandID": "BusinessPayment",
+        "Amount": int(amount),
+        "PartyA": settings.DARAJA_SHORTCODE,
+        "PartyB": msisdn,
+        "Remarks": remarks[:100],
+        "QueueTimeOutURL": f"{settings.DARAJA_CALLBACK_BASE_URL}/api/v1/payments/mpesa-b2c-timeout",
+        "ResultURL": f"{settings.DARAJA_CALLBACK_BASE_URL}/api/v1/payments/mpesa-b2c-result",
+        "Occasion": "LoanDisbursement",
     }
+    resp = httpx.post(f"{base_url()}/mpesa/b2c/v1/paymentrequest",
+                      headers={"Authorization": f"Bearer {token}"},
+                      json=payload, timeout=45)
+    resp.raise_for_status()
+    response = resp.json()
+    # B2C is async — the final receipt arrives on ResultURL. Until then we track
+    # the request by ConversationID (kept under TransactionReceipt for backward
+    # compatibility with existing callers/columns).
+    conv = response.get("ConversationID") or response.get("OriginatorConversationID") or _mpesa_ref()
+    # Do not echo the security credential back to callers/logs.
+    safe_req = {k: v for k, v in payload.items() if k != "SecurityCredential"}
+    return {"request": safe_req, "response": response, "result": {
+        "ResultCode": response.get("ResponseCode"),
+        "ResultDesc": response.get("ResponseDescription"),
+        "ConversationID": response.get("ConversationID"),
+        "OriginatorConversationID": response.get("OriginatorConversationID"),
+        "TransactionReceipt": conv,
+    }}
 
 
 def stk_push(phone: str, amount: float, account_ref: str) -> dict:
-    """Simulate a Daraja Lipa-na-M-Pesa STK push (collections prompt)."""
-    return {
-        "request": {
-            "BusinessShortCode": settings.DARAJA_SHORTCODE,
-            "TransactionType": "CustomerPayBillOnline",
-            "Amount": amount,
-            "PartyA": phone,
-            "PhoneNumber": phone,
-            "AccountReference": account_ref,
-            "TransactionDesc": "Loan repayment",
-        },
-        "response": {
-            "MerchantRequestID": f"{random.randint(10000,99999)}-{random.randint(10000000,99999999)}-1",
-            "CheckoutRequestID": f"ws_CO_{datetime.utcnow():%d%m%Y%H%M%S}{random.randint(100000,999999)}",
-            "ResponseCode": "0",
-            "ResponseDescription": "Success. Request accepted for processing",
-            "CustomerMessage": "Success. Request accepted for processing",
-        },
+    """Real Daraja Lipa-na-M-Pesa STK push (collections prompt)."""
+    if not is_configured():
+        raise DarajaNotConfigured("Daraja not configured — cannot initiate STK push.")
+    token = get_access_token()
+    ts = _timestamp()
+    msisdn = normalise_msisdn(phone)
+    payload = {
+        "BusinessShortCode": settings.DARAJA_SHORTCODE,
+        "Password": _stk_password(ts),
+        "Timestamp": ts,
+        "TransactionType": "CustomerPayBillOnline",
+        "Amount": int(amount),
+        "PartyA": msisdn,
+        "PartyB": settings.DARAJA_SHORTCODE,
+        "PhoneNumber": msisdn,
+        "CallBackURL": f"{settings.DARAJA_CALLBACK_BASE_URL}/api/v1/payments/mpesa-stk-callback",
+        "AccountReference": account_ref[:12],
+        "TransactionDesc": "Loan repayment",
     }
+    resp = httpx.post(f"{base_url()}/mpesa/stkpush/v1/processrequest",
+                      headers={"Authorization": f"Bearer {token}"},
+                      json=payload, timeout=45)
+    resp.raise_for_status()
+    # Do not leak the password back to callers/logs.
+    safe_req = {k: v for k, v in payload.items() if k != "Password"}
+    return {"request": safe_req, "response": resp.json()}
 
+
+def register_c2b_urls() -> dict:
+    """Register C2B validation/confirmation URLs pointing at our callback."""
+    if not is_configured():
+        raise DarajaNotConfigured("Daraja not configured — cannot register C2B URLs.")
+    token = get_access_token()
+    payload = {
+        "ShortCode": settings.DARAJA_SHORTCODE,
+        "ResponseType": "Completed",
+        "ConfirmationURL": f"{settings.DARAJA_CALLBACK_BASE_URL}/api/v1/payments/mpesa-c2b-callback",
+        "ValidationURL": f"{settings.DARAJA_CALLBACK_BASE_URL}/api/v1/payments/mpesa-c2b-callback",
+    }
+    resp = httpx.post(f"{base_url()}/mpesa/c2b/v1/registerurl",
+                      headers={"Authorization": f"Bearer {token}"},
+                      json=payload, timeout=45)
+    resp.raise_for_status()
+    return {"request": payload, "response": resp.json()}
 
 
 def normalise_msisdn(phone: str) -> str:
@@ -83,25 +179,20 @@ def normalise_msisdn(phone: str) -> str:
         digits = "254" + digits[1:]
     elif digits.startswith("7") or digits.startswith("1"):
         digits = "254" + digits
-    elif digits.startswith("254254"):
+    while digits.startswith("254254"):
         digits = digits[3:]
     return digits
 
 
 def validate_mobile_number(phone: str, national_id: str, expected_name: str) -> dict:
     """
-    Safaricom subscriber name-lookup check (MOCK).
+    Safaricom subscriber name-lookup check.
 
-    >>> PLACEHOLDER — REAL SAFARICOM/DARAJA VALIDATION GOES HERE <<<
-    Confirms the mobile number is registered on M-Pesa under the client's
-    National ID. In production this is either:
-      * Daraja "Account Balance"/"Transaction Status" style registered-name
-        lookup, or
-      * the operator's KYC name-verification API (bank-grade partners only),
-    authenticated with DARAJA_CONSUMER_KEY/SECRET. Keep this return shape and
-    the router/UI keep working unchanged.
-    """
-    _ = (settings.DARAJA_CONSUMER_KEY, settings.DARAJA_PASSKEY)  # read in real impl
+    Daraja does not expose a public KYC name-verification product to ordinary
+    partners; registered-name lookup is a bank-grade/operator API. This performs
+    the format + registration sanity check that IS available (MSISDN validity +
+    ID presence) and is structured so a real name-lookup response slots straight
+    in when a partner API is provisioned (see annotations)."""
     msisdn = normalise_msisdn(phone)
     valid_prefix = msisdn.startswith("2547") or msisdn.startswith("2541")
     ok = bool(msisdn) and len(msisdn) == 12 and valid_prefix and bool(national_id)
@@ -112,7 +203,7 @@ def validate_mobile_number(phone: str, national_id: str, expected_name: str) -> 
             "PartyA": settings.DARAJA_SHORTCODE,
             "PartyB": msisdn,
             "IdentityNumber": national_id,
-            "Initiator": "finyl-api",
+            "Initiator": settings.DARAJA_INITIATOR_NAME,
         },
         "response": {
             "ResultCode": 0 if ok else 1,

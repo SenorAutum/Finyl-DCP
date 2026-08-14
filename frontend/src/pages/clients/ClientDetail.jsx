@@ -6,6 +6,7 @@ import { api, download, fmtDate, fmtKES } from "../../lib/api";
 import { Badge, Empty, KpiCard, PageHeader, Spinner } from "../../components/ui";
 import { useAuth } from "../../hooks/useAuth";
 import ClientForm from "./ClientForm";
+import CreditAnalysis from "./CreditAnalysis";
 
 const bytes = (n) => (n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
 
@@ -154,6 +155,8 @@ export default function ClientDetail() {
           </div>
         )}
       </div>
+
+      <CreditAnalysis clientId={c.id} onScore={load} />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         <div className="card overflow-hidden">

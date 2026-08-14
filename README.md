@@ -10,8 +10,8 @@ Vanilla **React (Vite) + Tailwind CSS** frontend · **FastAPI (Python)** backend
 
 | Module key | What it does |
 |---|---|
-| `lending` | **Client registry with full KYC onboarding** (ID-document capture, Tesseract OCR "Process ID", eKYC identity check, M-Pesa number validation, mobile wallets, next of kin), loan products, full loan lifecycle (`pending → underwriting → approved → active → paid/overdue/defaulted`). Approval and disbursement are **separate, permission-gated steps** (approval no longer auto-disburses): a manager approves via the **Approvals** inbox up to their configurable threshold, then a Disbursement Officer disburses via mock Daraja B2C (with **maker-checker** above the disbursement threshold). Repeat-cycle applications are blocked with **HTTP 428** until an impact survey is captured. |
-| `payments` | Mock Safaricom Daraja M-Pesa: B2C disbursement, STK-push collections, C2B repayment webhook (splits principal/interest, updates balances, sends receipt SMS). SMS hub with dispatch log + scheduled jobs (repayment reminders, overdue alerts). |
+| `lending` | **Client registry with full KYC onboarding** (ID-document capture, Tesseract OCR "Process ID", eKYC identity check, M-Pesa number validation, mobile wallets, next of kin), loan products, full loan lifecycle (`pending → underwriting → approved → active → paid/overdue/defaulted`). Approval and disbursement are **separate, permission-gated steps** (approval no longer auto-disburses): a manager approves via the **Approvals** inbox up to their configurable threshold, then a Disbursement Officer disburses via **live Safaricom Daraja B2C** (credential-gated) (with **maker-checker** above the disbursement threshold). Repeat-cycle applications are blocked with **HTTP 428** until an impact survey is captured. |
+| `payments` | **Live Safaricom Daraja** M-Pesa (credential-gated, sandbox/production): B2C disbursement, STK-push collections, C2B repayment webhook (splits principal/interest, updates balances, sends receipt SMS). **Live Uwazii** bulk-SMS hub with per-message provider dispatch log + scheduled jobs (repayment reminders, overdue alerts). |
 | `dashboard` | Executive dashboard: PAR 1/30/90, disbursement volume, repayment rate, portfolio yield, monthly trends, status mix, **product × region success heatmap**, **staff net-margin league table** (interest recovered − defaults − cost). Filters: region/branch/product/staff/date. |
 | `complaints` | Consumer-protection registry with a **14-day SLA countdown** per ticket (amber ≤ 3 days, red = breached), remedial actions, resolution SMS. |
 | `crm` | 5-stage Kanban pipeline (Lead → Contacted → Visit Scheduled → Application → Converted) + **geo-tagged site visits** (GPS capture). |
@@ -114,9 +114,9 @@ The `lending` module's **Clients** screen (`/clients`) is a full KYC workstation
 | Feature | How it works |
 |---|---|
 | **Documents** | Any file type, several at a time, 10 MB each. Files queue in the browser and upload once the client is saved. Stored on the local filesystem under `STORAGE_DIR/clients/<tenant_id>/<client_id>/`, served back through a tenant-scoped download endpoint. |
-| **Process ID (OCR)** | Runs **local Tesseract** over every queued JPEG/PNG/PDF (e.g. ID front *and* back), parses Kenyan National ID labels, merges the pages keeping the highest-confidence value per field, and returns the fields + a 0–1 confidence per field + the raw text. Implemented behind an `OcrProvider` interface (`backend/app/services/ocr.py`) so a cloud OCR can be dropped in via `OCR_PROVIDER`. Returns a clean **HTTP 503** (not a 500) if the engine is missing. |
-| **eKYC** | Creditinfo IDM-shaped identity verification in `backend/app/services/ekyc.py`. Ships as a deterministic **mock** (`EKYC_MOCK=true`); set it to `false` and fill `EKYC_BASE_URL/USERNAME/PASSWORD/STRATEGY_ID` to call the live provider. Persists `ekyc_status`, `ekyc_reference`, `ekyc_checked_at`. |
-| **Validate M-Pesa** | Safaricom registered-name lookup against the National ID (`validate_mobile_number()` in `backend/app/services/mpesa.py`, mock alongside the existing Daraja mocks). Persists `mpesa_validated`, `mpesa_validation_name`, `mpesa_validated_at` and writes an audit row to `payment_transactions`. |
+| **Process ID (OCR)** | **Hybrid vision-LLM OCR with a local Tesseract fallback.** The vision LLM (`OCR_PROVIDER=vision_llm`, uses the `LLM_*` endpoint) reads the Kenyan National ID front *and* back into structured fields; if it is unavailable or low-confidence, on-device **Tesseract** takes over. Returns the merged fields + a 0–1 confidence per field + which `engine` produced them. Behind an `OcrProvider` interface (`backend/app/services/ocr.py`). Returns a clean **HTTP 503** (not a 500) if no engine is available. |
+| **eKYC** | **Live Creditinfo IDM** identity verification in `backend/app/services/ekyc.py`, **credential-gated**: fill `EKYC_BASE_URL/USERNAME/PASSWORD/STRATEGY_ID` to activate. When unconfigured the endpoint returns **HTTP 422** (never a fake pass); `EKYC_MOCK=true` re-enables a deterministic offline mock. Persists `ekyc_status`, `ekyc_reference`, `ekyc_checked_at`. |
+| **Validate M-Pesa** | Registered-name / number-format validation (`validate_mobile_number()` in `backend/app/services/mpesa.py`) alongside the live Daraja client. Persists `mpesa_validated`, `mpesa_validation_name`, `mpesa_validated_at` and writes an audit row to `payment_transactions`. |
 | **Mobile Wallet / Next of Kin** | Tabbed "+ Add row" sub-grids saved in the same request as the client (`client_mobile_wallets`, `client_next_of_kin`). |
 
 **Naming note:** the UI, navigation and API say **Client** (`/api/v1/clients`). The
@@ -132,6 +132,58 @@ sudo apt-get install -y tesseract-ocr tesseract-ocr-eng poppler-utils
 
 The Docker image installs both automatically.
 
+## Live integrations & DCP Setup
+
+Every external integration is **live and credential-gated** — the real client is
+always wired end-to-end and activates the moment its credentials are supplied. No
+mock success is ever returned; an unconfigured integration reports its status
+honestly and its endpoints return **HTTP 422**.
+
+**System Admin → DCP Setup** (`/dcp-setup`) is a tabbed console (mirroring the
+Cortex DCP-setup layout) that shows every integration's live status chip —
+**LIVE** (configured & production), **SANDBOX** (test environment) or
+**NOT CONFIGURED** (credential-gated) — with masked config and **Test connection**
+actions:
+
+| Integration | Status source | Test action |
+|---|---|---|
+| **Uwazii SMS** | `UWAZII_ACCESS_TOKEN` present → LIVE | sends a real SMS |
+| **M-Pesa (Daraja)** | consumer key/secret + `DARAJA_ENV` → LIVE/SANDBOX | Daraja OAuth token |
+| **eKYC (Creditinfo IDM)** | IDM credentials → LIVE (`EKYC_MOCK` → SANDBOX) | runs an identity check |
+| **CRB** | selected provider's credentials → LIVE | runs a bureau check |
+| **ID OCR** | `LLM_API_KEY` → LIVE vision, Tesseract fallback | — |
+| **CBK Reporting** | per-tenant feature flag (Compliance) | — |
+
+### M-Pesa statement analysis (creditworthiness)
+
+Upload a borrower's **official Safaricom M-Pesa statement PDF** on the Client
+profile. It is **parsed entirely on-server** (`pdfplumber` + `pikepdf` for locked
+PDFs — no Safaricom API), producing:
+
+- inflow / outflow / net cash-flow, average balance and income regularity;
+- a **0–100 affordability score** and a **comfortable installment** estimate;
+- **detection of other digital lenders** (Fuliza, M-Shwari, KCB M-Pesa, Tala,
+  Branch, Zenka, Timiza, Stawi, Okash, MCo-op, Hustler Fund, …) with amounts
+  borrowed/repaid, feeding a monthly external-debt-service figure;
+- **integrity checks** that flag possible tampering.
+
+Locked statements default to the client's National ID as the PDF password.
+
+### CRB (Credit Reference Bureau)
+
+A **provider-abstracted** bureau client (`backend/app/services/crb.py`): Metropol
+(default), TransUnion and Creditinfo behind one interface. Credential-gated — a
+check returns status `not_configured` (never a fabricated score) until the
+selected provider's credentials are set. A successful check updates the client's
+credit score.
+
+### CBK Reporting compliance posture
+
+CBK Reporting is a **per-tenant feature flag**: a DCP must be CBK-licensed before
+it can file reports, so it is **disabled by default for non-compliant tenants**
+(the demo's PesaFlow Capital and Jenga Micro) and enabled for the compliant one
+(Mular Credit). Toggle it per tenant in **Super Admin → Module Matrix**.
+
 ## Architecture
 
 ```
@@ -140,21 +192,25 @@ backend/
   app/core/       config, DB engine (schema-aware), JWT security, tenancy deps
   app/models/     tenancy, org, lending, engagement (SQLAlchemy)
   app/routers/    auth, admin, lending, payments, notifications, dashboard,
-                  complaints, crm, call_center, impact, cbk, ai
-  app/services/   mpesa (mock Daraja + number validation), sms (mock provider),
-                  ocr (Tesseract "Process ID"), ekyc (mock Creditinfo IDM),
+                  complaints, crm, call_center, impact, cbk, ai, integrations
+  app/services/   mpesa (live Daraja + number validation), sms (live Uwazii),
+                  ocr (vision-LLM + Tesseract "Process ID"), ekyc (live Creditinfo IDM),
+                  crb (credit reference bureau, provider-abstracted),
+                  mpesa_statement (M-Pesa statement creditworthiness analysis),
                   storage (client documents), analytics (pandas), aml,
                   mentorship, cbk_exports, ai_agent
   app/seeds/      demo data generator (+ client KYC enrichment)
   migrations/     additive SQL migrations (002_clients_kyc.sql adds the KYC
                   columns/tables; 003_rbac.sql adds approval_thresholds,
                   audit_logs, pending_approvals, report schedules/templates,
-                  anomaly flags + loan/borrower scoping columns)
+                  anomaly flags + loan/borrower scoping columns; 004_live_integrations.sql adds
+                  sms provider columns + mpesa_statement_analysis, crb_checks,
+                  tenant_integration_config)
 deploy/           systemd unit + nginx vhost used for the live VM deployment
 ```
 
 - **API prefix:** `/api/v1/...`, health check at `/api/health`, interactive docs at `/docs`.
-- **Real integrations:** swap the mock clients in `backend/app/services/mpesa.py`, `sms.py` and `ekyc.py` — the `DARAJA_*`, `SMS_*` and `EKYC_*` env vars are already plumbed through `app/core/config.py`.
+- **Live integrations, credential-gated:** M-Pesa (`mpesa.py`), SMS (`sms.py`, Uwazii), eKYC (`ekyc.py`, Creditinfo IDM) and CRB (`crb.py`) call the real providers. Each ships an `integration_status()` (LIVE / SANDBOX / NOT CONFIGURED) and **activates automatically** once its `DARAJA_*` / `UWAZII_*` / `EKYC_*` / `CRB_*` env vars are supplied — no code change. Unconfigured endpoints return **HTTP 422** rather than faking success. The **System Admin → DCP Setup** screen surfaces every status with **Test connection** actions.
 - **Schema migrations are additive.** `backend/migrations/002_clients_kyc.sql` is idempotent: it only adds nullable columns to `borrowers` plus the three new KYC tables, so it is safe to run against an existing database.
 
 ```bash
@@ -163,6 +219,8 @@ python -m app.seeds.client_kyc          # backfill realistic KYC values on exist
 
 psql "$DATABASE_URL" -f backend/migrations/003_rbac.sql   # RBAC tables + scoping columns (idempotent)
 python -m app.seeds.rbac_seed           # seed RBAC demo users, thresholds & scope assignments
+
+psql "$DATABASE_URL" -f backend/migrations/004_live_integrations.sql   # SMS provider cols + statement/CRB/integration tables (idempotent)
 ```
 
 ## Environment variables
@@ -173,9 +231,10 @@ See [.env.example](.env.example):
 |---|---|
 | Database | `DATABASE_URL`, `DB_SCHEMA` |
 | Auth | `JWT_SECRET` |
-| AI agent | `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` |
-| M-Pesa (Daraja) | `DARAJA_CONSUMER_KEY`, `DARAJA_CONSUMER_SECRET`, `DARAJA_SHORTCODE`, `DARAJA_PASSKEY` |
-| SMS | `SMS_API_URL`, `SMS_API_KEY` |
+| AI agent + Vision OCR | `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`, `LLM_VISION_MODEL` |
+| M-Pesa (Daraja) | `DARAJA_ENV`, `DARAJA_CONSUMER_KEY`, `DARAJA_CONSUMER_SECRET`, `DARAJA_SHORTCODE`, `DARAJA_PASSKEY`, `DARAJA_INITIATOR_NAME`, `DARAJA_SECURITY_CREDENTIAL`, `DARAJA_CALLBACK_BASE_URL` |
+| SMS (Uwazii) | `UWAZII_BASE_URL`, `UWAZII_ACCESS_TOKEN`, `UWAZII_SENDER_ID` |
 | Client documents | `STORAGE_DIR`, `MAX_UPLOAD_MB` |
 | OCR ("Process ID") | `OCR_PROVIDER`, `TESSERACT_CMD`, `OCR_LANGUAGES` |
-| eKYC | `EKYC_MOCK`, `EKYC_BASE_URL`, `EKYC_USERNAME`, `EKYC_PASSWORD`, `EKYC_STRATEGY_ID` |
+| eKYC (Creditinfo IDM) | `EKYC_MOCK`, `EKYC_BASE_URL`, `EKYC_USERNAME`, `EKYC_PASSWORD`, `EKYC_STRATEGY_ID` |
+| CRB (bureau) | `CRB_PROVIDER`, `CRB_BASE_URL`, `CRB_API_KEY`, `CRB_USERNAME`, `CRB_PASSWORD` |

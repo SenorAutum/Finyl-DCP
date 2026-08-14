@@ -163,5 +163,9 @@ class SmsLog(Base):
     recipient_phone = Column(String(20), nullable=False)
     message = Column(Text, nullable=False)
     trigger_type = Column(String(30), default="manual")  # loan_approval | repayment_reminder | overdue_alert | ticket_resolution | manual
-    status = Column(String(15), default="sent")
+    status = Column(String(15), default="sent")           # sent | delivered | failed | queued
+    provider = Column(String(30))                          # e.g. uwazii | mock
+    provider_ref = Column(String(80))                      # provider message id
+    provider_response = Column(Text)                       # raw provider response (truncated)
+    error = Column(Text)                                   # failure reason (null on success)
     sent_at = Column(DateTime, default=datetime.utcnow)

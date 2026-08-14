@@ -12,13 +12,13 @@ from app.core.database import Base, engine, ensure_schema
 from app import models  # noqa: F401 — register all tables on Base.metadata
 from app.routers import (admin, ai, auth, call_center, cbk, clients, complaints, crm,
                          dashboard, impact, lending, notifications, payments,
-                         access, approvals, reporting)
+                         access, approvals, reporting, integrations)
 
 app = FastAPI(
     title="Finyl-DCP API",
     version="1.0.0",
     description="Multi-tenant Digital Credit Provider platform — lending engine, "
-                "M-Pesa integration hub (mock Daraja), executive analytics, consumer "
+                "M-Pesa integration hub (live Daraja), executive analytics, consumer "
                 "protection, CRM, call center, social impact and CBK compliance.",
 )
 
@@ -46,7 +46,7 @@ def health():
 
 for r in (auth, admin, clients, lending, payments, notifications, dashboard,
           complaints, crm, call_center, impact, cbk, ai,
-          access, approvals, reporting):
+          access, approvals, reporting, integrations):
     app.include_router(r.router)
 
 # Legacy /api/v1/borrowers alias — same handlers as /api/v1/clients so anything

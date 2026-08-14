@@ -28,6 +28,24 @@ from app.core.config import settings
 CHECK_KEYS = ["idRegistryMatch", "nameMatch", "dateOfBirthMatch", "deceasedRegister", "sanctionsList"]
 
 
+class EkycNotConfigured(RuntimeError):
+    """Raised when eKYC has no real credentials and mock mode is off."""
+
+
+def is_configured() -> bool:
+    """True when real Creditinfo IDM credentials are present."""
+    for v in (settings.EKYC_USERNAME, settings.EKYC_PASSWORD, settings.EKYC_STRATEGY_ID):
+        if not v or str(v).strip().lower() == "placeholder":
+            return False
+    return True
+
+
+def integration_status() -> str:
+    if settings.EKYC_MOCK:
+        return "SANDBOX"
+    return "LIVE" if is_configured() else "NOT CONFIGURED"
+
+
 def _deterministic_score(national_id: str, full_name: str) -> int:
     """Stable pseudo-score so the same client always yields the same result
     (demo data stays consistent across reloads)."""
@@ -53,7 +71,13 @@ def verify_identity(*, national_id: str, first_name: str, last_name: str,
     }
 
     if not settings.EKYC_MOCK:
-        # ---- LIVE CALL (enabled by EKYC_MOCK=false) ---------------------------
+        # ---- LIVE CALL — credential-gated -----------------------------------
+        # No mock-pass: without real credentials we refuse rather than fake a
+        # verification. The caller surfaces this as a clear 4xx.
+        if not is_configured():
+            raise EkycNotConfigured(
+                "eKYC credentials required — set EKYC_USERNAME, EKYC_PASSWORD and "
+                "EKYC_STRATEGY_ID (or enable EKYC_MOCK for local demos).")
         with httpx.Client(timeout=20) as client:
             resp = client.post(
                 f"{settings.EKYC_BASE_URL.rstrip('/')}/decision",

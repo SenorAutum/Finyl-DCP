@@ -29,11 +29,12 @@ from app.core.deps import (get_current_user, require_module, require_permission,
                            get_scope, UserScope, write_audit)
 from app.core.permissions import has_permission
 from app.models import (Borrower, ClientDocument, ClientMobileWallet,
-                        ClientNextOfKin, DOC_TYPES, Loan, ImpactSurvey,
-                        NEXT_OF_KIN_RELATIONSHIPS, PaymentTransaction, User,
-                        WALLET_OPERATORS)
+                        ClientNextOfKin, CrbCheck, DOC_TYPES, Loan, ImpactSurvey,
+                        MpesaStatementAnalysis, NEXT_OF_KIN_RELATIONSHIPS,
+                        PaymentTransaction, User, WALLET_OPERATORS)
 from app.schemas import ClientCreate, EkycVerifyRequest, ValidateMpesaRequest
-from app.services import ekyc, mpesa, storage
+from app.services import crb, ekyc, mpesa, storage
+from app.services.mpesa_statement import StatementError, analyze_statement
 from app.services.ocr import OcrUnavailable, process_id_files
 
 # Primary identity fields locked from relationship officers (field-level lock).
@@ -417,12 +418,17 @@ def build_router(prefix: str, tag: str) -> APIRouter:
         if not (national_id and first and last):
             raise HTTPException(400, "National ID, first name and last name are required for eKYC")
 
-        result = ekyc.verify_identity(
-            national_id=national_id, first_name=first, last_name=last,
-            middle_name=body.middle_name or (client.middle_name if client else None),
-            date_of_birth=body.date_of_birth or (client.date_of_birth if client else None),
-            phone=body.phone or (client.phone if client else None),
-        )
+        try:
+            result = ekyc.verify_identity(
+                national_id=national_id, first_name=first, last_name=last,
+                middle_name=body.middle_name or (client.middle_name if client else None),
+                date_of_birth=body.date_of_birth or (client.date_of_birth if client else None),
+                phone=body.phone or (client.phone if client else None),
+            )
+        except ekyc.EkycNotConfigured as exc:
+            raise HTTPException(422, str(exc))
+        except Exception as exc:
+            raise HTTPException(502, f"eKYC provider request failed: {exc}")
         status_map = {"VERIFIED": "verified", "NOT_VERIFIED": "not_verified"}
         if client:
             client.ekyc_status = status_map.get(result.get("status"), "error")
@@ -506,6 +512,137 @@ def build_router(prefix: str, tag: str) -> APIRouter:
         db.delete(row)
         db.commit()
         return {"ok": True}
+
+    # ---- M-Pesa statement analysis (creditworthiness) ----------------------
+    def _statement_dict(a: MpesaStatementAnalysis) -> dict:
+        return {
+            "id": a.id, "client_id": a.client_id, "loan_id": a.loan_id,
+            "period_start": a.period_start, "period_end": a.period_end,
+            "months_covered": a.months_covered, "transactions_count": a.transactions_count,
+            "summary": a.summary or {}, "detected_lenders": a.detected_lenders or [],
+            "integrity_flags": a.integrity_flags or [],
+            "affordability_score": a.affordability_score,
+            "comfortable_installment": float(a.comfortable_installment or 0),
+            "monthly_debt_service": float(a.monthly_debt_service or 0),
+            "net_monthly_cash_flow": float(a.net_monthly_cash_flow or 0),
+            "tampering_suspected": bool(a.tampering_suspected),
+            "source_filename": a.source_filename, "created_at": a.created_at,
+        }
+
+    @router.post("/{client_id}/mpesa-statement")
+    async def upload_mpesa_statement(
+            client_id: int,
+            file: UploadFile = File(...),
+            password: str | None = Query(None, description="PDF password (defaults to the client's National ID)"),
+            loan_id: int | None = Query(None),
+            tenant_id: int = Depends(require_module("lending")),
+            db: Session = Depends(get_db),
+            user: User = Depends(get_current_user)):
+        """Upload an official Safaricom M-Pesa statement PDF, decrypt + analyse it
+        for creditworthiness (inflows/outflows, external borrowing, affordability
+        score, integrity check) and persist the latest analysis."""
+        client = _get_client(db, tenant_id, client_id)
+        data = await file.read()
+        if not data:
+            raise HTTPException(400, "Empty file.")
+        if len(data) > MAX_BYTES:
+            raise HTTPException(413, f"File exceeds the {storage.settings.MAX_UPLOAD_MB}MB limit")
+        # Password default: the client's National ID (statements are usually locked to it).
+        pw = password or client.national_id
+        try:
+            result = analyze_statement(data, pw, file.filename or "statement.pdf")
+        except StatementError as exc:
+            # Retry once without the pre-filled ID password in case it was wrong.
+            if password is None and pw:
+                try:
+                    result = analyze_statement(data, None, file.filename or "statement.pdf")
+                except StatementError as exc2:
+                    raise HTTPException(422, str(exc2))
+            else:
+                raise HTTPException(422, str(exc))
+        except Exception as exc:
+            raise HTTPException(500, f"Statement analysis failed: {exc}")
+
+        analysis = MpesaStatementAnalysis(
+            tenant_id=tenant_id, client_id=client.id, loan_id=loan_id,
+            period_start=result.get("period_start"), period_end=result.get("period_end"),
+            months_covered=result.get("months_covered", 0),
+            transactions_count=result.get("transactions_count", 0),
+            summary=result["summary"], detected_lenders=result["detected_lenders"],
+            integrity_flags=result["integrity_flags"],
+            affordability_score=result["affordability_score"],
+            comfortable_installment=result["comfortable_installment"],
+            monthly_debt_service=result["monthly_debt_service"],
+            net_monthly_cash_flow=result["net_monthly_cash_flow"],
+            tampering_suspected=result["tampering_suspected"],
+            source_filename=result.get("source_filename"),
+            created_by_user_id=user.id,
+        )
+        db.add(analysis)
+        db.commit()
+        db.refresh(analysis)
+        return _statement_dict(analysis)
+
+    @router.get("/{client_id}/mpesa-statement")
+    def latest_mpesa_statement(client_id: int,
+                               tenant_id: int = Depends(require_module("lending")),
+                               db: Session = Depends(get_db)):
+        _get_client(db, tenant_id, client_id)
+        a = (db.query(MpesaStatementAnalysis)
+             .filter(MpesaStatementAnalysis.client_id == client_id,
+                     MpesaStatementAnalysis.tenant_id == tenant_id)
+             .order_by(MpesaStatementAnalysis.id.desc()).first())
+        return _statement_dict(a) if a else None
+
+    # ---- CRB (credit reference bureau) check -------------------------------
+    def _crb_dict(c: CrbCheck) -> dict:
+        return {
+            "id": c.id, "client_id": c.client_id, "provider": c.provider,
+            "status": c.status, "reference": c.reference, "credit_score": c.credit_score,
+            "active_accounts": c.active_accounts, "defaults_count": c.defaults_count,
+            "total_outstanding": float(c.total_outstanding) if c.total_outstanding is not None else None,
+            "error": c.error, "created_at": c.created_at,
+        }
+
+    @router.post("/{client_id}/crb-check")
+    def crb_check(client_id: int,
+                  tenant_id: int = Depends(require_module("lending")),
+                  db: Session = Depends(get_db),
+                  user: User = Depends(get_current_user)):
+        """Run a Credit Reference Bureau check for the client. Credential-gated:
+        when the bureau is not configured the response reports status
+        'not_configured' with a clear message — no fabricated score."""
+        client = _get_client(db, tenant_id, client_id)
+        result = crb.run_check(national_id=client.national_id,
+                               first_name=client.first_name, last_name=client.last_name,
+                               phone=client.phone)
+        row = CrbCheck(
+            tenant_id=tenant_id, client_id=client.id, provider=result.get("provider"),
+            status=result.get("status"), reference=result.get("reference"),
+            credit_score=result.get("credit_score"),
+            active_accounts=result.get("active_accounts"),
+            defaults_count=result.get("defaults_count"),
+            total_outstanding=result.get("total_outstanding"),
+            raw=result.get("raw", {}), error=result.get("error"),
+            created_by_user_id=user.id,
+        )
+        db.add(row)
+        # Surface the bureau score on the client profile when we got one.
+        if result.get("status") == "ok" and result.get("credit_score") is not None:
+            client.credit_score = int(result["credit_score"])
+        db.commit()
+        db.refresh(row)
+        return _crb_dict(row)
+
+    @router.get("/{client_id}/crb-check")
+    def latest_crb_check(client_id: int,
+                         tenant_id: int = Depends(require_module("lending")),
+                         db: Session = Depends(get_db)):
+        _get_client(db, tenant_id, client_id)
+        c = (db.query(CrbCheck)
+             .filter(CrbCheck.client_id == client_id, CrbCheck.tenant_id == tenant_id)
+             .order_by(CrbCheck.id.desc()).first())
+        return _crb_dict(c) if c else None
 
     return router
 
