@@ -1,19 +1,24 @@
 """
 Centralized SMS helper — LIVE via the Uwazii Mobile bulk-SMS gateway.
 
-Dispatch goes to the Uwazii REST API:
+Uwazii uses a TWO-STEP token exchange (not a static Bearer token):
 
-    POST {UWAZII_BASE_URL}   (default https://restapi.uwaziimobile.com/v1/send)
-    Authorization: Bearer <UWAZII_ACCESS_TOKEN>
-    body: {"from": <UWAZII_SENDER_ID>, "messages": [{"to": "2547XXXXXXX", "text": "..."}]}
+    STEP 1  POST {UWAZII_AUTH_URL}   {"username","password"}
+            -> {"status":true,"data":{"authorization_code","expires_at"}}
+    STEP 2  POST {UWAZII_TOKEN_URL}  {"authorization_code"}
+            -> {"status":true,"data":{"access_token","expires_at"}}
+    STEP 3  POST {UWAZII_BASE_URL}   header X-Access-Token: <access_token>
+            body: JSON ARRAY of message objects (fasms shape)
+            -> {"status":true,"data":{"2547...":[{"id_state":<id>}]}}
 
-Credentials are injected into the environment from the secret store (never
-hardcoded/committed). When the access token is present, SMS is dispatched live
-and the real provider message id/status is recorded in sms_logs. When it is
-absent the service degrades gracefully: the message is logged with status
-"not_configured" and the triggering action is NEVER interrupted.
+A static UWAZII_ACCESS_TOKEN may be supplied to bypass the exchange. The access
+token is cached in-process and refreshed just before expiry (or on an
+"Invalid Access token" rejection). Credentials are injected from the secret
+store (never hardcoded/committed). When neither username/password nor a static
+token is present the service degrades gracefully: the message is logged with
+status "not_configured" and the triggering action is NEVER interrupted.
 """
-import json
+import time
 from datetime import datetime
 
 import httpx
@@ -24,10 +29,17 @@ from app.models import SmsLog
 
 PROVIDER_NAME = "uwazii"
 
+# Module-level in-memory access-token cache.
+_token_cache: dict = {"token": None, "expires_at": 0}
+_REFRESH_SKEW = 120  # refresh when within this many seconds of expiry
+
 
 def is_configured() -> bool:
-    """True when a real Uwazii access token is present."""
-    return bool((settings.UWAZII_ACCESS_TOKEN or "").strip())
+    """True when Uwazii can authenticate: username+password OR a static token."""
+    if (settings.UWAZII_ACCESS_TOKEN or "").strip():
+        return True
+    return bool((settings.UWAZII_USERNAME or "").strip()
+                and (settings.UWAZII_PASSWORD or "").strip())
 
 
 def integration_status() -> str:
@@ -47,6 +59,75 @@ def normalise_phone(phone: str) -> str:
     return digits
 
 
+def _get_access_token(force_refresh: bool = False) -> str | None:
+    """Return a usable Uwazii access token, running the two-step exchange when
+    needed. Uses a static override if configured. Caches the token with its
+    expiry. Returns None on failure (never raises)."""
+    static = (settings.UWAZII_ACCESS_TOKEN or "").strip()
+    if static:
+        return static
+
+    now = int(time.time())
+    if (not force_refresh and _token_cache.get("token")
+            and now < (_token_cache.get("expires_at", 0) - _REFRESH_SKEW)):
+        return _token_cache["token"]
+
+    username = (settings.UWAZII_USERNAME or "").strip()
+    password = (settings.UWAZII_PASSWORD or "").strip()
+    if not (username and password):
+        return None
+
+    try:
+        # STEP 1 — authorization_code
+        r1 = httpx.post(
+            settings.UWAZII_AUTH_URL,
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            json={"username": username, "password": password},
+            timeout=30,
+        )
+        d1 = r1.json() if r1.content else {}
+        if not (isinstance(d1, dict) and d1.get("status")):
+            return None
+        auth_code = (d1.get("data") or {}).get("authorization_code")
+        if not auth_code:
+            return None
+
+        # STEP 2 — access_token
+        r2 = httpx.post(
+            settings.UWAZII_TOKEN_URL,
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            json={"authorization_code": auth_code},
+            timeout=30,
+        )
+        d2 = r2.json() if r2.content else {}
+        if not (isinstance(d2, dict) and d2.get("status")):
+            return None
+        data2 = d2.get("data") or {}
+        token = data2.get("access_token")
+        if not token:
+            return None
+        exp = data2.get("expires_at")
+        try:
+            exp = int(exp)
+        except (TypeError, ValueError):
+            exp = now + 3600
+        _token_cache["token"] = token
+        _token_cache["expires_at"] = exp
+        return token
+    except Exception:
+        return None
+
+
+def _send_request(token: str, payload: list) -> httpx.Response:
+    return httpx.post(
+        settings.UWAZII_BASE_URL,
+        headers={"X-Access-Token": token,
+                 "Content-Type": "application/json", "Accept": "application/json"},
+        json=payload,
+        timeout=30,
+    )
+
+
 def _dispatch_to_provider(phone: str, message: str) -> dict:
     """Send one SMS through Uwazii. Returns a normalized result dict:
         {status, provider, provider_ref, provider_response, error}
@@ -61,44 +142,79 @@ def _dispatch_to_provider(phone: str, message: str) -> dict:
         # Credential-gated: do not fake a send.
         return {"status": "not_configured", "provider": PROVIDER_NAME, "provider_ref": None,
                 "provider_response": None,
-                "error": "Uwazii access token not configured — SMS not dispatched."}
+                "error": "Uwazii credentials not configured — SMS not dispatched."}
 
-    body = {
-        "from": settings.UWAZII_SENDER_ID or "",
-        "messages": [{"to": to, "text": message}],
-    }
-    try:
-        resp = httpx.post(
-            settings.UWAZII_BASE_URL,
-            headers={"Authorization": f"Bearer {settings.UWAZII_ACCESS_TOKEN}",
-                     "Content-Type": "application/json", "Accept": "application/json"},
-            json=body,
-            timeout=30,
-        )
-    except Exception as exc:  # network/timeout — log & keep going
+    token = _get_access_token()
+    if not token:
         return {"status": "failed", "provider": PROVIDER_NAME, "provider_ref": None,
-                "provider_response": None, "error": f"Uwazii request error: {exc}"}
+                "provider_response": None,
+                "error": "Unable to obtain Uwazii access token (auth exchange failed)."}
 
-    raw = (resp.text or "")[:2000]
-    try:
-        data = resp.json()
-    except Exception:
-        data = {}
+    now = datetime.now()
+    payload = [{
+        "number": to,
+        "senderID": settings.UWAZII_SENDER_ID or "",
+        "text": message,
+        "type": "sms",
+        "beginDate": now.strftime("%Y-%m-%d"),
+        "beginTime": now.strftime("%H:%M"),
+        "lifetime": 86400,
+        "delivery": False,
+    }]
 
-    if resp.status_code // 100 != 2:
+    def _do(tok: str):
+        try:
+            resp = _send_request(tok, payload)
+        except Exception as exc:  # network/timeout
+            return None, f"Uwazii request error: {exc}", None
+        raw = (resp.text or "")[:2000]
+        try:
+            data = resp.json()
+        except Exception:
+            data = {}
+        return resp, raw, data
+
+    resp, raw, data = _do(token)
+    if resp is None:
         return {"status": "failed", "provider": PROVIDER_NAME, "provider_ref": None,
-                "provider_response": raw,
-                "error": f"Uwazii HTTP {resp.status_code}: {raw[:300]}"}
+                "provider_response": None, "error": raw}
 
-    # Extract a provider message id/status from a few common response shapes.
-    ref = _extract_ref(data)
-    return {"status": "sent", "provider": PROVIDER_NAME, "provider_ref": ref,
-            "provider_response": raw, "error": None}
+    # Uwazii returns status:false with errors on failure (may be HTTP 200 or 400).
+    status_ok = isinstance(data, dict) and data.get("status") is True
+    errors = (data.get("errors") if isinstance(data, dict) else None) or ""
+
+    # Invalid token -> refresh once and retry.
+    if (not status_ok) and "invalid access token" in str(errors).lower():
+        _token_cache["token"] = None
+        new_token = _get_access_token(force_refresh=True)
+        if new_token:
+            resp, raw, data = _do(new_token)
+            if resp is not None:
+                status_ok = isinstance(data, dict) and data.get("status") is True
+                errors = (data.get("errors") if isinstance(data, dict) else None) or ""
+
+    if status_ok:
+        ref = _extract_ref(data)
+        return {"status": "sent", "provider": PROVIDER_NAME, "provider_ref": ref,
+                "provider_response": raw, "error": None}
+
+    if resp is not None and resp.status_code // 100 != 2 and not errors:
+        errors = f"Uwazii HTTP {resp.status_code}: {raw[:300]}"
+    return {"status": "failed", "provider": PROVIDER_NAME, "provider_ref": None,
+            "provider_response": raw, "error": str(errors) or "Uwazii send failed."}
 
 
 def _extract_ref(data) -> str | None:
     if not isinstance(data, dict):
         return None
+    # Uwazii shape: {"data": {"2547...": [{"id_state": <id>}]}}
+    payload = data.get("data")
+    if isinstance(payload, dict):
+        for val in payload.values():
+            if isinstance(val, list) and val and isinstance(val[0], dict):
+                ids = val[0].get("id_state")
+                if ids is not None:
+                    return str(ids)
     for key in ("messageId", "message_id", "id", "MessageId", "smsId"):
         if data.get(key):
             return str(data[key])

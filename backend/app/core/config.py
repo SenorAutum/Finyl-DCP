@@ -44,7 +44,11 @@ class Settings(BaseSettings):
     # never hardcoded/committed. When the access token is present the SMS service
     # dispatches live messages via the Uwazii REST API.
     UWAZII_BASE_URL: str = "https://restapi.uwaziimobile.com/v1/send"
-    UWAZII_ACCESS_TOKEN: str = ""
+    UWAZII_AUTH_URL: str = "https://restapi.uwaziimobile.com/v1/authorize"
+    UWAZII_TOKEN_URL: str = "https://restapi.uwaziimobile.com/v1/accesstoken"
+    UWAZII_USERNAME: str = ""
+    UWAZII_PASSWORD: str = ""
+    UWAZII_ACCESS_TOKEN: str = ""  # optional static override; blank -> use two-step auth
     UWAZII_SENDER_ID: str = ""
 
     # --- Bulk SMS provider placeholders (legacy generic gateway) --------------
