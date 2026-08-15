@@ -146,7 +146,14 @@ function StatementCard({ clientId, onScore }) {
               <div className="text-sm bg-amber-50 text-amber-700 rounded-lg p-3">
                 <div className="font-semibold mb-1">Integrity checks</div>
                 <ul className="list-disc ml-4 space-y-0.5">
-                  {a.integrity_flags.map((f, i) => <li key={i}>{f}</li>)}
+                  {a.integrity_flags.map((f, i) => {
+                    // Flags may be plain strings (legacy) or {code, severity, detail} objects.
+                    const text = typeof f === "string"
+                      ? f
+                      : [f?.detail || f?.code, f?.severity && `(${f.severity})`]
+                          .filter(Boolean).join(" ");
+                    return <li key={i}>{text || "Integrity flag"}</li>;
+                  })}
                 </ul>
               </div>
             )}

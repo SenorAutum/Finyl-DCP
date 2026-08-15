@@ -1,7 +1,8 @@
 // App shell: charcoal sidebar with grouped nav (feature-flag + role aware),
 // topbar with tenant switcher (super_admin), mobile hamburger, AI panel launcher.
 import { useEffect, useState } from "react";
-import { NavLink, Outlet } from "react-router-dom";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
+import ErrorBoundary from "./ErrorBoundary";
 import { useAuth } from "../hooks/useAuth";
 import { api } from "../lib/api";
 import AiPanel from "./AiPanel";
@@ -50,6 +51,7 @@ const NAV = [
 
 export default function Layout() {
   const { user, logout, canAccess, can, switchTenant } = useAuth();
+  const { pathname } = useLocation();            // resets the error boundary per route
   const [open, setOpen] = useState(false);       // mobile sidebar
   const [aiOpen, setAiOpen] = useState(false);
   const [tenants, setTenants] = useState([]);
@@ -148,7 +150,9 @@ export default function Layout() {
         </header>
 
         <main className="flex-1 p-4 md:p-6 max-w-[1500px] w-full mx-auto">
-          <Outlet />
+          <ErrorBoundary key={pathname}>
+            <Outlet />
+          </ErrorBoundary>
         </main>
       </div>
 
