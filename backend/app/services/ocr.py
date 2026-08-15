@@ -179,7 +179,10 @@ class VisionLlmOcrProvider(OcrProvider):
         """Return {fields, confidence, raw_text} extracted by the vision model."""
         import httpx
 
-        model = (settings.LLM_VISION_MODEL or settings.LLM_MODEL or "gpt-5.5-mini").strip()
+        # A dedicated vision model is required: the general LLM_MODEL (e.g. a
+        # text-only routing alias) may not accept image input. Default to a
+        # known vision-capable model when LLM_VISION_MODEL is unset.
+        model = (settings.LLM_VISION_MODEL or "gpt-4o").strip()
         content = [{"type": "text", "text": _VISION_PROMPT}] + self._to_image_parts(files)
         resp = httpx.post(
             f"{settings.LLM_BASE_URL.rstrip('/')}/chat/completions",

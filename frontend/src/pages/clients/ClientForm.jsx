@@ -332,6 +332,13 @@ export default function ClientForm({ clientId, onClose, onSaved }) {
                     </div>
                     <span className="text-[11px] text-gray-500">Engine: {ocr.engine || "tesseract"}</span>
                   </div>
+                  {ocr.engine_notes?.length > 0 && (
+                    <div className="mt-1 text-[11px] text-amber-600">
+                      {ocr.engine_notes.map((n, i) => (
+                        <div key={i}>⚠️ {n}</div>
+                      ))}
+                    </div>
+                  )}
                   <div className="mt-2 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-x-4 gap-y-1">
                     {Object.entries(ocr.fields || {}).map(([k, v]) => (
                       <div key={k} className="text-[11px]">

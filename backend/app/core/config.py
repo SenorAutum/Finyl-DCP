@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     LLM_BASE_URL: str = "https://api.openai.com/v1"
     LLM_API_KEY: str = "sk-placeholder"
     LLM_MODEL: str = "gpt-5.5-mini"
-    LLM_VISION_MODEL: str = ""   # blank -> use LLM_MODEL for vision OCR too
+    LLM_VISION_MODEL: str = "gpt-4o"   # MUST be a vision-capable model (LLM_MODEL may be text-only)
 
     # --- Safaricom Daraja placeholders (swap in real credentials here) ------
     # Credential-gated: while key/secret are placeholders the payment endpoints
