@@ -286,6 +286,13 @@ class ThresholdCreate(BaseModel):
     amount: float = 0
 
 
+class ApproverConfigIn(BaseModel):
+    tenant_id: int
+    approval_type: str       # loan | client | disbursement | refund
+    role: str                # approver role key
+    enabled: bool
+
+
 # ---- RBAC: loan decisions & money movement -----------------------------------------------
 class LoanDecision(BaseModel):
     action: str              # approve | reject | escalate

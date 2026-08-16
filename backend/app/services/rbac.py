@@ -3,7 +3,8 @@ RBAC business helpers: approval-threshold resolution, escalation ladder and
 maker-checker gating. Kept separate from the FastAPI dependency layer so the
 rules are unit-testable and reusable across routers.
 """
-from app.models import ApprovalThreshold
+from app.models import ApprovalThreshold, ApproverSetting
+from app.core.permissions import APPROVAL_TYPE_PERMISSION, has_permission
 
 # Escalation ladder for loan approvals when the amount exceeds an actor's limit.
 ESCALATION_LADDER = {
@@ -12,6 +13,15 @@ ESCALATION_LADDER = {
     "branch_manager": "region",
     "regional_manager": "hq",
 }
+
+# Ordered loan-approval tiers, lowest → highest. Each tier maps a role to the
+# escalation-level label stored on the loan. Used to compute a DCP-aware ladder
+# that skips tiers whose role is disabled as an approver for the tenant.
+LOAN_TIERS = [
+    ("branch_manager", "branch"),
+    ("regional_manager", "region"),
+    ("hq_credit_committee", "hq"),
+]
 
 
 def _thresholds(db, tenant_id, threshold_type):
@@ -59,7 +69,64 @@ def money_threshold(db, tenant_id, threshold_type) -> float | None:
 
 
 def next_escalation_level(role: str) -> str | None:
+    """Static (tenant-agnostic) ladder — kept for backward compatibility."""
     return ESCALATION_LADDER.get(role)
+
+
+# ---------------------------------------------------------------------------
+# Per-DCP configurable approver model
+# ---------------------------------------------------------------------------
+def _default_approver_enabled(approval_type: str, role: str) -> bool:
+    """Backward-compatible default: whether `role` may approve `approval_type`
+    absent any stored per-DCP override — i.e. it holds the underlying permission
+    and is not the front-line originator."""
+    if role == "relationship_officer":
+        return False
+    perm = APPROVAL_TYPE_PERMISSION.get(approval_type)
+    if not perm:
+        return False
+    return has_permission(role, perm)
+
+
+def approver_enabled(db, tenant_id, approval_type: str, role: str) -> bool:
+    """Whether `role` is configured to act as an approver for `approval_type`
+    at this DCP. Returns the stored toggle when a row exists, else the
+    permission-derived default (keeping existing tenants unchanged)."""
+    if role == "super_admin":
+        return True
+    row = (db.query(ApproverSetting)
+           .filter(ApproverSetting.tenant_id == tenant_id,
+                   ApproverSetting.approval_type == approval_type,
+                   ApproverSetting.role == role)
+           .first())
+    if row is not None:
+        return bool(row.enabled)
+    return _default_approver_enabled(approval_type, role)
+
+
+def enabled_loan_tiers(db, tenant_id) -> list[tuple[str, str]]:
+    """Ordered loan-approval tiers (role, level) that are ENABLED for the tenant."""
+    return [(role, level) for role, level in LOAN_TIERS
+            if approver_enabled(db, tenant_id, "loan", role)]
+
+
+def next_escalation_level_for_tenant(db, tenant_id, role: str) -> str | None:
+    """DCP-aware escalation: the next ENABLED loan tier strictly above `role`.
+
+    Falls back to the highest enabled tier when the actor is already at/above
+    the top, and to the static ladder when no tiers are enabled at all.
+    """
+    tiers = enabled_loan_tiers(db, tenant_id)
+    if not tiers:
+        return next_escalation_level(role) or "hq"
+    # Position of the actor within the FULL ladder (not just enabled tiers).
+    full_order = [r for r, _ in LOAN_TIERS]
+    actor_idx = full_order.index(role) if role in full_order else -1
+    for r, level in tiers:
+        if full_order.index(r) > actor_idx:
+            return level
+    # Actor is at or above every enabled tier → target the highest enabled tier.
+    return tiers[-1][1]
 
 
 def requires_maker_checker(db, tenant_id, threshold_type, amount: float) -> bool:

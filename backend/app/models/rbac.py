@@ -36,6 +36,28 @@ class ApprovalThreshold(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class ApproverSetting(Base):
+    """Per-DCP toggle of which roles act as approvers for each approval type.
+
+    A row's absence means "use the default" (i.e. whether the role holds the
+    underlying approval permission and is not the front-line originator). A
+    present row overrides that with an explicit enabled/disabled flag, letting
+    each DCP customise its own approval model.
+    """
+    __tablename__ = "approver_settings"
+
+    id = Column(Integer, primary_key=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
+    approval_type = Column(String(20), nullable=False)   # loan | client | disbursement | refund
+    role = Column(String(40), nullable=False)            # approver role key
+    enabled = Column(Boolean, nullable=False, default=True)
+    updated_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+APPROVAL_TYPES = ["loan", "client", "disbursement", "refund"]
+
+
 class AuditLog(Base):
     """Immutable-ish append log of privileged actions across the platform."""
     __tablename__ = "audit_logs"

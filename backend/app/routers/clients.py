@@ -176,6 +176,12 @@ def build_router(prefix: str, tag: str) -> APIRouter:
         users = db.query(User).filter(or_(User.tenant_id == tenant_id,
                                           User.role == "super_admin"),
                                       User.active).order_by(User.full_name).all()
+        # Only surface real client-profile approvers: users whose role holds
+        # clients.approve and is not the front-line originator. This keeps
+        # relationship_officer (and other non-approver roles) out of the picker.
+        from app.core.permissions import has_permission
+        approvers = [u for u in users
+                     if u.role != "relationship_officer" and has_permission(u.role, "clients.approve")]
         return {
             "wallet_operators": WALLET_OPERATORS,
             "relationships": NEXT_OF_KIN_RELATIONSHIPS,
@@ -183,7 +189,7 @@ def build_router(prefix: str, tag: str) -> APIRouter:
             # "failed" is kept in the list because the demo seeder (and historical
             # records) use it alongside "rejected".
             "kyc_statuses": ["draft", "pending", "validated", "failed", "rejected"],
-            "approvers": [{"id": u.id, "name": u.full_name, "role": u.role} for u in users],
+            "approvers": [{"id": u.id, "name": u.full_name, "role": u.role} for u in approvers],
         }
 
     # ---- list / read -------------------------------------------------------

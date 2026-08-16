@@ -18,6 +18,7 @@ import Impact from "./pages/impact/Impact";
 import Cbk from "./pages/cbk/Cbk";
 import Admin from "./pages/admin/Admin";
 import Integrations from "./pages/admin/Integrations";
+import ApproverConfig from "./pages/admin/ApproverConfig";
 import Approvals from "./pages/approvals/Approvals";
 import Users from "./pages/access/Users";
 import RolesPermissions from "./pages/access/RolesPermissions";
@@ -146,6 +147,7 @@ export default function App() {
             <Route path="/reporting" element={<PermGuard perms={["reports.export", "reports.schedule", "reports.template", "reports.flag"]}><Reporting /></PermGuard>} />
             <Route path="/admin" element={<AdminGuard><Admin /></AdminGuard>} />
             <Route path="/integrations" element={<AdminGuard><Integrations /></AdminGuard>} />
+            <Route path="/approver-config" element={<AdminGuard><ApproverConfig /></AdminGuard>} />
             {/* Legacy path — DCP Setup was absorbed into the Integrations module. */}
             <Route path="/dcp-setup" element={<Navigate to="/integrations" replace />} />
             <Route path="*" element={<Navigate to="/" replace />} />

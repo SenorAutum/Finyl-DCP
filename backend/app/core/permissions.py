@@ -134,6 +134,17 @@ ROLE_PERMISSIONS = {
         "reports.export", "reports.schedule", "reports.template", "reports.flag",
         "audit.view",
     },
+
+    # HQ / Credit Committee — the TOP tier of the loan-approval escalation ladder.
+    # A distinct approver role (NOT the read-only hq_operations). Its actual
+    # ability to approve any given action is still gated by the per-DCP
+    # approver-configuration toggle (see app.services.rbac.approver_enabled).
+    "hq_credit_committee": {
+        "clients.view_all", "loans.view_all", "dashboard.company",
+        "clients.approve",
+        "loans.approve", "loans.escalate", "loans.adjust", "loans.writeoff",
+        "disburse.approve", "refund.approve",
+    },
 }
 
 # --- Backward-compatible legacy roles ---------------------------------------
@@ -154,6 +165,7 @@ ROLE_PERMISSIONS["call_agent"] = {
 COMPANY_SCOPE_ROLES = {
     "super_admin", "tenant_admin", "system_admin",
     "disbursement_officer", "reconciliation_officer", "hq_operations",
+    "hq_credit_committee",
 }
 
 # Human-friendly labels for the UI.
@@ -167,6 +179,7 @@ ROLE_LABELS = {
     "disbursement_officer": "Disbursement Officer",
     "reconciliation_officer": "Finance / Reconciliation Officer",
     "hq_operations": "HQ Operations",
+    "hq_credit_committee": "HQ / Credit Committee",
     "loan_officer": "Loan Officer (legacy)",
     "call_agent": "Call Agent",
 }
@@ -176,6 +189,7 @@ ROLE_LABELS = {
 ASSIGNABLE_ROLES = [
     "system_admin", "relationship_officer", "branch_manager", "regional_manager",
     "disbursement_officer", "reconciliation_officer", "hq_operations",
+    "hq_credit_committee",
     "tenant_admin", "loan_officer", "call_agent",
 ]
 
@@ -191,6 +205,44 @@ def permissions_for(role: str) -> set[str]:
 def has_permission(role: str, key: str) -> bool:
     perms = ROLE_PERMISSIONS.get(role, set())
     return WILDCARD in perms or key in perms
+
+
+# --- Per-DCP configurable approver model ------------------------------------
+# The four approval action types and the underlying permission that grants each.
+APPROVAL_TYPE_PERMISSION = {
+    "loan": "loans.approve",
+    "client": "clients.approve",
+    "disbursement": "disburse.approve",
+    "refund": "refund.approve",
+}
+APPROVAL_TYPES = ["loan", "client", "disbursement", "refund"]
+APPROVAL_TYPE_LABELS = {
+    "loan": "Loan approvals",
+    "client": "Client-profile approvals",
+    "disbursement": "Disbursement (maker-checker)",
+    "refund": "Refund (maker-checker)",
+}
+
+# Legacy roles are never surfaced in the approver-configuration UI.
+LEGACY_ROLES = {"tenant_admin", "loan_officer", "call_agent"}
+
+
+def eligible_approver_roles(approval_type: str) -> list[str]:
+    """Roles that are ELIGIBLE to act as approvers for `approval_type`.
+
+    A role is eligible when it holds the underlying approval permission and is
+    neither the front-line originator (relationship_officer), the implicit
+    platform owner (super_admin), nor a legacy role. This is the universe of
+    roles the super admin may toggle on/off per DCP.
+    """
+    perm = APPROVAL_TYPE_PERMISSION[approval_type]
+    out = []
+    for role in ROLE_LABELS:
+        if role in ("super_admin", "relationship_officer") or role in LEGACY_ROLES:
+            continue
+        if has_permission(role, perm):
+            out.append(role)
+    return out
 
 
 def role_matrix() -> list[dict]:

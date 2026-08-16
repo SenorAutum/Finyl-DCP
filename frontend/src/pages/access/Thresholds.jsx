@@ -62,7 +62,7 @@ export default function Thresholds() {
   );
 }
 
-const ROLES = ["relationship_officer", "branch_manager", "regional_manager"];
+const ROLES = ["branch_manager", "regional_manager", "hq_credit_committee"];
 
 function ThresholdForm({ form, org, onClose, onSave }) {
   const [f, setF] = useState({ scope_type: form.scope_type, scope_key: form.scope_key, threshold_type: form.threshold_type, amount: form.amount });

@@ -98,6 +98,12 @@ export default function Layout() {
                 isActive ? "bg-accent text-white" : "text-gray-300 hover:bg-white/10 hover:text-white"}`}>
             <span className="w-4 text-center">🔌</span>Integrations
           </NavLink>
+          <NavLink to="/approver-config" onClick={() => setOpen(false)}
+            className={({ isActive }) =>
+              `flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium ${
+                isActive ? "bg-accent text-white" : "text-gray-300 hover:bg-white/10 hover:text-white"}`}>
+            <span className="w-4 text-center">✅</span>Approver Config
+          </NavLink>
         </div>
       )}
     </nav>

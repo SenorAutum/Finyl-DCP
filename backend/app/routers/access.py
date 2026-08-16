@@ -12,15 +12,20 @@ from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.deps import get_tenant_id, get_current_user, require_permission, write_audit
+from app.core.deps import (get_tenant_id, get_current_user, require_permission,
+                           require_role, write_audit)
 from app.core.permissions import (PERMISSIONS, ASSIGNABLE_ROLES, ROLE_LABELS,
-                                   permissions_for, role_matrix)
+                                   permissions_for, role_matrix,
+                                   APPROVAL_TYPES, APPROVAL_TYPE_LABELS,
+                                   eligible_approver_roles)
 from app.core.security import hash_password
 from app.core.config import settings
 from app.models import (User, Region, Branch, Staff, ApprovalThreshold, AuditLog,
-                        Loan, Borrower, Repayment, PaymentTransaction)
+                        ApproverSetting, Tenant, Loan, Borrower, Repayment,
+                        PaymentTransaction)
 from app.schemas import (UserCreate, UserUpdate, RoleAssign, PasswordReset,
-                        RegionCreate, BranchCreate, ThresholdCreate)
+                        RegionCreate, BranchCreate, ThresholdCreate, ApproverConfigIn)
+from app.services import rbac
 
 router = APIRouter(prefix="/api/v1/access", tags=["access"])
 
@@ -283,6 +288,84 @@ def delete_threshold(tid: int, request: Request,
                 entity_type="threshold", entity_id=tid, request=request)
     db.commit()
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Per-DCP approver configuration (SUPER ADMIN ONLY)
+# ---------------------------------------------------------------------------
+@router.get("/approver-config")
+def get_approver_config(tenant_id: int | None = None,
+                        _: User = Depends(require_role("super_admin")),
+                        db: Session = Depends(get_db)):
+    """For a DCP, list every eligible approver role per approval type with its
+    current EFFECTIVE enabled state (stored override, else permission default).
+
+    Also returns the full tenant list so the super admin can pick a DCP.
+    """
+    tenants = [{"id": t.id, "name": t.name, "code": t.code, "active": t.active}
+               for t in db.query(Tenant).order_by(Tenant.id)]
+    result = {"tenants": tenants, "tenant_id": tenant_id, "approval_types": [], }
+    if tenant_id is None:
+        return result
+
+    # Stored overrides for this tenant, keyed by (approval_type, role).
+    rows = db.query(ApproverSetting).filter(ApproverSetting.tenant_id == tenant_id).all()
+    stored = {(r.approval_type, r.role): bool(r.enabled) for r in rows}
+
+    for at in APPROVAL_TYPES:
+        roles = []
+        for role in eligible_approver_roles(at):
+            key = (at, role)
+            configured = key in stored
+            enabled = stored[key] if configured else rbac._default_approver_enabled(at, role)
+            roles.append({
+                "role": role,
+                "label": ROLE_LABELS.get(role, role),
+                "enabled": enabled,
+                "configured": configured,
+                "default": rbac._default_approver_enabled(at, role),
+            })
+        result["approval_types"].append({
+            "approval_type": at,
+            "label": APPROVAL_TYPE_LABELS.get(at, at),
+            "roles": roles,
+        })
+    return result
+
+
+@router.post("/approver-config")
+def set_approver_config(body: ApproverConfigIn, request: Request,
+                        actor: User = Depends(require_role("super_admin")),
+                        db: Session = Depends(get_db)):
+    """Upsert a single per-DCP approver toggle. Super admin only; audited."""
+    if body.approval_type not in APPROVAL_TYPES:
+        raise HTTPException(400, f"approval_type must be one of {APPROVAL_TYPES}")
+    if body.role not in eligible_approver_roles(body.approval_type):
+        raise HTTPException(
+            400, f"Role '{body.role}' is not an eligible approver for '{body.approval_type}'")
+    if not db.query(Tenant).filter(Tenant.id == body.tenant_id).first():
+        raise HTTPException(404, "Tenant not found")
+
+    row = db.query(ApproverSetting).filter(
+        ApproverSetting.tenant_id == body.tenant_id,
+        ApproverSetting.approval_type == body.approval_type,
+        ApproverSetting.role == body.role,
+    ).first()
+    if row:
+        row.enabled = body.enabled
+        row.updated_by_user_id = actor.id
+    else:
+        row = ApproverSetting(tenant_id=body.tenant_id, approval_type=body.approval_type,
+                              role=body.role, enabled=body.enabled,
+                              updated_by_user_id=actor.id)
+        db.add(row)
+    db.flush()
+    write_audit(db, tenant_id=body.tenant_id, user=actor, action="approver_config.set",
+                entity_type="approver_setting", entity_id=row.id,
+                details=body.model_dump(), request=request)
+    db.commit()
+    return {"id": row.id, "tenant_id": row.tenant_id, "approval_type": row.approval_type,
+            "role": row.role, "enabled": bool(row.enabled)}
 
 
 # ---------------------------------------------------------------------------

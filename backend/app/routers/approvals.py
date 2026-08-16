@@ -63,6 +63,11 @@ def decide_loan(loan_id: int, body: LoanDecision, request: Request,
     if loan.status not in ("pending", "underwriting"):
         raise HTTPException(400, f"Loan is '{loan.status}' and cannot be decided")
 
+    # Per-DCP approver gate: the actor's role must be an enabled loan approver.
+    if user.role != "super_admin" and not rbac.approver_enabled(db, tenant_id, "loan", user.role):
+        raise HTTPException(
+            403, "Your role is not configured as an approver for loan approvals at this DCP")
+
     action = body.action
     if action == "reject":
         loan.status = "rejected"
@@ -75,7 +80,7 @@ def decide_loan(loan_id: int, body: LoanDecision, request: Request,
         return {"status": loan.status, "message": "Loan rejected"}
 
     if action == "escalate":
-        level = rbac.next_escalation_level(user.role) or "hq"
+        level = rbac.next_escalation_level_for_tenant(db, tenant_id, user.role) or "hq"
         loan.escalation_level = level
         write_audit(db, tenant_id=tenant_id, user=user, action="loan.escalate",
                     entity_type="loan", entity_id=loan.id,
@@ -87,7 +92,7 @@ def decide_loan(loan_id: int, body: LoanDecision, request: Request,
     # --- approve --------------------------------------------------------------
     limit = rbac.loan_approval_limit(db, tenant_id, user)
     if limit is not None and float(loan.principal) > limit:
-        level = rbac.next_escalation_level(user.role) or "hq"
+        level = rbac.next_escalation_level_for_tenant(db, tenant_id, user.role) or "hq"
         loan.escalation_level = level
         write_audit(db, tenant_id=tenant_id, user=user, action="loan.escalate_auto",
                     entity_type="loan", entity_id=loan.id,
@@ -142,6 +147,9 @@ def decide_client(client_id: int, body: ClientProfileDecision, request: Request,
         raise HTTPException(404, "Client not found")
     if not scope.can_see_client(c):
         raise HTTPException(403, "Client is outside your scope")
+    if user.role != "super_admin" and not rbac.approver_enabled(db, tenant_id, "client", user.role):
+        raise HTTPException(
+            403, "Your role is not configured as an approver for client-profile approvals at this DCP")
     c.profile_status = "approved" if body.action == "approve" else "rejected"
     if body.action == "approve":
         c.approved_by_user_id = user.id
@@ -190,6 +198,11 @@ def decide_pending_action(pid: int, body: ApprovalDecision, request: Request,
     need = "disburse.approve" if p.action_type == "disbursement" else "refund.approve"
     if not has_permission(user.role, need):
         raise HTTPException(403, f"Missing required permission: {need}")
+    # Per-DCP approver gate for the money-movement action type.
+    appr_type = "disbursement" if p.action_type == "disbursement" else "refund"
+    if user.role != "super_admin" and not rbac.approver_enabled(db, tenant_id, appr_type, user.role):
+        raise HTTPException(
+            403, f"Your role is not configured as an approver for {appr_type} approvals at this DCP")
 
     if body.action == "reject":
         p.status = "rejected"; p.checker_user_id = user.id; p.checker_at = datetime.utcnow()
