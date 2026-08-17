@@ -170,6 +170,23 @@ class SendSmsRequest(BaseModel):
     trigger_type: str = "manual"
 
 
+# ---- Messaging (per-DCP customizable SMS templates) ---------------------------
+class MessageTemplateIn(BaseModel):
+    body: str
+    active: bool = True
+
+
+class MessagePreviewIn(BaseModel):
+    # When body is omitted the stored/default template is previewed instead.
+    body: Optional[str] = None
+
+
+class MessageTestIn(BaseModel):
+    phone: str
+    # When body is omitted the stored/default template is sent instead.
+    body: Optional[str] = None
+
+
 # ---- CRM -----------------------------------------------------------------------
 class LeadCreate(BaseModel):
     name: str

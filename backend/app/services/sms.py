@@ -18,6 +18,7 @@ store (never hardcoded/committed). When neither username/password nor a static
 token is present the service degrades gracefully: the message is logged with
 status "not_configured" and the triggering action is NEVER interrupted.
 """
+import re
 import time
 from datetime import datetime
 
@@ -25,7 +26,7 @@ import httpx
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models import SmsLog, SmsRateCard
+from app.models import SmsLog, SmsRateCard, SmsTemplate, Tenant
 
 PROVIDER_NAME = "uwazii"
 
@@ -304,48 +305,185 @@ def send_sms(db: Session, tenant_id: int, phone: str, message: str,
     return log
 
 
-# --- Trigger message templates ------------------------------------------------
+# --- Per-DCP customizable templates ------------------------------------------
+#
+# Every loan-lifecycle SMS is now rendered from a per-tenant template that may be
+# customised in the Messaging admin screen. Each template is a body string with
+# {{placeholder}} tokens drawn from the CANONICAL placeholder set below. When a
+# tenant has no stored row for an event the built-in DEFAULT_TEMPLATES are used,
+# so existing tenants keep working unchanged.
 
-def sms_loan_approval(db, tenant_id, borrower, loan):
-    return send_sms(
-        db, tenant_id, borrower.phone,
-        f"Dear {borrower.first_name}, your loan {loan.account_number} of KES "
-        f"{float(loan.principal):,.0f} has been APPROVED and is being disbursed to "
-        f"your M-Pesa. Repay by {loan.due_date}. Finyl-DCP.",
-        "loan_approval",
-    )
+# The six customizable lifecycle events.
+EVENT_KEYS = [
+    "loan_qualified", "loan_disbursed", "repayment_reminder",
+    "overdue_alert", "defaulted", "payment_receipt",
+]
+
+# Canonical placeholder tokens available to every template, with a human label.
+CANONICAL_PLACEHOLDERS = {
+    "first_name": "Borrower's first name",
+    "last_name": "Borrower's last name",
+    "amount": "Loan principal (payment amount for receipts), KES, thousands-grouped",
+    "due_date": "Loan due date",
+    "balance": "Outstanding balance, KES, thousands-grouped",
+    "account_number": "Loan account number",
+    "days_left": "Days remaining until the due date (reminders)",
+    "dcp_name": "Your DCP / company name",
+    "loan_ref": "Loan account number / transaction reference",
+}
+
+# Human labels for each event key (surfaced in the admin UI).
+EVENT_LABELS = {
+    "loan_qualified": "Loan qualified / approved",
+    "loan_disbursed": "Loan disbursed",
+    "repayment_reminder": "Repayment reminder",
+    "overdue_alert": "Overdue alert",
+    "defaulted": "Loan defaulted",
+    "payment_receipt": "Payment receipt",
+}
+
+# Built-in fallbacks — identical wording to migration 007's seed rows.
+DEFAULT_TEMPLATES = {
+    "loan_qualified": (
+        "Dear {{first_name}}, good news! Your loan {{account_number}} of KES "
+        "{{amount}} has been APPROVED. It will be disbursed to your M-Pesa shortly. "
+        "{{dcp_name}}."),
+    "loan_disbursed": (
+        "Dear {{first_name}}, your loan {{account_number}} of KES {{amount}} has "
+        "been disbursed to your M-Pesa. Repay by {{due_date}}. {{dcp_name}}."),
+    "repayment_reminder": (
+        "Hi {{first_name}}, a friendly reminder: loan {{account_number}} balance "
+        "KES {{balance}} is due in {{days_left}} day(s) on {{due_date}}. Pay via "
+        "M-Pesa Paybill. {{dcp_name}}."),
+    "overdue_alert": (
+        "Dear {{first_name}}, loan {{account_number}} is OVERDUE. Outstanding KES "
+        "{{balance}}. Penalties may apply. Kindly settle to protect your credit "
+        "score. {{dcp_name}}."),
+    "defaulted": (
+        "Dear {{first_name}}, loan {{account_number}} has been marked DEFAULTED. "
+        "Outstanding KES {{balance}}. Please contact us urgently to settle and "
+        "protect your credit score. {{dcp_name}}."),
+    "payment_receipt": (
+        "Payment received: KES {{amount}} for loan {{account_number}} (ref "
+        "{{loan_ref}}). New balance KES {{balance}}. Thank you! {{dcp_name}}."),
+}
+
+_TOKEN_RE = re.compile(r"{{\s*(\w+)\s*}}")
+
+
+def render_body(body: str, context: dict) -> str:
+    """Substitute every {{token}} in `body` with context[token] (missing/None ->
+    empty string). Unknown tokens render as empty so a template never leaks a
+    literal placeholder to a borrower."""
+    def _repl(m):
+        val = (context or {}).get(m.group(1))
+        return "" if val is None else str(val)
+    return _TOKEN_RE.sub(_repl, body or "")
+
+
+def dcp_name(db: Session, tenant_id: int) -> str:
+    """Resolve the tenant's display name for the {{dcp_name}} token."""
+    try:
+        t = db.get(Tenant, tenant_id)
+        return t.name if t and t.name else "Finyl-DCP"
+    except Exception:
+        return "Finyl-DCP"
+
+
+def get_template(db: Session, tenant_id: int, event_key: str) -> tuple[str, bool]:
+    """Return (body, active) for a tenant's event template, falling back to the
+    built-in DEFAULT_TEMPLATES (always active) when no stored row exists."""
+    try:
+        row = (db.query(SmsTemplate)
+               .filter(SmsTemplate.tenant_id == tenant_id,
+                       SmsTemplate.event_key == event_key).first())
+    except Exception:
+        row = None
+    if row is not None:
+        return row.body, bool(row.active)
+    return DEFAULT_TEMPLATES.get(event_key, ""), True
+
+
+def render_template(db: Session, tenant_id: int, event_key: str, context: dict) -> tuple[str, bool]:
+    """Render a tenant's template for `event_key` against `context`.
+    Returns (rendered_text, active)."""
+    body, active = get_template(db, tenant_id, event_key)
+    return render_body(body, context), active
+
+
+def _base_context(db, tenant_id, borrower, loan) -> dict:
+    """Build the canonical context dict from a borrower + loan for rendering."""
+    return {
+        "first_name": getattr(borrower, "first_name", "") or "",
+        "last_name": getattr(borrower, "last_name", "") or "",
+        "amount": (f"{float(loan.principal):,.0f}"
+                   if loan is not None and loan.principal is not None else ""),
+        "due_date": (loan.due_date if loan is not None and loan.due_date else ""),
+        "balance": (f"{float(loan.outstanding_balance or 0):,.0f}"
+                    if loan is not None else ""),
+        "account_number": getattr(loan, "account_number", "") or "",
+        "days_left": "",
+        "dcp_name": dcp_name(db, tenant_id),
+        "loan_ref": getattr(loan, "account_number", "") or "",
+    }
+
+
+def _fire(db, tenant_id, phone, event_key, context, trigger_type) -> SmsLog | None:
+    """Render the tenant's template and dispatch it. Returns None (and sends
+    nothing) when the tenant has switched the template OFF via the active flag."""
+    body, active = render_template(db, tenant_id, event_key, context)
+    if not active:
+        return None
+    return send_sms(db, tenant_id, phone, body, trigger_type)
+
+
+# --- Loan-lifecycle triggers (template-driven) --------------------------------
+
+def sms_loan_qualified(db, tenant_id, borrower, loan):
+    """Fired when a loan is APPROVED (qualified) — before disbursement."""
+    return _fire(db, tenant_id, borrower.phone, "loan_qualified",
+                 _base_context(db, tenant_id, borrower, loan), "loan_qualified")
+
+
+def sms_loan_disbursed(db, tenant_id, borrower, loan):
+    """Fired when an approved loan is DISBURSED to the borrower's M-Pesa."""
+    return _fire(db, tenant_id, borrower.phone, "loan_disbursed",
+                 _base_context(db, tenant_id, borrower, loan), "loan_disbursed")
+
+
+# Backward-compatible alias — historical name mapped to the disbursed event.
+sms_loan_approval = sms_loan_disbursed
 
 
 def sms_repayment_reminder(db, tenant_id, borrower, loan, days_left: int):
-    return send_sms(
-        db, tenant_id, borrower.phone,
-        f"Hi {borrower.first_name}, a friendly reminder: loan {loan.account_number} "
-        f"balance KES {float(loan.outstanding_balance):,.0f} is due in {days_left} day(s) "
-        f"on {loan.due_date}. Pay via M-Pesa Paybill. Finyl-DCP.",
-        "repayment_reminder",
-    )
+    ctx = _base_context(db, tenant_id, borrower, loan)
+    ctx["days_left"] = days_left
+    return _fire(db, tenant_id, borrower.phone, "repayment_reminder",
+                 ctx, "repayment_reminder")
 
 
 def sms_overdue_alert(db, tenant_id, borrower, loan):
-    return send_sms(
-        db, tenant_id, borrower.phone,
-        f"Dear {borrower.first_name}, loan {loan.account_number} is OVERDUE. "
-        f"Outstanding KES {float(loan.outstanding_balance):,.0f}. Penalties may apply. "
-        f"Kindly settle to protect your credit score. Finyl-DCP.",
-        "overdue_alert",
-    )
+    return _fire(db, tenant_id, borrower.phone, "overdue_alert",
+                 _base_context(db, tenant_id, borrower, loan), "overdue_alert")
+
+
+def sms_defaulted(db, tenant_id, borrower, loan):
+    """Fired when a loan is moved to the DEFAULTED status."""
+    return _fire(db, tenant_id, borrower.phone, "defaulted",
+                 _base_context(db, tenant_id, borrower, loan), "defaulted")
 
 
 def sms_payment_receipt(db, tenant_id, borrower, loan, amount, ref):
-    return send_sms(
-        db, tenant_id, borrower.phone,
-        f"Payment received: KES {amount:,.0f} for loan {loan.account_number} "
-        f"(ref {ref}). New balance KES {float(loan.outstanding_balance):,.0f}. Thank you! Finyl-DCP.",
-        "manual",
-    )
+    ctx = _base_context(db, tenant_id, borrower, loan)
+    ctx["amount"] = f"{float(amount):,.0f}"
+    ctx["loan_ref"] = ref
+    return _fire(db, tenant_id, borrower.phone, "payment_receipt",
+                 ctx, "payment_receipt")
 
 
 def sms_ticket_resolution(db, tenant_id, phone, ticket_id):
+    """Complaint resolution notice — not part of the customizable loan lifecycle,
+    so it keeps its fixed wording."""
     return send_sms(
         db, tenant_id, phone,
         f"Your complaint {ticket_id} has been RESOLVED. Thank you for your patience. "

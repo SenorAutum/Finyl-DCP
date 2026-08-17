@@ -32,6 +32,7 @@ PERMISSIONS = {
     "audit.view": "View the audit trail / system logs",
     "backups.manage": "Trigger backups and data-integrity checks",
     "payments.upload": "Upload payment files / reconciliation batches",
+    "messaging.manage": "Customise per-DCP SMS message templates",
     # Clients (origination)
     "clients.view_all": "View all clients in scope (branch / region / company)",
     "clients.view_portfolio": "View only own-portfolio clients",
@@ -83,6 +84,7 @@ ROLE_PERMISSIONS = {
         "org.view", "org.manage",
         "thresholds.view", "thresholds.manage",
         "audit.view", "backups.manage", "payments.upload",
+        "messaging.manage",
         "dashboard.company",  # read-only situational awareness
     },
 

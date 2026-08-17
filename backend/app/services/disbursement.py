@@ -43,7 +43,7 @@ def execute_disbursement(db, tenant_id, loan: Loan, actor_user_id: int) -> dict:
     loan.due_date = date.today() + timedelta(days=step * max(1, tenure))
     loan.outstanding_balance = round(loan.total_due, 2)
     try:
-        sms.sms_loan_approval(db, tenant_id, loan.borrower, loan)
+        sms.sms_loan_disbursed(db, tenant_id, loan.borrower, loan)
     except Exception:
         pass
     return {"mpesa_ref": txn.mpesa_ref, "amount": float(loan.principal)}

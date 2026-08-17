@@ -2,7 +2,7 @@
 from datetime import datetime
 
 from sqlalchemy import (Boolean, Column, Date, DateTime, Float, ForeignKey,
-                        Integer, Numeric, String, Text, JSON)
+                        Integer, Numeric, String, Text, JSON, UniqueConstraint)
 from sqlalchemy.orm import relationship
 
 from app.core.database import Base
@@ -179,3 +179,24 @@ class SmsLog(Base):
     sell_price_kes = Column(Numeric(10, 4))                  # price charged to the DCP
     cost_price_kes = Column(Numeric(10, 4))                  # our cost from Uwazii
     margin_kes = Column(Numeric(10, 4))                      # sell - cost
+
+
+class SmsTemplate(Base):
+    """Per-DCP customizable SMS body for a loan-lifecycle event.
+
+    One row per (tenant_id, event_key). The body supports {{placeholder}} tokens
+    (see app/services/sms.py CANONICAL placeholders) rendered from a per-event
+    context. When a tenant has no row for an event the service falls back to the
+    built-in DEFAULT_TEMPLATES, so existing tenants keep working unchanged.
+    """
+    __tablename__ = "sms_templates"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "event_key", name="uq_sms_templates_tenant_event"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
+    event_key = Column(String(40), nullable=False)  # loan_qualified | loan_disbursed | ...
+    body = Column(Text, nullable=False)
+    active = Column(Boolean, nullable=False, default=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

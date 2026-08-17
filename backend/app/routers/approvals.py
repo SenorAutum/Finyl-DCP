@@ -13,7 +13,7 @@ from app.core.deps import (get_tenant_id, require_permission, get_scope, UserSco
                            write_audit)
 from app.models import Loan, Borrower, User, Staff, PendingApproval
 from app.schemas import LoanDecision, ClientProfileDecision, ApprovalDecision
-from app.services import rbac
+from app.services import rbac, sms
 from app.services.disbursement import execute_disbursement, execute_refund
 
 router = APIRouter(prefix="/api/v1/approvals", tags=["approvals"])
@@ -112,6 +112,12 @@ def decide_loan(loan_id: int, body: LoanDecision, request: Request,
     write_audit(db, tenant_id=tenant_id, user=user, action="loan.approve",
                 entity_type="loan", entity_id=loan.id,
                 details={"principal": float(loan.principal), "limit": limit}, request=request)
+    # Notify the borrower that the loan has qualified (before disbursement).
+    try:
+        if loan.borrower:
+            sms.sms_loan_qualified(db, tenant_id, loan.borrower, loan)
+    except Exception:
+        pass
     db.commit()
     return {"status": loan.status,
             "message": "Loan approved — awaiting disbursement by a Disbursement Officer."}

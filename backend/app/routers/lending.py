@@ -264,6 +264,13 @@ def transition_loan(loan_id: int, body: LoanStatusUpdate,
     write_audit(db, tenant_id=tenant_id, user=scope.user, action="loan.transition",
                 entity_type="loan", entity_id=loan.id,
                 details={"from": prev, "to": body.status}, request=request)
+    # Notify the borrower when a loan is moved to the defaulted status.
+    if body.status == "defaulted":
+        try:
+            if loan.borrower:
+                sms.sms_defaulted(db, tenant_id, loan.borrower, loan)
+        except Exception:
+            pass
     db.commit()
     return _loan_dict(loan)
 

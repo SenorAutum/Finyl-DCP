@@ -43,6 +43,7 @@ const NAV = [
     { to: "/access/payments", label: "Payment Upload", perm: "payments.upload", icon: "📥" },
     { to: "/access/backups", label: "Backups & Integrity", perm: "backups.manage", icon: "🗄" },
     { to: "/access/audit", label: "Audit Trail", perm: "audit.view", icon: "📜" },
+    { to: "/messaging", label: "SMS Messaging", perm: "messaging.manage", icon: "✉" },
   ]},
   { group: "Configuration", items: [
     { to: "/products", label: "Loan Products", module: "lending", icon: "⚙" },

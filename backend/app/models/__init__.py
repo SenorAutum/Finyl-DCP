@@ -2,7 +2,7 @@
 from app.models.tenancy import Tenant, TenantModule, User, MODULE_KEYS
 from app.models.org import Region, Branch, Staff, Product
 from app.models.lending import (Borrower, Loan, Repayment, PaymentTransaction, SmsLog,
-                                LOAN_STATUSES, WALLET_OPERATORS,
+                                SmsTemplate, LOAN_STATUSES, WALLET_OPERATORS,
                                 NEXT_OF_KIN_RELATIONSHIPS, DOC_TYPES)
 from app.models.client_kyc import ClientMobileWallet, ClientNextOfKin, ClientDocument
 from app.models.rbac import (ApprovalThreshold, ApproverSetting, AuditLog,

@@ -161,7 +161,7 @@ def mpesa_b2c(body: B2CRequest, tenant_id: int = Depends(require_module("payment
     step = 7 if loan.product.tenure_unit == "weeks" else 30
     loan.due_date = date.today() + timedelta(days=step * max(1, loan.product.tenure_value))
     loan.outstanding_balance = round(loan.total_due, 2)
-    sms.sms_loan_approval(db, tenant_id, loan.borrower, loan)
+    sms.sms_loan_disbursed(db, tenant_id, loan.borrower, loan)
     db.commit()
     return payload["response"]
 
