@@ -1,17 +1,35 @@
 """SMS notifications: manual send, dispatch log viewer and scheduled-job endpoints
 (repayment reminders 3 days before due; overdue/penalty alerts)."""
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.database import get_db
 from app.core.deps import require_module, require_role
-from app.models import Loan, SmsLog, Tenant, User
+from app.models import (Loan, SmsLog, Tenant, User, SmsAutomationSetting,
+                        SMS_AUTOMATION_DEFAULT_ENABLED, SMS_AUTOMATION_DEFAULT_HOUR)
 from app.schemas import SendSmsRequest
 from app.services import sms
 
 router = APIRouter(prefix="/api/v1/notifications", tags=["notifications"])
+
+
+def get_automation_config(db: Session, tenant_id: int) -> dict:
+    """Resolve a tenant's SMS automation config, falling back to defaults when
+    the tenant has no stored row yet."""
+    row = (db.query(SmsAutomationSetting)
+           .filter(SmsAutomationSetting.tenant_id == tenant_id).first())
+    if row is None:
+        return {"tenant_id": tenant_id,
+                "automation_enabled": SMS_AUTOMATION_DEFAULT_ENABLED,
+                "send_hour": SMS_AUTOMATION_DEFAULT_HOUR,
+                "source": "default", "updated_at": None}
+    return {"tenant_id": tenant_id,
+            "automation_enabled": bool(row.automation_enabled),
+            "send_hour": int(row.send_hour),
+            "source": "custom",
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None}
 
 
 # ---------------------------------------------------------------------------
@@ -60,6 +78,20 @@ def _run_defaulting(db: Session, tenant_id: int, grace_days: int = 30) -> int:
     return len(loans)
 
 
+def run_tenant_jobs(db: Session, tenant_id: int, grace_days: int = 30) -> dict:
+    """Run every lifecycle-SMS job for one tenant (does NOT commit — caller does).
+    Shared by the super-admin all-tenants runner and the per-DCP 'Send now'."""
+    reminders = _run_repayment_reminders(db, tenant_id)
+    overdue = _run_overdue_alerts(db, tenant_id)
+    defaulted = _run_defaulting(db, tenant_id, grace_days)
+    return {
+        "reminders_sent": reminders,
+        "alerts_sent": overdue["alerts_sent"],
+        "flipped_to_overdue": overdue["flipped_to_overdue"],
+        "defaulted": defaulted,
+    }
+
+
 @router.post("/send-sms")
 def send_sms_endpoint(body: SendSmsRequest, tenant_id: int = Depends(require_module("payments")),
                       db: Session = Depends(get_db)):
@@ -84,6 +116,7 @@ def sms_logs(tenant_id: int = Depends(require_module("payments")), db: Session =
 
 @router.post("/jobs/run-repayment-reminders")
 def run_repayment_reminders(tenant_id: int = Depends(require_module("payments")),
+                            _: User = Depends(require_role("super_admin")),
                             db: Session = Depends(get_db)):
     """Scan active loans due within 3 days and dispatch reminder SMS.
     In production, schedule this endpoint via cron/systemd timer."""
@@ -94,6 +127,7 @@ def run_repayment_reminders(tenant_id: int = Depends(require_module("payments"))
 
 @router.post("/jobs/run-overdue-alerts")
 def run_overdue_alerts(tenant_id: int = Depends(require_module("payments")),
+                       _: User = Depends(require_role("super_admin")),
                        db: Session = Depends(get_db)):
     """Mark past-due active loans overdue and alert borrowers (penalty notice)."""
     result = _run_overdue_alerts(db, tenant_id)
@@ -104,6 +138,7 @@ def run_overdue_alerts(tenant_id: int = Depends(require_module("payments")),
 @router.post("/jobs/run-defaulting")
 def run_defaulting(grace_days: int = 30,
                    tenant_id: int = Depends(require_module("payments")),
+                   _: User = Depends(require_role("super_admin")),
                    db: Session = Depends(get_db)):
     """Flip loans overdue beyond the grace window to defaulted and notify borrowers."""
     defaulted = _run_defaulting(db, tenant_id, grace_days)
@@ -112,29 +147,44 @@ def run_defaulting(grace_days: int = 30,
 
 
 @router.post("/jobs/run-all")
-def run_all_jobs(grace_days: int = 30,
+def run_all_jobs(hour: int | None = None, grace_days: int = 30,
                  user: User = Depends(require_role("super_admin")),
                  db: Session = Depends(get_db)):
-    """Super-admin: run every scheduled SMS job across ALL tenants in one pass.
+    """Super-admin: run scheduled SMS jobs across tenants, RESPECTING per-DCP config.
 
-    Executes repayment reminders, overdue alerts and defaulting for each tenant,
-    committing per tenant so one tenant's failure cannot roll back the others."""
+    Intended to be invoked hourly by a scheduled task. For each tenant it:
+      * skips tenants with automation disabled (they use 'Send now' manually);
+      * skips tenants whose configured send_hour != the current server hour;
+      * otherwise runs reminders + overdue alerts + defaulting, committing per
+        tenant so one tenant's failure cannot roll back the others.
+
+    `hour` overrides the current server hour (0-23) for testing.
+    """
+    current_hour = hour if hour is not None else datetime.now().hour
+    if not 0 <= current_hour <= 23:
+        current_hour = current_hour % 24
     results = []
+    processed = 0
     for t in db.query(Tenant).order_by(Tenant.id).all():
+        cfg = get_automation_config(db, t.id)
+        if not cfg["automation_enabled"]:
+            results.append({"tenant_id": t.id, "tenant": t.name,
+                            "processed": False, "reason": "disabled"})
+            continue
+        if cfg["send_hour"] != current_hour:
+            results.append({"tenant_id": t.id, "tenant": t.name,
+                            "processed": False, "reason": "not-their-hour",
+                            "send_hour": cfg["send_hour"]})
+            continue
         try:
-            reminders = _run_repayment_reminders(db, t.id)
-            overdue = _run_overdue_alerts(db, t.id)
-            defaulted = _run_defaulting(db, t.id, grace_days)
+            counts = run_tenant_jobs(db, t.id, grace_days)
             db.commit()
-            results.append({
-                "tenant_id": t.id, "tenant": t.name, "ok": True,
-                "reminders_sent": reminders,
-                "alerts_sent": overdue["alerts_sent"],
-                "flipped_to_overdue": overdue["flipped_to_overdue"],
-                "defaulted": defaulted,
-            })
+            processed += 1
+            results.append({"tenant_id": t.id, "tenant": t.name,
+                            "processed": True, **counts})
         except Exception as exc:  # noqa: BLE001 — isolate per-tenant failures
             db.rollback()
             results.append({"tenant_id": t.id, "tenant": t.name,
-                            "ok": False, "error": str(exc)})
-    return {"tenants_processed": len(results), "results": results}
+                            "processed": False, "reason": "error", "error": str(exc)})
+    return {"hour": current_hour, "tenants_seen": len(results),
+            "tenants_processed": processed, "results": results}

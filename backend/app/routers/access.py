@@ -27,7 +27,8 @@ from app.schemas import (UserCreate, UserUpdate, RoleAssign, PasswordReset,
                         RegionCreate, BranchCreate, ThresholdCreate, ApproverConfigIn)
 from app.services import rbac
 
-router = APIRouter(prefix="/api/v1/access", tags=["access"])
+router = APIRouter(prefix="/api/v1/access", tags=["access"],
+                   dependencies=[Depends(require_role("super_admin"))])
 
 DEFAULT_PW = "Finyl@2026"
 

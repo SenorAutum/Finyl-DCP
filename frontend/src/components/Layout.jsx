@@ -35,18 +35,18 @@ const NAV = [
   { group: "Compliance", items: [
     { to: "/cbk", label: "CBK Reporting", module: "cbk_reporting", icon: "🏛" },
   ]},
-  { group: "Administration", items: [
-    { to: "/access/users", label: "Users & Access", perm: "users.view", icon: "👤" },
-    { to: "/access/roles", label: "Roles & Permissions", perm: "roles.view", icon: "🔑" },
-    { to: "/access/org", label: "Branches & Regions", perm: "org.view", icon: "🏢" },
-    { to: "/access/thresholds", label: "Approval Thresholds", perm: "thresholds.view", icon: "⚖" },
-    { to: "/access/payments", label: "Payment Upload", perm: "payments.upload", icon: "📥" },
-    { to: "/access/backups", label: "Backups & Integrity", perm: "backups.manage", icon: "🗄" },
-    { to: "/access/audit", label: "Audit Trail", perm: "audit.view", icon: "📜" },
-    { to: "/messaging", label: "SMS Messaging", perm: "messaging.manage", icon: "✉" },
+  { group: "Administration", superOnly: true, items: [
+    { to: "/access/users", label: "Users & Access", icon: "👤" },
+    { to: "/access/roles", label: "Roles & Permissions", icon: "🔑" },
+    { to: "/access/org", label: "Branches & Regions", icon: "🏢" },
+    { to: "/access/thresholds", label: "Approval Thresholds", icon: "⚖" },
+    { to: "/access/payments", label: "Payment Upload", icon: "📥" },
+    { to: "/access/backups", label: "Backups & Integrity", icon: "🗄" },
+    { to: "/access/audit", label: "Audit Trail", icon: "📜" },
+    { to: "/messaging", label: "SMS Messaging", icon: "✉" },
   ]},
-  { group: "Configuration", items: [
-    { to: "/products", label: "Loan Products", module: "lending", icon: "⚙" },
+  { group: "Configuration", superOnly: true, items: [
+    { to: "/products", label: "Loan Products", icon: "⚙" },
   ]},
 ];
 
@@ -65,6 +65,7 @@ export default function Layout() {
   const NavItems = () => (
     <nav className="flex-1 overflow-y-auto px-3 pb-4 space-y-4">
       {NAV.map((g) => {
+        if (g.superOnly && !isAdmin) return null;
         const items = g.items.filter((i) =>
           (i.module ? canAccess(i.module) : true) &&
           (i.perm ? can(i.perm) : true) &&

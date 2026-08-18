@@ -18,9 +18,11 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.deps import get_current_user, write_audit
 from app.core.permissions import has_permission
-from app.models import SmsTemplate, Tenant, User
-from app.schemas import MessageTemplateIn, MessagePreviewIn, MessageTestIn
+from app.models import SmsTemplate, Tenant, User, SmsAutomationSetting
+from app.schemas import (MessageTemplateIn, MessagePreviewIn, MessageTestIn,
+                         SmsAutomationIn)
 from app.services import sms
+from app.routers.notifications import get_automation_config, run_tenant_jobs
 
 router = APIRouter(prefix="/api/v1/messaging", tags=["messaging"])
 
@@ -44,24 +46,22 @@ def messaging_ctx(tenant_id: int | None = None,
     — so the picker can bootstrap — the first tenant); every other permitted role
     is pinned to its own tenant regardless of any tenant_id supplied.
     """
-    if not has_permission(user.role, _PERM):
-        raise HTTPException(403, f"Missing required permission: {_PERM}")
-    if user.role == "super_admin":
-        tid = tenant_id
-        if tid is None and x_tenant_id:
-            try:
-                tid = int(x_tenant_id)
-            except ValueError:
-                tid = None
-        if tid is None:
-            tid = user.tenant_id
-        if tid is None:
-            first = db.query(Tenant).order_by(Tenant.id).first()
-            tid = first.id if first else None
-        if tid is None:
-            raise HTTPException(400, "No tenants exist to configure")
-        return MsgCtx(user, int(tid))
-    return MsgCtx(user, user.tenant_id)
+    if user.role != "super_admin":
+        raise HTTPException(403, "Super administrator access required")
+    tid = tenant_id
+    if tid is None and x_tenant_id:
+        try:
+            tid = int(x_tenant_id)
+        except ValueError:
+            tid = None
+    if tid is None:
+        tid = user.tenant_id
+    if tid is None:
+        first = db.query(Tenant).order_by(Tenant.id).first()
+        tid = first.id if first else None
+    if tid is None:
+        raise HTTPException(400, "No tenants exist to configure")
+    return MsgCtx(user, int(tid))
 
 
 def _sample_context(db: Session, tenant_id: int) -> dict:
@@ -206,3 +206,59 @@ def send_test(event_key: str, body: MessageTestIn, request: Request,
     db.commit()
     return {"event_key": event_key, "status": log.status, "message": rendered,
             "sms_log_id": log.id, "error": log.error}
+
+
+# ===========================================================================
+# Automation — per-DCP switch for the daily lifecycle-SMS batch.
+# ===========================================================================
+@router.get("/automation")
+def get_automation(ctx: MsgCtx = Depends(messaging_ctx), db: Session = Depends(get_db)):
+    """Current tenant's automation config (falls back to defaults if unset)."""
+    cfg = get_automation_config(db, ctx.tenant_id)
+    out = {**cfg, "timezone_note": "send_hour is an hour (0-23) in the server timezone."}
+    if ctx.user.role == "super_admin":
+        out["tenants"] = _tenant_list(db)
+    return out
+
+
+@router.put("/automation")
+def set_automation(body: SmsAutomationIn, request: Request,
+                   ctx: MsgCtx = Depends(messaging_ctx), db: Session = Depends(get_db)):
+    """Upsert automation_enabled + send_hour for the tenant."""
+    if not 0 <= body.send_hour <= 23:
+        raise HTTPException(400, "send_hour must be between 0 and 23")
+    row = (db.query(SmsAutomationSetting)
+           .filter(SmsAutomationSetting.tenant_id == ctx.tenant_id).first())
+    if row:
+        row.automation_enabled = body.automation_enabled
+        row.send_hour = body.send_hour
+        row.updated_by_user_id = ctx.user.id
+    else:
+        row = SmsAutomationSetting(tenant_id=ctx.tenant_id,
+                                   automation_enabled=body.automation_enabled,
+                                   send_hour=body.send_hour,
+                                   updated_by_user_id=ctx.user.id)
+        db.add(row)
+    db.flush()
+    write_audit(db, tenant_id=ctx.tenant_id, user=ctx.user, action="messaging.automation_set",
+                entity_type="sms_automation", entity_id=row.id,
+                details={"automation_enabled": body.automation_enabled,
+                         "send_hour": body.send_hour}, request=request)
+    db.commit()
+    return {"tenant_id": ctx.tenant_id,
+            "automation_enabled": bool(row.automation_enabled),
+            "send_hour": int(row.send_hour), "source": "custom",
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None}
+
+
+@router.post("/automation/run-now")
+def run_now(request: Request, grace_days: int = 30,
+            ctx: MsgCtx = Depends(messaging_ctx), db: Session = Depends(get_db)):
+    """Manually run the lifecycle-SMS batch (reminders + overdue alerts +
+    defaulting) for the CURRENT tenant only. Dispatches REAL SMS."""
+    counts = run_tenant_jobs(db, ctx.tenant_id, grace_days)
+    write_audit(db, tenant_id=ctx.tenant_id, user=ctx.user, action="messaging.automation_run_now",
+                entity_type="sms_automation", entity_id=ctx.tenant_id,
+                details=counts, request=request)
+    db.commit()
+    return {"tenant_id": ctx.tenant_id, **counts}

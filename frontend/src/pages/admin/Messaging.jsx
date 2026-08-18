@@ -131,6 +131,103 @@ function EventCard({ ev, variables, sampleContext, onSave, onTest }) {
   );
 }
 
+const HOURS = Array.from({ length: 24 }, (_, h) => h);
+const fmtHour = (h) => {
+  const hh = String(h).padStart(2, "0");
+  return `${hh}:00`;
+};
+
+function AutomationSection({ tenantId, ready, qs }) {
+  const [cfg, setCfg] = useState(null);
+  const [enabled, setEnabled] = useState(true);
+  const [hour, setHour] = useState(7);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  const [err, setErr] = useState("");
+
+  const load = () => {
+    if (!ready) return;
+    setErr(""); setNote(""); setCfg(null);
+    api(`/api/v1/messaging/automation${qs(tenantId)}`)
+      .then((d) => { setCfg(d); setEnabled(d.automation_enabled); setHour(d.send_hour); })
+      .catch((e) => setErr(e.detail));
+  };
+  useEffect(load, [tenantId, ready]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const dirty = cfg && (enabled !== cfg.automation_enabled || hour !== cfg.send_hour);
+
+  const save = async () => {
+    setBusy(true); setErr(""); setNote("");
+    try {
+      const d = await api(`/api/v1/messaging/automation${qs(tenantId)}`,
+        { method: "PUT", body: { automation_enabled: enabled, send_hour: hour } });
+      setCfg(d); setEnabled(d.automation_enabled); setHour(d.send_hour);
+      setNote("Automation settings saved.");
+    } catch (e) { setErr(e.detail || "Save failed"); }
+    finally { setBusy(false); }
+  };
+
+  const runNow = async () => {
+    if (!window.confirm(
+      "Send lifecycle SMS now for this DCP?\nThis runs repayment reminders, overdue alerts and " +
+      "defaulting for all matching loans and dispatches REAL SMS.")) return;
+    setBusy(true); setErr(""); setNote("");
+    try {
+      const r = await api(`/api/v1/messaging/automation/run-now${qs(tenantId)}`, { method: "POST" });
+      setNote(`Sent now — reminders: ${r.reminders_sent}, overdue alerts: ${r.alerts_sent} ` +
+        `(flipped ${r.flipped_to_overdue}), defaulted: ${r.defaulted}.`);
+    } catch (e) { setErr(e.detail || "Run failed"); }
+    finally { setBusy(false); }
+  };
+
+  if (!ready) return null;
+  if (!cfg && !err) return <div className="card p-4 mb-6"><Spinner /></div>;
+
+  return (
+    <div className="card p-4 mb-6">
+      <div className="font-semibold text-gray-800 mb-1">Automation</div>
+      <p className="text-sm text-gray-500 mb-3 max-w-3xl">
+        Choose whether this DCP's lifecycle SMS (repayment reminders, overdue alerts and
+        defaulting) are dispatched automatically each day, and at what hour. Times are in the
+        server timezone.
+      </p>
+
+      {err && <div className="mb-3 text-sm text-red-600 bg-red-50 rounded-lg p-3">{err}</div>}
+      {note && <div className="mb-3 text-sm text-emerald-700 bg-emerald-50 rounded-lg p-3">{note}</div>}
+
+      <div className="flex flex-wrap items-center gap-x-8 gap-y-3">
+        <label className="flex items-center gap-3 text-sm text-gray-700">
+          <Switch on={enabled} disabled={busy} onChange={() => setEnabled((v) => !v)} />
+          <span>Automatically send lifecycle SMS reminders &amp; alerts</span>
+        </label>
+
+        <label className="flex items-center gap-2 text-sm text-gray-700">
+          <span>Daily send time</span>
+          <select className="input w-auto" value={hour} disabled={busy || !enabled}
+            onChange={(e) => setHour(Number(e.target.value))}>
+            {HOURS.map((h) => <option key={h} value={h}>{fmtHour(h)}</option>)}
+          </select>
+          <span className="text-xs text-gray-400">server time</span>
+        </label>
+      </div>
+
+      {!enabled && (
+        <div className="mt-3 text-sm text-amber-700 bg-amber-50 rounded-lg p-3">
+          Automation is <b>off</b> — no SMS will be sent automatically. Messages go out only when
+          you click <b>Send now</b> below.
+        </div>
+      )}
+
+      <div className="mt-4 flex items-center gap-2">
+        <button className="btn-primary" onClick={save} disabled={busy || !dirty}>
+          {busy ? "Saving…" : "Save automation"}
+        </button>
+        <button className="btn-secondary" onClick={runNow} disabled={busy}>Send now</button>
+      </div>
+    </div>
+  );
+}
+
 export default function Messaging() {
   const { user } = useAuth();
   const isSuper = user?.role === "super_admin";
@@ -187,6 +284,8 @@ export default function Messaging() {
 
       {isSuper && !tenantId && !err &&
         <div className="text-sm text-gray-400">Select a DCP above to customise its SMS templates.</div>}
+
+      <AutomationSection tenantId={tenantId} ready={(!isSuper) || !!tenantId} qs={qs} />
 
       {!data && ((isSuper && tenantId) || !isSuper) && !err && <Spinner />}
 

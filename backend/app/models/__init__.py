@@ -7,8 +7,9 @@ from app.models.lending import (Borrower, Loan, Repayment, PaymentTransaction, S
 from app.models.client_kyc import ClientMobileWallet, ClientNextOfKin, ClientDocument
 from app.models.rbac import (ApprovalThreshold, ApproverSetting, AuditLog,
                              PendingApproval, ReportSchedule, ReportTemplate,
-                             AnomalyFlag, THRESHOLD_TYPES, SCOPE_TYPES,
-                             APPROVAL_TYPES)
+                             AnomalyFlag, SmsAutomationSetting, THRESHOLD_TYPES,
+                             SCOPE_TYPES, APPROVAL_TYPES,
+                             SMS_AUTOMATION_DEFAULT_ENABLED, SMS_AUTOMATION_DEFAULT_HOUR)
 from app.models.engagement import (
     CrmLead, SiteVisit, CallLog, Complaint, ImpactSurvey, AmlFlag,
     CRM_STAGES, CALL_OUTCOMES, COMPLAINT_CATEGORIES, COMPLAINT_STATUSES, SLA_DAYS,

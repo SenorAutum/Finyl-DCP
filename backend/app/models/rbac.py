@@ -58,6 +58,30 @@ class ApproverSetting(Base):
 APPROVAL_TYPES = ["loan", "client", "disbursement", "refund"]
 
 
+class SmsAutomationSetting(Base):
+    """Per-DCP SMS automation config.
+
+    Controls whether the daily lifecycle-SMS batch (repayment reminders, overdue
+    alerts, defaulting) runs automatically for a tenant, and at which server-local
+    hour. Absence of a row falls back to the defaults (enabled, 07:00). A tenant
+    with automation_enabled=False is skipped by the all-tenants runner and instead
+    dispatches SMS manually via the "Send now" action.
+    """
+    __tablename__ = "sms_automation_settings"
+
+    id = Column(Integer, primary_key=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True, unique=True)
+    automation_enabled = Column(Boolean, nullable=False, default=True)
+    send_hour = Column(Integer, nullable=False, default=7)   # 0-23, server-local hour
+    updated_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# Defaults applied when a tenant has no sms_automation_settings row yet.
+SMS_AUTOMATION_DEFAULT_ENABLED = True
+SMS_AUTOMATION_DEFAULT_HOUR = 7
+
+
 class AuditLog(Base):
     """Immutable-ish append log of privileged actions across the platform."""
     __tablename__ = "audit_logs"

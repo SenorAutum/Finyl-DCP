@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.core.database import get_db
 from app.core.deps import (get_current_user, require_module, require_permission,
-                           get_scope, UserScope, write_audit)
+                           require_role, get_scope, UserScope, write_audit)
 from app.models import (Borrower, Branch, ImpactSurvey, Loan, PaymentTransaction,
                         Product, Region, Repayment, Staff, User)
 from app.schemas import (BorrowerCreate, LoanApplication, LoanStatusUpdate, ProductCreate,
@@ -102,6 +102,7 @@ def list_products(tenant_id: int = Depends(require_module("lending")), db: Sessi
 
 @router.post("/products")
 def create_product(body: ProductCreate, tenant_id: int = Depends(require_module("lending")),
+                   _: User = Depends(require_role("super_admin")),
                    db: Session = Depends(get_db)):
     p = Product(tenant_id=tenant_id, **body.model_dump())
     db.add(p)
@@ -112,6 +113,7 @@ def create_product(body: ProductCreate, tenant_id: int = Depends(require_module(
 @router.put("/products/{product_id}")
 def update_product(product_id: int, body: ProductCreate,
                    tenant_id: int = Depends(require_module("lending")),
+                   _: User = Depends(require_role("super_admin")),
                    db: Session = Depends(get_db)):
     p = db.query(Product).filter(Product.id == product_id, Product.tenant_id == tenant_id).first()
     if not p:

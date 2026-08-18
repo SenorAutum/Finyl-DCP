@@ -187,6 +187,12 @@ class MessageTestIn(BaseModel):
     body: Optional[str] = None
 
 
+class SmsAutomationIn(BaseModel):
+    """Per-DCP SMS automation config. send_hour is a server-local hour 0-23."""
+    automation_enabled: bool = True
+    send_hour: int = 7
+
+
 # ---- CRM -----------------------------------------------------------------------
 class LeadCreate(BaseModel):
     name: str

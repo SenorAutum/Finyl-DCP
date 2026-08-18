@@ -129,7 +129,7 @@ export default function App() {
             <Route path="/borrowers" element={<Navigate to="/clients" replace />} />
             <Route path="/loans" element={<Guard module="lending"><Loans /></Guard>} />
             <Route path="/loans/:id" element={<Guard module="lending"><LoanDetail /></Guard>} />
-            <Route path="/products" element={<Guard module="lending"><Products /></Guard>} />
+            <Route path="/products" element={<AdminGuard><Products /></AdminGuard>} />
             <Route path="/payments" element={<Guard module="payments"><Payments /></Guard>} />
             <Route path="/complaints" element={<Guard module="complaints"><Complaints /></Guard>} />
             <Route path="/crm" element={<Guard module="crm"><Crm /></Guard>} />
@@ -138,18 +138,18 @@ export default function App() {
             <Route path="/cbk" element={<Guard module="cbk_reporting"><Cbk /></Guard>} />
             {/* RBAC: approvals, administration & reporting (permission-gated) */}
             <Route path="/approvals" element={<PermGuard perms={["loans.approve", "clients.approve", "disburse.approve", "refund.approve"]}><Approvals /></PermGuard>} />
-            <Route path="/access/users" element={<PermGuard perms="users.view"><Users /></PermGuard>} />
-            <Route path="/access/roles" element={<PermGuard perms="roles.view"><RolesPermissions /></PermGuard>} />
-            <Route path="/access/org" element={<PermGuard perms="org.view"><BranchesRegions /></PermGuard>} />
-            <Route path="/access/thresholds" element={<PermGuard perms="thresholds.view"><Thresholds /></PermGuard>} />
-            <Route path="/access/payments" element={<PermGuard perms="payments.upload"><PaymentUpload /></PermGuard>} />
-            <Route path="/access/backups" element={<PermGuard perms="backups.manage"><Backups /></PermGuard>} />
-            <Route path="/access/audit" element={<PermGuard perms="audit.view"><AuditLog /></PermGuard>} />
+            <Route path="/access/users" element={<AdminGuard><Users /></AdminGuard>} />
+            <Route path="/access/roles" element={<AdminGuard><RolesPermissions /></AdminGuard>} />
+            <Route path="/access/org" element={<AdminGuard><BranchesRegions /></AdminGuard>} />
+            <Route path="/access/thresholds" element={<AdminGuard><Thresholds /></AdminGuard>} />
+            <Route path="/access/payments" element={<AdminGuard><PaymentUpload /></AdminGuard>} />
+            <Route path="/access/backups" element={<AdminGuard><Backups /></AdminGuard>} />
+            <Route path="/access/audit" element={<AdminGuard><AuditLog /></AdminGuard>} />
             <Route path="/reporting" element={<PermGuard perms={["reports.export", "reports.schedule", "reports.template", "reports.flag"]}><Reporting /></PermGuard>} />
             <Route path="/admin" element={<AdminGuard><Admin /></AdminGuard>} />
             <Route path="/integrations" element={<AdminGuard><Integrations /></AdminGuard>} />
             <Route path="/approver-config" element={<AdminGuard><ApproverConfig /></AdminGuard>} />
-            <Route path="/messaging" element={<PermGuard perms="messaging.manage"><Messaging /></PermGuard>} />
+            <Route path="/messaging" element={<AdminGuard><Messaging /></AdminGuard>} />
             {/* Legacy path — DCP Setup was absorbed into the Integrations module. */}
             <Route path="/dcp-setup" element={<Navigate to="/integrations" replace />} />
             <Route path="*" element={<Navigate to="/" replace />} />
