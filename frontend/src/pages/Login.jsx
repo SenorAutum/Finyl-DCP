@@ -27,7 +27,10 @@ export default function Login() {
   const submit = async (e) => {
     e.preventDefault();
     setBusy(true); setErr("");
-    try { await login(email, password); nav("/"); }
+    try {
+      const res = await login(email, password);
+      nav(res?.force_password_reset ? "/change-password" : "/");
+    }
     catch (ex) { setErr(ex.detail || "Login failed"); }
     finally { setBusy(false); }
   };

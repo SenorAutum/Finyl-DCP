@@ -17,9 +17,10 @@ from app.models import (AmlFlag, Borrower, Branch, CallLog, Complaint, CrmLead,
                         Region, Repayment, SiteVisit, SmsLog, Staff, Tenant,
                         TenantModule, User)
 
+from app.seeds.credentials import SeedCredentials
+
 random.seed(2026)
 TODAY = date.today()
-PASSWORD = "Finyl@2026"
 
 FIRST_M = ["Brian", "Kevin", "Dennis", "Collins", "Nelson", "Samuel", "Peter", "John", "James",
            "David", "Daniel", "Joseph", "Elijah", "Victor", "Felix", "George", "Moses", "Isaac",
@@ -400,20 +401,22 @@ def main(force=False):
 
         # Users
         mular, pesaf, jenga = all_t
-        pw = hash_password(PASSWORD)
+        creds = SeedCredentials()
+
+        def _mk(email, full_name, role, tenant_id):
+            # AUTH-03: per-user password (or SEED_DEFAULT_PASSWORD), recorded to a
+            # gitignored file — never printed — and force_password_reset=True.
+            return User(email=email, hashed_password=hash_password(creds.password_for(email)),
+                        full_name=full_name, role=role, tenant_id=tenant_id,
+                        force_password_reset=True)
+
         users = [
-            User(email="superadmin@finyl.app", hashed_password=pw, full_name="Finyl Super Admin",
-                 role="super_admin", tenant_id=mular.id),
-            User(email="admin@mularcredit.co.ke", hashed_password=pw, full_name="Brandon Otieno",
-                 role="tenant_admin", tenant_id=mular.id),
-            User(email="officer@mularcredit.co.ke", hashed_password=pw, full_name="Nelson Mwanzia",
-                 role="loan_officer", tenant_id=mular.id),
-            User(email="agent@mularcredit.co.ke", hashed_password=pw, full_name="Cynthia Wanjiru",
-                 role="call_agent", tenant_id=mular.id),
-            User(email="admin@pesaflow.co.ke", hashed_password=pw, full_name="Kevin Kiprop",
-                 role="tenant_admin", tenant_id=pesaf.id),
-            User(email="admin@jengamicro.co.ke", hashed_password=pw, full_name="Faith Chebet",
-                 role="tenant_admin", tenant_id=jenga.id),
+            _mk("superadmin@finyl.app", "Finyl Super Admin", "super_admin", mular.id),
+            _mk("admin@mularcredit.co.ke", "Brandon Otieno", "tenant_admin", mular.id),
+            _mk("officer@mularcredit.co.ke", "Nelson Mwanzia", "loan_officer", mular.id),
+            _mk("agent@mularcredit.co.ke", "Cynthia Wanjiru", "call_agent", mular.id),
+            _mk("admin@pesaflow.co.ke", "Kevin Kiprop", "tenant_admin", pesaf.id),
+            _mk("admin@jengamicro.co.ke", "Faith Chebet", "tenant_admin", jenga.id),
         ]
         # Link officer/agent users to staff records for scorecard attribution
         officer_staff = db.query(Staff).filter(Staff.tenant_id == mular.id, Staff.role == "loan_officer").first()
@@ -444,7 +447,10 @@ def main(force=False):
                     "client_mobile_wallets", "client_next_of_kin", "client_documents"]:
             n = db.execute(text(f"SELECT count(*) FROM {tbl}")).scalar()
             print(f"  {tbl}: {n}")
-        print("Seed complete. Login password for all users:", PASSWORD)
+        print("Base seed credentials:", creds.flush("seed.py base users"))
+        print("Seed complete. Credentials written to the gitignored "
+              "storage/seed_credentials.txt file (passwords are never printed). "
+              "All seeded users must reset their password on first login.")
     finally:
         db.close()
 

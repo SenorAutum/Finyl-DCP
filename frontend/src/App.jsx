@@ -4,6 +4,7 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import Layout from "./components/Layout";
 import { AuthProvider, useAuth } from "./hooks/useAuth";
 import Login from "./pages/Login";
+import ChangePassword from "./pages/ChangePassword";
 import Dashboard from "./pages/dashboard/Dashboard";
 import Clients from "./pages/clients/Clients";
 import ClientDetail from "./pages/clients/ClientDetail";
@@ -112,6 +113,9 @@ function Shell() {
   const { user, loading } = useAuth();
   if (loading) return <div className="min-h-screen flex items-center justify-center"><Spinner /></div>;
   if (!user) return <Navigate to="/login" replace />;
+  // AUTH-03: a user with a forced password reset cannot enter the app until the
+  // password is changed (mirrors the backend middleware gate).
+  if (user.force_password_reset) return <Navigate to="/change-password" replace />;
   return <Layout />;
 }
 
@@ -121,6 +125,7 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<Login />} />
+          <Route path="/change-password" element={<ChangePassword />} />
           <Route element={<Shell />}>
             <Route index element={<HomeRedirect />} />
             <Route path="/clients" element={<Guard module="lending"><Clients /></Guard>} />

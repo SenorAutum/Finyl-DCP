@@ -18,13 +18,28 @@ export function AuthProvider({ children }) {
   useEffect(() => { refresh(); }, [refresh]);
 
   const login = async (email, password) => {
-    const { access_token } = await api("/api/v1/auth/login", { method: "POST", body: { email, password } });
-    setToken(access_token);
+    const res = await api("/api/v1/auth/login", { method: "POST", body: { email, password } });
+    setToken(res.access_token);
     setTenantOverride(null);
     await refresh();
+    return res; // includes force_password_reset so the caller can route to /change-password
   };
 
-  const logout = () => { setToken(null); setTenantOverride(null); setUser(null); };
+  // AUTH-03/04: self-service password change. Returns a fresh token (old ones
+  // are revoked server-side) and clears the forced-reset state.
+  const changePassword = async (current_password, new_password) => {
+    const res = await api("/api/v1/auth/change-password", {
+      method: "POST", body: { current_password, new_password },
+    });
+    if (res.access_token) setToken(res.access_token);
+    await refresh();
+    return res;
+  };
+
+  const logout = async () => {
+    try { await api("/api/v1/auth/logout", { method: "POST" }); } catch { /* best-effort revoke */ }
+    setToken(null); setTenantOverride(null); setUser(null);
+  };
 
   const switchTenant = async (tenantId) => { setTenantOverride(tenantId); await refresh(); };
 
@@ -84,7 +99,7 @@ export function AuthProvider({ children }) {
   const scope = user?.scope || null;
 
   return (
-    <AuthCtx.Provider value={{ user, loading, login, logout, switchTenant, canAccess, can, canAll, scope }}>
+    <AuthCtx.Provider value={{ user, loading, login, logout, changePassword, switchTenant, canAccess, can, canAll, scope }}>
       {children}
     </AuthCtx.Provider>
   );

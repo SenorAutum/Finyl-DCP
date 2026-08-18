@@ -67,4 +67,9 @@ class User(Base):
     force_password_reset = Column(Boolean, default=False)
     deactivated_at = Column(DateTime, nullable=True)
 
+    # --- AUTH-02 brute-force lockout + AUTH-04 token revocation (all additive) --
+    failed_login_attempts = Column(Integer, nullable=False, default=0, server_default="0")
+    locked_until = Column(DateTime(timezone=True), nullable=True)           # temporary auto-lock window
+    token_version = Column(Integer, nullable=False, default=0, server_default="0")  # bump to revoke all tokens
+
     tenant = relationship("Tenant", back_populates="users")

@@ -5,6 +5,8 @@ enforcement (`require_module`) and role gates.
 Tenant scoping: every request derives its tenant from the JWT. A super_admin
 may switch tenant context with the `X-Tenant-Id` header.
 """
+from datetime import datetime, timezone
+
 import jwt as pyjwt
 from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
@@ -30,8 +32,20 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     user = db.get(User, int(payload["sub"]))
     if not user or not user.active:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "User not found or inactive")
+    # AUTH-04: token_version mismatch => the token was revoked (logout / password
+    # change bumps the user's token_version).
+    if int(payload.get("tv", 0)) != int(getattr(user, "token_version", 0) or 0):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Token has been revoked")
     if getattr(user, "is_locked", False):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Account is locked")
+    # AUTH-02: honor an active temporary auto-lock window.
+    locked_until = getattr(user, "locked_until", None)
+    if locked_until is not None:
+        if locked_until.tzinfo is None:
+            locked_until = locked_until.replace(tzinfo=timezone.utc)
+        if locked_until > datetime.now(timezone.utc):
+            raise HTTPException(status.HTTP_423_LOCKED,
+                                "Account temporarily locked")
     return user
 
 

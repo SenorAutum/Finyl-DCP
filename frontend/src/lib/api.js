@@ -24,8 +24,23 @@ export async function api(path, { method = "GET", body, raw } = {}) {
   if (res.status === 401) { setToken(null); window.location.href = "/login"; throw new ApiError(401, "Session expired"); }
   if (raw) return res;
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new ApiError(res.status, data.detail || `Request failed (${res.status})`);
+  if (!res.ok) throw new ApiError(res.status, errorDetail(res.status, data.detail));
   return data;
+}
+
+// AUTH-03: the backend blocks a user whose password reset is forced with a
+// 403 whose detail is {code: "password_reset_required"}. Route them to the
+// change-password screen and surface a readable message everywhere else.
+export function errorDetail(status, detail) {
+  if (status === 403 && detail && typeof detail === "object" && detail.code === "password_reset_required") {
+    if (!window.location.pathname.startsWith("/change-password")) {
+      window.location.href = "/change-password";
+    }
+    return detail.message || "Password reset required";
+  }
+  if (typeof detail === "string") return detail;
+  if (detail && typeof detail === "object") return detail.message || JSON.stringify(detail);
+  return `Request failed (${status})`;
 }
 
 // Multipart upload — the browser must set its own multipart boundary, so we
@@ -40,7 +55,7 @@ export async function upload(path, formData) {
   const res = await fetch(`${BASE}${path}`, { method: "POST", headers, body: formData });
   if (res.status === 401) { setToken(null); window.location.href = "/login"; throw new ApiError(401, "Session expired"); }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new ApiError(res.status, data.detail || `Upload failed (${res.status})`);
+  if (!res.ok) throw new ApiError(res.status, errorDetail(res.status, data.detail));
   return data;
 }
 

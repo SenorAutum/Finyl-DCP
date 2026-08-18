@@ -6,6 +6,12 @@ at the repo root). This keeps the codebase 100% portable: the same image runs on
 this VM, docker-compose, AWS, GCP, etc. — only the env differs.
 """
 from pydantic_settings import BaseSettings
+from pydantic import model_validator
+
+# AUTH-01 — a JWT secret that is the shipped placeholder or too short lets an
+# attacker forge tokens (including role=super_admin). The app must refuse to run.
+WEAK_JWT_SECRETS = {"change-me-in-production", "", "changeme", "secret", "your-secret-key"}
+MIN_JWT_SECRET_LEN = 32
 
 
 class Settings(BaseSettings):
@@ -100,6 +106,30 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         extra = "ignore"
+
+    @model_validator(mode="after")
+    def _enforce_strong_jwt_secret(self):
+        """AUTH-01 boot guard: refuse to start with a weak/placeholder JWT secret.
+
+        The error message never echoes the secret value — only its length and the
+        policy that was violated.
+        """
+        secret = (self.JWT_SECRET or "").strip()
+        if secret in WEAK_JWT_SECRETS or secret.lower() in WEAK_JWT_SECRETS:
+            raise ValueError(
+                "Refusing to start: JWT_SECRET is the default placeholder or a "
+                "known-weak value. Set a strong random JWT_SECRET (>= "
+                f"{MIN_JWT_SECRET_LEN} chars) in the environment. "
+                "Generate one with: python -c \"import secrets;print(secrets.token_urlsafe(48))\""
+            )
+        if len(secret) < MIN_JWT_SECRET_LEN:
+            raise ValueError(
+                "Refusing to start: JWT_SECRET is too short "
+                f"(got {len(secret)} chars, need >= {MIN_JWT_SECRET_LEN}). "
+                "Generate a strong one with: "
+                "python -c \"import secrets;print(secrets.token_urlsafe(48))\""
+            )
+        return self
 
 
 settings = Settings()

@@ -1,43 +1,191 @@
-"""Auth endpoints: login, current profile, tenant module flags."""
+"""Auth endpoints: login, current profile, tenant module flags.
+
+AUTH-02: failed logins increment a counter; crossing the threshold auto-locks
+the account for a cooldown window. A lightweight in-memory per-IP rate limiter
+throttles credential-stuffing bursts (single uvicorn worker -> shared state).
+AUTH-03: self-service password change that clears force_password_reset.
+AUTH-04: password change / logout bump the user's token_version, revoking every
+previously issued JWT.
+"""
+import threading
+import time
+from collections import defaultdict, deque
+from datetime import datetime, timedelta, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.deps import get_current_user, get_tenant_id, get_scope, UserScope, write_audit
-from app.core.security import create_access_token, verify_password
+from app.core.security import create_access_token, verify_password, hash_password
 from app.core.permissions import permissions_for, ROLE_LABELS
 from app.models import MODULE_KEYS, Tenant, TenantModule, User
-from app.schemas import LoginRequest
+from app.schemas import LoginRequest, ChangePasswordRequest
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
+
+# --- AUTH-02 tunables --------------------------------------------------------
+MAX_FAILED_ATTEMPTS = 5          # consecutive bad passwords before auto-lock
+LOCKOUT_MINUTES = 15             # how long the auto-lock lasts
+RATE_LIMIT_MAX = 10              # max login attempts per IP ...
+RATE_LIMIT_WINDOW = 60           # ... per this many seconds
+
+# In-memory sliding-window rate-limit state. The service runs a single uvicorn
+# worker, so this per-process dict is authoritative. (For a multi-worker /
+# multi-host deploy, swap this for the nginx `limit_req` zone shipped in
+# deploy/finyl-dcp.conf or a shared Redis counter.)
+_rl_lock = threading.Lock()
+_rl_hits: dict[str, deque] = defaultdict(deque)
+
+
+def _client_ip(request: Request | None) -> str:
+    if request is None:
+        return "unknown"
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def rate_limit_login(request: Request = None):
+    """Reject a client that exceeds RATE_LIMIT_MAX login attempts per window."""
+    ip = _client_ip(request)
+    now = time.monotonic()
+    with _rl_lock:
+        hits = _rl_hits[ip]
+        cutoff = now - RATE_LIMIT_WINDOW
+        while hits and hits[0] < cutoff:
+            hits.popleft()
+        if len(hits) >= RATE_LIMIT_MAX:
+            retry = int(RATE_LIMIT_WINDOW - (now - hits[0])) + 1
+            raise HTTPException(
+                status.HTTP_429_TOO_MANY_REQUESTS,
+                "Too many login attempts. Please wait a moment and try again.",
+                headers={"Retry-After": str(max(retry, 1))},
+            )
+        hits.append(now)
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _is_locked(user: User) -> bool:
+    """True while the account is under an admin lock or an active auto-lock."""
+    if getattr(user, "is_locked", False):
+        return True
+    locked_until = getattr(user, "locked_until", None)
+    if locked_until is not None:
+        # locked_until is TIMESTAMPTZ (aware); guard against a naive value.
+        if locked_until.tzinfo is None:
+            locked_until = locked_until.replace(tzinfo=timezone.utc)
+        return locked_until > _utcnow()
+    return False
 
 
 def _login(db: Session, email: str, password: str, request: Request = None) -> dict:
     user = db.query(User).filter(User.email == email.lower().strip()).first()
+
+    # Generic message: never disclose whether the email exists or is locked.
+    invalid = HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid email or password")
+
+    if user and _is_locked(user):
+        # Do not leak lock state as a distinct signal to anonymous callers;
+        # 423 tells a legitimate user their account is temporarily protected.
+        raise HTTPException(
+            status.HTTP_423_LOCKED,
+            "Account temporarily locked due to repeated failed logins. "
+            "Try again later or contact your administrator.",
+        )
+
     if not user or not verify_password(password, user.hashed_password):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid email or password")
+        if user:
+            user.failed_login_attempts = (user.failed_login_attempts or 0) + 1
+            if user.failed_login_attempts >= MAX_FAILED_ATTEMPTS:
+                user.locked_until = _utcnow() + timedelta(minutes=LOCKOUT_MINUTES)
+                write_audit(db, tenant_id=user.tenant_id, user=user,
+                            action="auth.account_locked", entity_type="user",
+                            entity_id=user.id,
+                            details={"failed_attempts": user.failed_login_attempts},
+                            request=request)
+            db.commit()
+        raise invalid
+
     if not user.active:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Account disabled")
-    if getattr(user, "is_locked", False):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Account is locked — contact your administrator")
-    token = create_access_token(user.id, user.role, user.tenant_id)
+
+    # Success — clear the brute-force counters.
+    user.failed_login_attempts = 0
+    user.locked_until = None
+    token = create_access_token(user.id, user.role, user.tenant_id,
+                                token_version=user.token_version or 0)
     write_audit(db, tenant_id=user.tenant_id, user=user, action="auth.login",
                 entity_type="user", entity_id=user.id, request=request)
     db.commit()
-    return {"access_token": token, "token_type": "bearer"}
+    return {"access_token": token, "token_type": "bearer",
+            "force_password_reset": bool(user.force_password_reset)}
 
 
 @router.post("/login")
-def login(body: LoginRequest, db: Session = Depends(get_db), request: Request = None):
+def login(body: LoginRequest, db: Session = Depends(get_db), request: Request = None,
+          _rl: None = Depends(rate_limit_login)):
     return _login(db, body.email, body.password, request)
 
 
 @router.post("/login/form")
 def login_form(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db),
-               request: Request = None):
+               request: Request = None, _rl: None = Depends(rate_limit_login)):
     """OAuth2 password-flow variant (used by Swagger UI)."""
     return _login(db, form.username, form.password, request)
+
+
+@router.post("/change-password")
+def change_password(body: ChangePasswordRequest,
+                    user: User = Depends(get_current_user),
+                    db: Session = Depends(get_db),
+                    request: Request = None):
+    """Self-service password change.
+
+    Verifies the current password, stores a new bcrypt hash, clears the
+    force_password_reset flag and bumps token_version so every previously issued
+    token (including the one used for this call) is revoked. A fresh token is
+    returned so the client can stay signed in.
+    """
+    if not verify_password(body.current_password, user.hashed_password):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Current password is incorrect")
+    new_pw = (body.new_password or "").strip()
+    if len(new_pw) < 8:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "New password must be at least 8 characters")
+    if verify_password(new_pw, user.hashed_password):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "New password must differ from the current password")
+
+    user.hashed_password = hash_password(new_pw)
+    user.force_password_reset = False
+    user.failed_login_attempts = 0
+    user.locked_until = None
+    user.token_version = (user.token_version or 0) + 1  # revoke old tokens
+    write_audit(db, tenant_id=user.tenant_id, user=user, action="auth.change_password",
+                entity_type="user", entity_id=user.id, request=request)
+    db.commit()
+
+    token = create_access_token(user.id, user.role, user.tenant_id,
+                                token_version=user.token_version)
+    return {"access_token": token, "token_type": "bearer",
+            "detail": "Password changed"}
+
+
+@router.post("/logout")
+def logout(user: User = Depends(get_current_user), db: Session = Depends(get_db),
+           request: Request = None):
+    """Revoke the caller's tokens by bumping token_version (AUTH-04)."""
+    user.token_version = (user.token_version or 0) + 1
+    write_audit(db, tenant_id=user.tenant_id, user=user, action="auth.logout",
+                entity_type="user", entity_id=user.id, request=request)
+    db.commit()
+    return {"detail": "Logged out"}
 
 
 @router.get("/me")

@@ -18,8 +18,10 @@ from app.core.database import SessionLocal
 from app.core.security import hash_password
 from app.models import (ApprovalThreshold, Borrower, Branch, Loan, Region, Staff,
                         Tenant, User)
+from app.seeds.credentials import SeedCredentials
 
-PASSWORD = "Finyl@2026"
+# Module-level collector so both seed_rbac() and main() share one credential set.
+_CREDS = SeedCredentials()
 
 
 def _get_or_create_user(db, tenant_id, email, full_name, role, **scope):
@@ -30,8 +32,11 @@ def _get_or_create_user(db, tenant_id, email, full_name, role, **scope):
         for k, v in scope.items():
             setattr(u, k, v)
         return u, False
-    u = User(email=email, hashed_password=hash_password(PASSWORD), full_name=full_name,
-             role=role, tenant_id=tenant_id, active=True, **scope)
+    # AUTH-03: per-user password (or SEED_DEFAULT_PASSWORD), recorded to a
+    # gitignored file — never printed — and force_password_reset=True.
+    u = User(email=email, hashed_password=hash_password(_CREDS.password_for(email)),
+             full_name=full_name, role=role, tenant_id=tenant_id, active=True,
+             force_password_reset=True, **scope)
     db.add(u)
     return u, True
 
@@ -128,6 +133,7 @@ def seed_rbac(db):
         "ro_staff_id": ro_staff.id if ro_staff else None,
         "branch_id": branch_id, "region_id": region_id,
         "assigned_clients": assigned_clients, "assigned_loans": assigned_loans,
+        "credentials": _CREDS.flush("rbac_seed.py demo users"),
     }
 
 
@@ -138,7 +144,9 @@ def main():
         print("RBAC seed complete:")
         for k, v in result.items():
             print(f"  {k}: {v}")
-        print("Password for all demo users:", PASSWORD)
+        print("Passwords are never printed — see the gitignored "
+              "storage/seed_credentials.txt file. All demo users must reset "
+              "their password on first login.")
     finally:
         db.close()
 

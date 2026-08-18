@@ -12,6 +12,11 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
 # ---- Tenancy / admin ---------------------------------------------------------
 class TenantCreate(BaseModel):
     name: str
