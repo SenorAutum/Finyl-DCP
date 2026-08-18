@@ -46,6 +46,14 @@ export function AuthProvider({ children }) {
     if (role === "super_admin" || role === "tenant_admin") return true;
     const perms = user.permissions || [];
     if (MODULE_PERMS[moduleKey]) return MODULE_PERMS[moduleKey].some((p) => perms.includes(p));
+    // CRM & Field Sales pipeline is an operational, front-line feature. The
+    // backend gates it on the tenant module flag only (require_module("crm")),
+    // so every client-facing role — origination officers plus the managers /
+    // HQ ops who oversee the pipeline — must be able to open it in the UI too.
+    if (moduleKey === "crm") {
+      return ["loan_officer", "relationship_officer", "branch_manager",
+              "regional_manager", "hq_operations"].includes(role);
+    }
     // Engagement modules stay role-scoped (legacy behaviour).
     if (role === "loan_officer") return ["lending", "crm", "dashboard", "payments", "impact"].includes(moduleKey);
     if (role === "call_agent") return ["call_center", "complaints"].includes(moduleKey);
