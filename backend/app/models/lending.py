@@ -7,7 +7,12 @@ from sqlalchemy.orm import relationship
 
 from app.core.database import Base
 
-LOAN_STATUSES = ["pending", "underwriting", "approved", "active", "paid", "overdue", "defaulted", "rejected"]
+# "processing" = a B2C disbursement has been accepted by Daraja and is awaiting
+# the asynchronous Result callback; the loan is NOT yet active/funded. On a
+# successful Result it moves to "active"; on failure/timeout it reverts to
+# "approved" so it can be safely retried (see services/disbursement.py).
+LOAN_STATUSES = ["pending", "underwriting", "approved", "processing", "active",
+                 "paid", "overdue", "defaulted", "rejected"]
 
 # Reference lists surfaced to the UI (kept as text columns rather than DB enums so
 # a tenant can extend them without a migration).
@@ -150,7 +155,10 @@ class PaymentTransaction(Base):
     amount = Column(Numeric(12, 2), nullable=False)
     phone = Column(String(20))
     mpesa_ref = Column(String(40))
-    status = Column(String(20), default="success")     # success | pending | failed
+    # success | pending | processing | failed | timed_out | reversed
+    #   processing = B2C accepted by Daraja, awaiting async Result callback
+    #   timed_out  = Daraja QueueTimeOut fired; unresolved, needs reconciliation
+    status = Column(String(20), default="success")
     raw_payload = Column(JSON, default=dict)           # full Daraja-shaped request/response
     created_at = Column(DateTime, default=datetime.utcnow)
 

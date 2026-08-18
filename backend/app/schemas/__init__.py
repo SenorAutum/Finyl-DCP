@@ -328,8 +328,12 @@ class DisburseRequest(BaseModel):
 
 
 class RefundRequest(BaseModel):
-    loan_id: Optional[int] = None
-    amount: float
+    # MPESA-05: refunds are always tied to a loan; the destination phone and the
+    # maximum amount are derived server-side from the loan's recorded overpayment.
+    # `amount` is optional (defaults to the full recorded overpayment); `phone` is
+    # advisory only and, if supplied, must match the borrower's registered number.
+    loan_id: int
+    amount: Optional[float] = None
     phone: Optional[str] = None
     reason: Optional[str] = None
 

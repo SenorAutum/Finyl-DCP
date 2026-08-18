@@ -130,5 +130,16 @@ def next_escalation_level_for_tenant(db, tenant_id, role: str) -> str | None:
 
 
 def requires_maker_checker(db, tenant_id, threshold_type, amount: float) -> bool:
+    """Whether a money-movement of `amount` needs a second (checker) approver.
+
+    FAIL CLOSED (MPESA-06): when the tenant has NO maker-checker threshold
+    configured at all (`money_threshold` -> None) we require maker-checker for
+    ALL money movement rather than waving it through. A missing control must
+    never silently disable dual authorisation on real money. Tenants that DO
+    configure a threshold keep their exact behaviour (only amounts strictly
+    above the limit are parked).
+    """
     limit = money_threshold(db, tenant_id, threshold_type)
-    return limit is not None and float(amount) > limit
+    if limit is None:
+        return True
+    return float(amount) > limit

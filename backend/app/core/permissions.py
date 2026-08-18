@@ -57,6 +57,7 @@ PERMISSIONS = {
     "refund.execute": "Process refunds",
     "refund.approve": "Approve a pending refund (checker)",
     "reconcile.execute": "Reconcile incoming repayments to loan accounts",
+    "collections.stk_push": "Trigger an STK-push collections prompt to a borrower",
     # Dashboards / reporting
     "dashboard.company": "View company-wide dashboards (all branches/regions)",
     "dashboard.region": "View regional dashboards (branches in own region)",
@@ -93,6 +94,7 @@ ROLE_PERMISSIONS = {
         "clients.view_portfolio", "clients.create", "clients.edit",
         "docs.upload", "docs.verify",
         "loans.view_portfolio", "loans.create",
+        "collections.stk_push",
         "dashboard.portfolio",
     },
 
@@ -103,6 +105,7 @@ ROLE_PERMISSIONS = {
         "loans.view_all", "loans.approve", "loans.adjust", "loans.reassign",
         "loans.escalate", "loans.writeoff",
         "disburse.approve", "refund.approve",
+        "collections.stk_push",
         "org.view", "thresholds.view",
         "dashboard.branch",
     },
@@ -113,6 +116,7 @@ ROLE_PERMISSIONS = {
         "loans.view_all", "loans.approve", "loans.escalate", "loans.reassign",
         "loans.writeoff", "loans.adjust",
         "disburse.approve", "refund.approve",
+        "collections.stk_push",
         "org.view", "thresholds.view",
         "dashboard.region",
     },
@@ -127,6 +131,7 @@ ROLE_PERMISSIONS = {
     "reconciliation_officer": {
         "clients.view_all", "loans.view_all", "dashboard.company",
         "reconcile.execute", "refund.execute", "refund.approve",
+        "collections.stk_push",
         "payments.upload",
     },
 

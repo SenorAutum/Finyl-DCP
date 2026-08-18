@@ -38,6 +38,15 @@ class Settings(BaseSettings):
     DARAJA_INITIATOR_NAME: str = "finyl-api"
     DARAJA_SECURITY_CREDENTIAL: str = "placeholder"   # encrypted initiator password (B2C)
     DARAJA_CALLBACK_BASE_URL: str = "https://finyl-dcp.abacusai.cloud"
+    # Hard-to-guess path segment embedded in every Daraja callback URL we
+    # register (B2C result/timeout, STK callback, C2B confirmation). Safaricom
+    # sends NO auth header on these webhooks, so the unguessable path token is
+    # the primary source-authentication control (defence-in-depth: pair with the
+    # nginx Safaricom IP allow-list — see deploy/finyl-dcp.conf). OVERRIDE THIS
+    # PER-ENVIRONMENT via the MPESA_CALLBACK_TOKEN env var; the default below is
+    # only a working placeholder for the credential-gated mock/demo. It is NOT a
+    # cryptographic secret and is never logged.
+    MPESA_CALLBACK_TOKEN: str = "finyl-daraja-hook-3f9c2a"
 
     # --- Uwazii Mobile bulk-SMS gateway (LIVE) -------------------------------
     # Real credentials are injected into the environment from the secret store;
