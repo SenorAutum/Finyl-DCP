@@ -121,8 +121,14 @@ def require_permission(*keys: str, mode: str = "all"):
     super_admin passes unconditionally (wildcard). Returns the User so handlers
     can use it directly.
     """
-    def dependency(user: User = Depends(get_current_user), request: Request = None) -> User:
-        checks = [has_permission(user.role, k) for k in keys]
+    def dependency(user: User = Depends(get_current_user),
+                   db: Session = Depends(get_db),
+                   request: Request = None) -> User:
+        if user.role == "super_admin":
+            return user  # wildcard — never affected by per-tenant overrides
+        from app.services.authz import effective_permissions
+        effective = effective_permissions(db, user.tenant_id, user.role)
+        checks = [k in effective for k in keys]
         ok = all(checks) if mode == "all" else any(checks)
         if not ok:
             joiner = " & " if mode == "all" else " / "

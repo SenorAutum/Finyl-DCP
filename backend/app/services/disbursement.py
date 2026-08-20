@@ -28,10 +28,14 @@ from app.services import mpesa, sms
 logger = logging.getLogger("finyl.payments")
 
 
-def _payout(phone: str, amount: float, remarks: str) -> dict:
-    """Wrap the Daraja B2C call, mapping gating/errors to actionable HTTP codes."""
+def _payout(phone: str, amount: float, remarks: str, creds=None) -> dict:
+    """Wrap the Daraja B2C call, mapping gating/errors to actionable HTTP codes.
+
+    ``creds`` is the per-DCP resolved Daraja credential set (see mpesa.resolve_creds);
+    when None the call falls back to the platform .env credentials.
+    """
     try:
-        return mpesa.b2c_disburse(phone, amount, remarks)
+        return mpesa.b2c_disburse(phone, amount, remarks, creds=creds)
     except mpesa.DarajaNotConfigured:
         # SEC-01: do not leak provider/config internals to the caller.
         raise HTTPException(422, "M-Pesa (Daraja) credentials are not configured")
@@ -65,9 +69,10 @@ def execute_disbursement(db, tenant_id, loan: Loan, actor_user_id: int) -> dict:
         raise HTTPException(409, "Loan is not in an approvable state (already processing/disbursed).")
     db.refresh(loan)  # sync in-memory ORM object with the committed status change
 
+    creds = mpesa.resolve_creds(db, tenant_id)
     try:
         payload = _payout(loan.borrower.phone, float(loan.principal),
-                          f"Disbursement {loan.account_number}")
+                          f"Disbursement {loan.account_number}", creds=creds)
     except Exception:
         # Payout could not even be accepted — revert the guard so the loan can be retried.
         db.query(Loan).filter(Loan.id == loan.id, Loan.tenant_id == tenant_id,
@@ -166,7 +171,8 @@ def execute_refund(db, tenant_id, amount: float, phone: str, loan_id, actor_user
     Refund amount and destination phone are validated/derived by the router
     (MPESA-05) before this runs, so here we simply execute the payout.
     """
-    payload = _payout(phone, float(amount), reason or "Refund")
+    creds = mpesa.resolve_creds(db, tenant_id)
+    payload = _payout(phone, float(amount), reason or "Refund", creds=creds)
     result = payload.get("result", {})
     txn = PaymentTransaction(
         tenant_id=tenant_id, type="refund", loan_id=loan_id, amount=amount,

@@ -24,8 +24,11 @@ from app.models import (User, Region, Branch, Staff, ApprovalThreshold, AuditLog
                         ApproverSetting, Tenant, Loan, Borrower, Repayment,
                         PaymentTransaction)
 from app.schemas import (UserCreate, UserUpdate, RoleAssign, PasswordReset,
-                        RegionCreate, BranchCreate, ThresholdCreate, ApproverConfigIn)
+                        RegionCreate, BranchCreate, ThresholdCreate, ApproverConfigIn,
+                        RoleCreate, RoleLabelUpdate, RolePermissionUpdate)
+from app.models import RolePermissionOverride, CustomRole
 from app.services import rbac
+from app.services import authz
 
 router = APIRouter(prefix="/api/v1/access", tags=["access"],
                    dependencies=[Depends(require_role("super_admin"))])
@@ -43,6 +46,125 @@ def list_permissions(user: User = Depends(require_permission("roles.view"))):
         "assignable_roles": [{"role": r, "label": ROLE_LABELS.get(r, r)} for r in ASSIGNABLE_ROLES],
         "matrix": role_matrix(),
     }
+
+
+# ---------------------------------------------------------------------------
+# Editable roles & permissions (super_admin only — whole router is gated)
+# ---------------------------------------------------------------------------
+import re as _re
+
+_ROLE_KEY_RE = _re.compile(r"^[a-z][a-z0-9_]{2,39}$")
+
+
+@router.get("/roles")
+def list_roles(tenant_id: int = Depends(get_tenant_id),
+               db: Session = Depends(get_db),
+               _: User = Depends(require_permission("roles.view"))):
+    """Full editable role x permission matrix for the resolved tenant, plus the
+    permission catalog. Effective permissions layer per-tenant overrides on the
+    static role map. super_admin is returned but flagged protected (never edited)."""
+    return {
+        "permissions": authz.permission_catalog(),
+        "roles": authz.list_roles_detail(db, tenant_id),
+    }
+
+
+@router.post("/roles")
+def create_role(body: RoleCreate,
+                tenant_id: int = Depends(get_tenant_id),
+                db: Session = Depends(get_db),
+                user: User = Depends(require_permission("roles.assign")),
+                request: Request = None):
+    """Create a tenant-specific custom role (empty permission set, built up via
+    the permission toggles). Reserved / built-in role keys are rejected."""
+    key = (body.role_key or "").strip().lower()
+    if not _ROLE_KEY_RE.match(key):
+        raise HTTPException(422, "role_key must be lowercase letters/digits/underscore, 3-40 chars")
+    if key in authz.RESERVED_ROLE_KEYS:
+        raise HTTPException(409, "That role key is reserved by the platform")
+    existing = (db.query(CustomRole)
+                .filter(CustomRole.tenant_id == tenant_id, CustomRole.role_key == key).first())
+    if existing:
+        raise HTTPException(409, "A role with that key already exists")
+    row = CustomRole(tenant_id=tenant_id, role_key=key,
+                     label=(body.label or key).strip()[:120],
+                     updated_by_user_id=user.id)
+    db.add(row)
+    write_audit(db, tenant_id=tenant_id, user=user, action="roles.create",
+                entity_type="role", details={"role_key": key}, request=request)
+    db.commit()
+    return {"status": "created", "role": key}
+
+
+@router.patch("/roles/{role_key}")
+def rename_role(role_key: str, body: RoleLabelUpdate,
+                tenant_id: int = Depends(get_tenant_id),
+                db: Session = Depends(get_db),
+                user: User = Depends(require_permission("roles.assign")),
+                request: Request = None):
+    """Rename a role's display label (built-in or custom). super_admin's label is
+    immutable; its key can never be renamed."""
+    if role_key == "super_admin":
+        raise HTTPException(403, "The super_admin role cannot be modified")
+    label = (body.label or "").strip()
+    if not label:
+        raise HTTPException(422, "label is required")
+    row = (db.query(CustomRole)
+           .filter(CustomRole.tenant_id == tenant_id, CustomRole.role_key == role_key).first())
+    if row:
+        row.label = label[:120]
+        row.updated_by_user_id = user.id
+    else:
+        # Built-in role: persist a label override row.
+        if role_key not in authz.RESERVED_ROLE_KEYS:
+            raise HTTPException(404, "Unknown role")
+        db.add(CustomRole(tenant_id=tenant_id, role_key=role_key, label=label[:120],
+                          updated_by_user_id=user.id))
+    write_audit(db, tenant_id=tenant_id, user=user, action="roles.rename",
+                entity_type="role", details={"role_key": role_key, "label": label}, request=request)
+    db.commit()
+    return {"status": "updated", "role": role_key, "label": label}
+
+
+@router.post("/roles/{role_key}/permissions")
+def set_role_permission(role_key: str, body: RolePermissionUpdate,
+                        tenant_id: int = Depends(get_tenant_id),
+                        db: Session = Depends(get_db),
+                        user: User = Depends(require_permission("roles.assign")),
+                        request: Request = None):
+    """Grant or revoke a single permission on a role for this tenant.
+
+    Invariants: super_admin can never be altered; the permission key must exist in
+    the catalog; the role must be a known built-in or an existing custom role."""
+    if role_key == "super_admin":
+        raise HTTPException(403, "The super_admin role holds all permissions and cannot be edited")
+    if body.permission_key not in PERMISSIONS:
+        raise HTTPException(422, "Unknown permission key")
+    is_builtin = role_key in authz.RESERVED_ROLE_KEYS
+    is_custom = (db.query(CustomRole)
+                 .filter(CustomRole.tenant_id == tenant_id,
+                         CustomRole.role_key == role_key).first()) is not None
+    if not (is_builtin or is_custom):
+        raise HTTPException(404, "Unknown role")
+    row = (db.query(RolePermissionOverride)
+           .filter(RolePermissionOverride.tenant_id == tenant_id,
+                   RolePermissionOverride.role == role_key,
+                   RolePermissionOverride.permission_key == body.permission_key).first())
+    if row:
+        row.granted = bool(body.granted)
+        row.updated_by_user_id = user.id
+    else:
+        db.add(RolePermissionOverride(
+            tenant_id=tenant_id, role=role_key, permission_key=body.permission_key,
+            granted=bool(body.granted), updated_by_user_id=user.id))
+    write_audit(db, tenant_id=tenant_id, user=user, action="roles.set_permission",
+                entity_type="role",
+                details={"role_key": role_key, "permission_key": body.permission_key,
+                         "granted": bool(body.granted)}, request=request)
+    db.commit()
+    return {"status": "updated", "role": role_key,
+            "permission_key": body.permission_key, "granted": bool(body.granted),
+            "permissions": sorted(authz.effective_permissions(db, tenant_id, role_key))}
 
 
 # ---------------------------------------------------------------------------

@@ -35,6 +35,9 @@ const NAV = [
   { group: "Compliance", items: [
     { to: "/cbk", label: "CBK Reporting", module: "cbk_reporting", icon: "🏛" },
   ]},
+  { group: "Settings", items: [
+    { to: "/settings", label: "DCP Configuration", icon: "🛠", anyPerm: ["thresholds.manage"] },
+  ]},
   { group: "Administration", superOnly: true, items: [
     { to: "/access/users", label: "Users & Access", icon: "👤" },
     { to: "/access/roles", label: "Roles & Permissions", icon: "🔑" },

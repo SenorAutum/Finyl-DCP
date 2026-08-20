@@ -22,6 +22,7 @@ from app.core.database import get_db
 from app.core.deps import get_current_user, get_tenant_id, get_scope, UserScope, write_audit
 from app.core.security import create_access_token, verify_password, hash_password
 from app.core.permissions import permissions_for, ROLE_LABELS
+from app.services.authz import effective_permissions
 from app.core.obs import log_auth_event
 from app.models import ApprovalThreshold, MODULE_KEYS, Tenant, TenantModule, User
 from app.schemas import LoginRequest, ChangePasswordRequest, SignupRequest
@@ -340,7 +341,9 @@ def me(user: User = Depends(get_current_user),
         "tenant_name": tenant.name if tenant else None,
         "tenant_color": tenant.logo_color if tenant else "#10B981",
         "modules": flags,
-        "permissions": permissions_for(user.role),
+        # Effective permissions layer per-tenant grant/revoke overrides on top of
+        # the static role map (super_admin still resolves to the full catalog).
+        "permissions": sorted(effective_permissions(db, tenant_id, user.role)),
         "scope": scope.as_dict(),
         "staff_id": user.staff_id,
         "branch_id": getattr(user, "branch_id", None),

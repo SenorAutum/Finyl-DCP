@@ -9,6 +9,7 @@ from app.models.rbac import (ApprovalThreshold, ApproverSetting, AuditLog,
                              PendingApproval, ReportSchedule, ReportTemplate,
                              AnomalyFlag, SmsAutomationSetting, THRESHOLD_TYPES,
                              SCOPE_TYPES, APPROVAL_TYPES,
+                             RolePermissionOverride, CustomRole,
                              SMS_AUTOMATION_DEFAULT_ENABLED, SMS_AUTOMATION_DEFAULT_HOUR)
 from app.models.engagement import (
     CrmLead, SiteVisit, CallLog, Complaint, ImpactSurvey, AmlFlag,

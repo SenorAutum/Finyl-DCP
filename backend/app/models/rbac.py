@@ -82,6 +82,44 @@ SMS_AUTOMATION_DEFAULT_ENABLED = True
 SMS_AUTOMATION_DEFAULT_HOUR = 7
 
 
+class RolePermissionOverride(Base):
+    """Per-(tenant, role, permission) grant/revoke layered on the static catalog.
+
+    The static role -> permission map in app/core/permissions.py is the base;
+    a row here with granted=True ADDS a permission to a role for that tenant and
+    granted=False REMOVES one. This makes the Roles & Permissions matrix editable
+    per DCP without mutating code. super_admin is never affected (its wildcard is
+    resolved in code and never persisted / never stripped).
+    """
+    __tablename__ = "role_permission_overrides"
+
+    id = Column(Integer, primary_key=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
+    role = Column(String(40), nullable=False)
+    permission_key = Column(String(60), nullable=False)
+    granted = Column(Boolean, nullable=False, default=True)
+    updated_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class CustomRole(Base):
+    """A tenant-defined role, OR a label override for a built-in role.
+
+    When role_key matches a built-in role the row only overrides its display
+    label. When role_key is new it defines a custom role whose permission set is
+    empty by default and built up entirely via RolePermissionOverride rows.
+    """
+    __tablename__ = "custom_roles"
+
+    id = Column(Integer, primary_key=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
+    role_key = Column(String(40), nullable=False)
+    label = Column(String(120), nullable=False)
+    updated_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class AuditLog(Base):
     """Immutable-ish append log of privileged actions across the platform."""
     __tablename__ = "audit_logs"

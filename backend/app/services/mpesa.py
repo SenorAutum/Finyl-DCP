@@ -2,13 +2,21 @@
 Safaricom Daraja M-Pesa integration — REAL client, credential-gated.
 
 OAuth, STK push, B2C and C2B register all call the real Daraja endpoints. The
-base URL follows DARAJA_ENV (sandbox=https://sandbox.safaricom.co.ke,
+base URL follows the environment (sandbox=https://sandbox.safaricom.co.ke,
 production=https://api.safaricom.co.ke).
 
-CREDENTIAL-GATED: while DARAJA_CONSUMER_KEY / _SECRET are placeholders the
+CREDENTIAL RESOLUTION (per-DCP, PART A):
+    Every call optionally takes a resolved ``DarajaCreds`` bundle. A DCP that has
+    saved its OWN Daraja credentials from the in-app Configuration screen uses
+    them (secrets decrypted from the encrypted-at-rest store); a DCP that has NOT
+    configured its own falls back, field by field, to the platform .env defaults.
+    Passing ``creds=None`` (the historic call signature) resolves to the .env
+    defaults, so every existing caller keeps its exact behaviour.
+
+CREDENTIAL-GATED: while the resolved consumer key/secret are placeholders the
 integration reports NOT CONFIGURED and each call raises DarajaNotConfigured
 (surfaced by the router as a clear 4xx) — it never fabricates a success. Add real
-sandbox credentials + restart and the SAME code flips to LIVE (SANDBOX).
+credentials (per-DCP or in .env) + and the SAME code flips to LIVE (SANDBOX).
 
 The return shapes are unchanged from the previous mock so routers/UI keep working.
 """
@@ -18,6 +26,7 @@ import string
 import threading
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 
 import httpx
@@ -35,40 +44,127 @@ class DarajaNotConfigured(RuntimeError):
     """Raised when real Daraja credentials are absent."""
 
 
-def base_url() -> str:
-    """Live Daraja base URL, derived from DARAJA_ENVIRONMENT via config."""
-    return settings.DARAJA_BASE_URL
+# --------------------------------------------------------------------------- #
+# Resolved credential bundle. A caller passes one of these to use a specific
+# DCP's credentials; when omitted, functions fall back to the .env defaults via
+# ``_settings_creds()`` so the global/legacy behaviour is unchanged.
+# --------------------------------------------------------------------------- #
+@dataclass
+class DarajaCreds:
+    consumer_key: str
+    consumer_secret: str
+    shortcode: str
+    passkey: str
+    initiator_name: str
+    security_credential: str
+    environment: str  # "sandbox" | "production"
+
+    @property
+    def base_url(self) -> str:
+        env = (self.environment or "sandbox").strip().lower()
+        return PROD_BASE if env.startswith("prod") else SANDBOX_BASE
+
+    @property
+    def configured(self) -> bool:
+        for v in (self.consumer_key, self.consumer_secret):
+            if not v or str(v).strip().lower() in _PLACEHOLDERS:
+                return False
+        return True
 
 
-def is_configured() -> bool:
-    for v in (settings.DARAJA_CONSUMER_KEY, settings.DARAJA_CONSUMER_SECRET):
-        if not v or str(v).strip().lower() in _PLACEHOLDERS:
-            return False
-    return True
+def _settings_creds() -> DarajaCreds:
+    """Build a DarajaCreds bundle from the platform .env defaults."""
+    return DarajaCreds(
+        consumer_key=settings.DARAJA_CONSUMER_KEY,
+        consumer_secret=settings.DARAJA_CONSUMER_SECRET,
+        shortcode=settings.DARAJA_SHORTCODE,
+        passkey=settings.DARAJA_PASSKEY,
+        initiator_name=settings.DARAJA_INITIATOR_NAME,
+        security_credential=settings.DARAJA_SECURITY_CREDENTIAL,
+        environment=settings.DARAJA_ENVIRONMENT,
+    )
 
 
-def integration_status() -> str:
-    if not is_configured():
+def _clean(v):
+    """Treat placeholder/blank values as absent so per-field fallback works."""
+    if v is None:
+        return None
+    s = str(v).strip()
+    if s == "" or s.lower() in _PLACEHOLDERS:
+        return None
+    return v
+
+
+def resolve_creds(db, tenant_id: int | None) -> DarajaCreds:
+    """Resolve the effective Daraja credentials for a tenant.
+
+    Reads the tenant's own saved Daraja config (integration='daraja') and
+    decrypts its secrets, falling back FIELD BY FIELD to the platform .env
+    defaults for anything the DCP has not set. A DCP that has configured nothing
+    resolves to exactly the .env defaults (identical to the historic behaviour).
+    """
+    base = _settings_creds()
+    if not tenant_id:
+        return base
+    # Imported here to avoid a circular import at module load.
+    from app.models import TenantIntegrationConfig
+    from app.core.crypto import decrypt_pii
+
+    row = (db.query(TenantIntegrationConfig)
+           .filter(TenantIntegrationConfig.tenant_id == tenant_id,
+                   TenantIntegrationConfig.integration == "daraja")
+           .first())
+    if row is None or not row.enabled:
+        return base
+    cfg = row.config or {}
+    sec = row.secrets or {}
+
+    def _dec(key):
+        return _clean(decrypt_pii(sec.get(key)))
+
+    return DarajaCreds(
+        consumer_key=_dec("consumer_key") or base.consumer_key,
+        consumer_secret=_dec("consumer_secret") or base.consumer_secret,
+        shortcode=_clean(cfg.get("shortcode")) or base.shortcode,
+        passkey=_dec("passkey") or base.passkey,
+        initiator_name=_clean(cfg.get("initiator_name")) or base.initiator_name,
+        security_credential=_dec("security_credential") or base.security_credential,
+        environment=_clean(cfg.get("environment")) or base.environment,
+    )
+
+
+def base_url(creds: DarajaCreds | None = None) -> str:
+    """Live Daraja base URL, derived from the resolved environment."""
+    return (creds or _settings_creds()).base_url
+
+
+def is_configured(creds: DarajaCreds | None = None) -> bool:
+    return (creds or _settings_creds()).configured
+
+
+def integration_status(creds: DarajaCreds | None = None) -> str:
+    creds = creds or _settings_creds()
+    if not creds.configured:
         return "NOT CONFIGURED"
-    return "LIVE" if base_url() == PROD_BASE else "SANDBOX"
+    return "LIVE" if creds.base_url == PROD_BASE else "SANDBOX"
 
 
 # --------------------------------------------------------------------------- #
 # OAuth token cache — Daraja tokens live ~1h; cache and reuse until shortly
 # before expiry so we don't fetch a fresh token on every B2C/STK/C2B call.
-# Guarded by a lock because uvicorn may serve requests from a threadpool.
+# Keyed by consumer_key so different DCPs (and the platform default) never share
+# a token. Guarded by a lock because uvicorn may serve requests from a threadpool.
 # --------------------------------------------------------------------------- #
 _token_lock = threading.Lock()
-_token_cache: dict = {"value": None, "expires_at": 0.0}
+_token_caches: dict = {}  # consumer_key -> {"value", "expires_at"}
 _TOKEN_SAFETY_WINDOW = 30  # seconds before real expiry to force a refresh
 
 
 def callback_url(suffix: str) -> str:
     """Build a Daraja callback URL that embeds the hard-to-guess source-auth
-    token as a path segment (MPESA-04). The matching route handlers validate
-    the token and reject anything else. Safaricom must be given exactly these
-    registered URLs (B2C ResultURL/QueueTimeOutURL, STK CallBackURL, C2B
-    Confirmation/Validation URLs)."""
+    token as a path segment (MPESA-04). The callback host is the PLATFORM domain
+    (all DCP callbacks route back to this server); the matching route handlers
+    validate the token and reject anything else."""
     base = (settings.DARAJA_CALLBACK_BASE_URL or "").rstrip("/")
     token = settings.MPESA_CALLBACK_TOKEN
     return f"{base}/api/v1/payments/mpesa/{token}/{suffix}"
@@ -83,23 +179,28 @@ def _timestamp() -> str:
     return datetime.now().strftime("%Y%m%d%H%M%S")
 
 
-def get_access_token(force_refresh: bool = False) -> str:
-    """OAuth client-credentials token from Daraja, cached until near expiry.
+def get_access_token(force_refresh: bool = False,
+                     creds: DarajaCreds | None = None) -> str:
+    """OAuth client-credentials token from Daraja, cached per consumer_key until
+    near expiry.
 
     GET /oauth/v1/generate?grant_type=client_credentials with HTTP Basic auth
     (consumer key/secret). The token value is never logged. Daraja returns
     `expires_in` (seconds, ~3599); we refresh _TOKEN_SAFETY_WINDOW seconds early.
     """
-    if not is_configured():
+    creds = creds or _settings_creds()
+    if not creds.configured:
         raise DarajaNotConfigured("Daraja consumer key/secret required.")
     now = time.time()
+    ck = creds.consumer_key
     with _token_lock:
-        if (not force_refresh and _token_cache["value"]
-                and now < _token_cache["expires_at"]):
-            return _token_cache["value"]
+        cache = _token_caches.get(ck)
+        if (not force_refresh and cache and cache["value"]
+                and now < cache["expires_at"]):
+            return cache["value"]
         resp = httpx.get(
-            f"{base_url()}/oauth/v1/generate?grant_type=client_credentials",
-            auth=(settings.DARAJA_CONSUMER_KEY, settings.DARAJA_CONSUMER_SECRET),
+            f"{creds.base_url}/oauth/v1/generate?grant_type=client_credentials",
+            auth=(creds.consumer_key, creds.consumer_secret),
             timeout=30,
         )
         resp.raise_for_status()
@@ -109,27 +210,28 @@ def get_access_token(force_refresh: bool = False) -> str:
             ttl = int(float(data.get("expires_in", 3599)))
         except (TypeError, ValueError):
             ttl = 3599
-        _token_cache["value"] = token
-        _token_cache["expires_at"] = now + max(0, ttl - _TOKEN_SAFETY_WINDOW)
+        _token_caches[ck] = {"value": token,
+                             "expires_at": now + max(0, ttl - _TOKEN_SAFETY_WINDOW)}
         return token
 
 
-def test_connection() -> dict:
-    """Used by DCP Setup 'Test connection' — attempts an OAuth token."""
-    if not is_configured():
+def test_connection(creds: DarajaCreds | None = None) -> dict:
+    """Used by DCP Setup / Configuration 'Test connection' — attempts an OAuth token."""
+    creds = creds or _settings_creds()
+    if not creds.configured:
         return {"ok": False, "status": "NOT CONFIGURED",
                 "detail": "Daraja consumer key/secret not configured."}
     try:
-        token = get_access_token()
-        return {"ok": True, "status": integration_status(),
+        token = get_access_token(creds=creds)
+        return {"ok": True, "status": integration_status(creds),
                 "detail": "OAuth token acquired.",
                 "token_acquired": bool(token)}
     except Exception as exc:
         return {"ok": False, "status": "ERROR", "detail": str(exc)}
 
 
-def _stk_password(timestamp: str) -> str:
-    raw = f"{settings.DARAJA_SHORTCODE}{settings.DARAJA_PASSKEY}{timestamp}"
+def _stk_password(timestamp: str, creds: DarajaCreds) -> str:
+    raw = f"{creds.shortcode}{creds.passkey}{timestamp}"
     return base64.b64encode(raw.encode()).decode()
 
 
@@ -141,7 +243,8 @@ def _new_conversation_ids() -> tuple[str, str]:
     return conv, orig
 
 
-def _simulate_b2c_accept(phone: str, amount: float, remarks: str) -> dict:
+def _simulate_b2c_accept(phone: str, amount: float, remarks: str,
+                         creds: DarajaCreds) -> dict:
     """MOCK path (credential-gated): mirror Daraja's *asynchronous* B2C
     acknowledgement WITHOUT faking the final result.
 
@@ -156,10 +259,10 @@ def _simulate_b2c_accept(phone: str, amount: float, remarks: str) -> dict:
     conv, orig = _new_conversation_ids()
     msisdn = normalise_msisdn(phone)
     request = {
-        "InitiatorName": settings.DARAJA_INITIATOR_NAME,
+        "InitiatorName": creds.initiator_name,
         "CommandID": "BusinessPayment",
         "Amount": int(amount),
-        "PartyA": settings.DARAJA_SHORTCODE,
+        "PartyA": creds.shortcode,
         "PartyB": msisdn,
         "Remarks": (remarks or "")[:100],
         "Occasion": "LoanDisbursement",
@@ -201,30 +304,32 @@ def simulate_b2c_result(conversation_id: str, originator_id: str | None = None,
     }}
 
 
-def b2c_disburse(phone: str, amount: float, remarks: str) -> dict:
+def b2c_disburse(phone: str, amount: float, remarks: str,
+                 creds: DarajaCreds | None = None) -> dict:
     """Real Daraja B2C payment request (disbursement to borrower).
 
     Credential-gated: with real credentials this hits Daraja; without them it
     returns the simulated *asynchronous acknowledgement* (see
     _simulate_b2c_accept) so the processing→result state machine is exercised
     end-to-end in the mock/demo without ever fabricating a settled payout."""
-    if not is_configured():
-        return _simulate_b2c_accept(phone, amount, remarks)
-    token = get_access_token()
+    creds = creds or _settings_creds()
+    if not creds.configured:
+        return _simulate_b2c_accept(phone, amount, remarks, creds)
+    token = get_access_token(creds=creds)
     msisdn = normalise_msisdn(phone)
     payload = {
-        "InitiatorName": settings.DARAJA_INITIATOR_NAME,
-        "SecurityCredential": settings.DARAJA_SECURITY_CREDENTIAL,
+        "InitiatorName": creds.initiator_name,
+        "SecurityCredential": creds.security_credential,
         "CommandID": "BusinessPayment",
         "Amount": int(amount),
-        "PartyA": settings.DARAJA_SHORTCODE,
+        "PartyA": creds.shortcode,
         "PartyB": msisdn,
         "Remarks": remarks[:100],
         "QueueTimeOutURL": callback_url("b2c-timeout"),
         "ResultURL": callback_url("b2c-result"),
         "Occasion": "LoanDisbursement",
     }
-    resp = httpx.post(f"{base_url()}/mpesa/b2c/v1/paymentrequest",
+    resp = httpx.post(f"{creds.base_url}/mpesa/b2c/v1/paymentrequest",
                       headers={"Authorization": f"Bearer {token}"},
                       json=payload, timeout=45)
     resp.raise_for_status()
@@ -244,7 +349,8 @@ def b2c_disburse(phone: str, amount: float, remarks: str) -> dict:
     }}
 
 
-def _simulate_stk_accept(phone: str, amount: float, account_ref: str) -> dict:
+def _simulate_stk_accept(phone: str, amount: float, account_ref: str,
+                         creds: DarajaCreds) -> dict:
     """MOCK path (credential-gated): mirror Daraja's STK-push acknowledgement.
 
     Real STK push returns only an "accepted" ack here; the customer then enters
@@ -256,12 +362,12 @@ def _simulate_stk_accept(phone: str, amount: float, account_ref: str) -> dict:
     checkout = f"ws_CO_{ts}{random.randint(100, 999)}"
     merchant = f"{random.randint(10000, 99999)}-{random.randint(1000000, 9999999)}-1"
     request = {
-        "BusinessShortCode": settings.DARAJA_SHORTCODE,
+        "BusinessShortCode": creds.shortcode,
         "Timestamp": ts,
         "TransactionType": "CustomerPayBillOnline",
         "Amount": int(amount),
         "PartyA": normalise_msisdn(phone),
-        "PartyB": settings.DARAJA_SHORTCODE,
+        "PartyB": creds.shortcode,
         "PhoneNumber": normalise_msisdn(phone),
         "AccountReference": (account_ref or "")[:12],
         "TransactionDesc": "Loan repayment",
@@ -301,27 +407,29 @@ def simulate_stk_result(checkout_request_id: str, merchant_request_id: str | Non
     return {"Body": {"stkCallback": callback}}
 
 
-def stk_push(phone: str, amount: float, account_ref: str) -> dict:
+def stk_push(phone: str, amount: float, account_ref: str,
+             creds: DarajaCreds | None = None) -> dict:
     """Real Daraja Lipa-na-M-Pesa STK push (collections prompt)."""
-    if not is_configured():
-        return _simulate_stk_accept(phone, amount, account_ref)
-    token = get_access_token()
+    creds = creds or _settings_creds()
+    if not creds.configured:
+        return _simulate_stk_accept(phone, amount, account_ref, creds)
+    token = get_access_token(creds=creds)
     ts = _timestamp()
     msisdn = normalise_msisdn(phone)
     payload = {
-        "BusinessShortCode": settings.DARAJA_SHORTCODE,
-        "Password": _stk_password(ts),
+        "BusinessShortCode": creds.shortcode,
+        "Password": _stk_password(ts, creds),
         "Timestamp": ts,
         "TransactionType": "CustomerPayBillOnline",
         "Amount": int(amount),
         "PartyA": msisdn,
-        "PartyB": settings.DARAJA_SHORTCODE,
+        "PartyB": creds.shortcode,
         "PhoneNumber": msisdn,
         "CallBackURL": callback_url("stk-callback"),
         "AccountReference": account_ref[:12],
         "TransactionDesc": "Loan repayment",
     }
-    resp = httpx.post(f"{base_url()}/mpesa/stkpush/v1/processrequest",
+    resp = httpx.post(f"{creds.base_url}/mpesa/stkpush/v1/processrequest",
                       headers={"Authorization": f"Bearer {token}"},
                       json=payload, timeout=45)
     resp.raise_for_status()
@@ -330,18 +438,19 @@ def stk_push(phone: str, amount: float, account_ref: str) -> dict:
     return {"request": safe_req, "response": resp.json()}
 
 
-def register_c2b_urls() -> dict:
+def register_c2b_urls(creds: DarajaCreds | None = None) -> dict:
     """Register C2B validation/confirmation URLs pointing at our callback."""
-    if not is_configured():
+    creds = creds or _settings_creds()
+    if not creds.configured:
         raise DarajaNotConfigured("Daraja not configured — cannot register C2B URLs.")
-    token = get_access_token()
+    token = get_access_token(creds=creds)
     payload = {
-        "ShortCode": settings.DARAJA_SHORTCODE,
+        "ShortCode": creds.shortcode,
         "ResponseType": "Completed",
         "ConfirmationURL": callback_url("c2b-callback"),
         "ValidationURL": callback_url("c2b-callback"),
     }
-    resp = httpx.post(f"{base_url()}/mpesa/c2b/v1/registerurl",
+    resp = httpx.post(f"{creds.base_url}/mpesa/c2b/v1/registerurl",
                       headers={"Authorization": f"Bearer {token}"},
                       json=payload, timeout=45)
     resp.raise_for_status()
@@ -360,7 +469,8 @@ def normalise_msisdn(phone: str) -> str:
     return digits
 
 
-def validate_mobile_number(phone: str, national_id: str, expected_name: str) -> dict:
+def validate_mobile_number(phone: str, national_id: str, expected_name: str,
+                           creds: DarajaCreds | None = None) -> dict:
     """
     Safaricom subscriber name-lookup check.
 
@@ -369,6 +479,7 @@ def validate_mobile_number(phone: str, national_id: str, expected_name: str) -> 
     the format + registration sanity check that IS available (MSISDN validity +
     ID presence) and is structured so a real name-lookup response slots straight
     in when a partner API is provisioned (see annotations)."""
+    creds = creds or _settings_creds()
     msisdn = normalise_msisdn(phone)
     valid_prefix = msisdn.startswith("2547") or msisdn.startswith("2541")
     ok = bool(msisdn) and len(msisdn) == 12 and valid_prefix and bool(national_id)
@@ -376,10 +487,10 @@ def validate_mobile_number(phone: str, national_id: str, expected_name: str) -> 
     return {
         "request": {
             "CommandID": "CheckIdentity",
-            "PartyA": settings.DARAJA_SHORTCODE,
+            "PartyA": creds.shortcode,
             "PartyB": msisdn,
             "IdentityNumber": national_id,
-            "Initiator": settings.DARAJA_INITIATOR_NAME,
+            "Initiator": creds.initiator_name,
         },
         "response": {
             "ResultCode": 0 if ok else 1,

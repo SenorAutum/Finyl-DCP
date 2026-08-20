@@ -31,6 +31,7 @@ import PaymentUpload from "./pages/access/PaymentUpload";
 import Backups from "./pages/access/Backups";
 import AuditLog from "./pages/access/AuditLog";
 import Reporting from "./pages/reporting/Reporting";
+import Configuration from "./pages/settings/Configuration";
 import { Spinner } from "./components/ui";
 
 // Ordered fallbacks: first module the user can access becomes their home page.
@@ -153,6 +154,8 @@ export default function App() {
             <Route path="/access/backups" element={<AdminGuard><Backups /></AdminGuard>} />
             <Route path="/access/audit" element={<AdminGuard><AuditLog /></AdminGuard>} />
             <Route path="/reporting" element={<PermGuard perms={["reports.export", "reports.schedule", "reports.template", "reports.flag"]}><Reporting /></PermGuard>} />
+            {/* Per-DCP configuration — DCP's own admin (system_admin holds thresholds.manage) */}
+            <Route path="/settings" element={<PermGuard perms={["thresholds.manage"]}><Configuration /></PermGuard>} />
             <Route path="/admin" element={<AdminGuard><Admin /></AdminGuard>} />
             <Route path="/integrations" element={<AdminGuard><Integrations /></AdminGuard>} />
             <Route path="/approver-config" element={<AdminGuard><ApproverConfig /></AdminGuard>} />

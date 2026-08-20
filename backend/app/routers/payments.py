@@ -214,8 +214,9 @@ def stk_push(body: StkPushRequest,
             .filter(Loan.id == body.loan_id, Loan.tenant_id == tenant_id).first())
     if not loan:
         raise HTTPException(404, "Loan not found")
+    creds = mpesa.resolve_creds(db, tenant_id)
     try:
-        payload = mpesa.stk_push(loan.borrower.phone, body.amount, loan.account_number)
+        payload = mpesa.stk_push(loan.borrower.phone, body.amount, loan.account_number, creds=creds)
     except mpesa.DarajaNotConfigured:
         # SEC-01: do not leak provider/config internals to the caller.
         raise HTTPException(422, "M-Pesa (Daraja) credentials are not configured")
@@ -261,7 +262,7 @@ def reconcile_disbursements(tenant_id: int = Depends(require_module("payments"))
          .order_by(PaymentTransaction.created_at.asc()))
     stuck = q.all()
     resolved = []
-    if simulate and not mpesa.is_configured():
+    if simulate and not mpesa.is_configured(mpesa.resolve_creds(db, tenant_id)):
         for txn in stuck:
             conv = txn.mpesa_ref
             orig = (txn.raw_payload or {}).get("result", {}).get("OriginatorConversationID")

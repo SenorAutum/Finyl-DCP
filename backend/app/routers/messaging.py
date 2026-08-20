@@ -47,7 +47,14 @@ def messaging_ctx(tenant_id: int | None = None,
     is pinned to its own tenant regardless of any tenant_id supplied.
     """
     if user.role != "super_admin":
-        raise HTTPException(403, "Super administrator access required")
+        # DCP admins (any role holding messaging.manage) may manage their OWN
+        # tenant's SMS templates; they can never target another tenant.
+        from app.services.authz import effective_permissions
+        if "messaging.manage" not in effective_permissions(db, user.tenant_id, user.role):
+            raise HTTPException(403, "You do not have permission to manage messaging")
+        if user.tenant_id is None:
+            raise HTTPException(400, "No tenant context")
+        return MsgCtx(user, int(user.tenant_id))
     tid = tenant_id
     if tid is None and x_tenant_id:
         try:

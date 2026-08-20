@@ -308,6 +308,41 @@ class RoleAssign(BaseModel):
     role: str
 
 
+# ---- RBAC: editable roles & permissions --------------------------------------------------
+class RoleCreate(BaseModel):
+    role_key: str            # new custom role key (lowercase, a-z0-9_)
+    label: str
+
+
+class RoleLabelUpdate(BaseModel):
+    label: str
+
+
+class RolePermissionUpdate(BaseModel):
+    permission_key: str
+    granted: bool = True
+
+
+# ---- Per-DCP configuration (System Administrator) -----------------------------------------
+class DarajaConfigIn(BaseModel):
+    """Per-DCP M-Pesa/Daraja credentials. Secret fields are write-only — send a
+    value to set/replace, omit or send blank to keep the stored value."""
+    environment: Optional[str] = None        # sandbox | production
+    shortcode: Optional[str] = None
+    initiator_name: Optional[str] = None
+    consumer_key: Optional[str] = None
+    consumer_secret: Optional[str] = None
+    passkey: Optional[str] = None
+    security_credential: Optional[str] = None
+    enabled: Optional[bool] = None
+
+
+class SettingsModuleToggle(BaseModel):
+    """Tenant is pinned server-side (own tenant) — only the target module + state."""
+    module_key: str
+    enabled: bool
+
+
 class PasswordReset(BaseModel):
     password: Optional[str] = None          # if omitted, forces a reset flag only
 
