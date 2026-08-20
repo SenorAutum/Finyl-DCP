@@ -15,24 +15,32 @@ B2C is asynchronous: the payout request only returns an *acknowledgement*
 `processing` and only the ResultURL webhook (or the reconcile sweep) applies the
 definitive result via `apply_b2c_result`.
 """
+import logging
 from datetime import date, timedelta
 
 from fastapi import HTTPException
 
+from app.core.money import money
+from app.core.obs import log_money_event
 from app.models import Loan, PaymentTransaction
 from app.services import mpesa, sms
+
+logger = logging.getLogger("finyl.payments")
 
 
 def _payout(phone: str, amount: float, remarks: str) -> dict:
     """Wrap the Daraja B2C call, mapping gating/errors to actionable HTTP codes."""
     try:
         return mpesa.b2c_disburse(phone, amount, remarks)
-    except mpesa.DarajaNotConfigured as exc:
-        raise HTTPException(422, f"M-Pesa (Daraja) credentials required: {exc}")
+    except mpesa.DarajaNotConfigured:
+        # SEC-01: do not leak provider/config internals to the caller.
+        raise HTTPException(422, "M-Pesa (Daraja) credentials are not configured")
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(502, f"Daraja B2C payout failed: {exc}")
+        # SEC-01: log the underlying detail server-side; return a generic message.
+        logger.error("b2c_payout_failed phone=%s remarks=%s: %s", phone, remarks, exc)
+        raise HTTPException(502, "The M-Pesa payout could not be completed. Please try again later.")
 
 
 def execute_disbursement(db, tenant_id, loan: Loan, actor_user_id: int) -> dict:
@@ -81,6 +89,9 @@ def execute_disbursement(db, tenant_id, loan: Loan, actor_user_id: int) -> dict:
     )
     db.add(txn)
     loan.disbursed_by_user_id = actor_user_id
+    log_money_event("disburse", tenant_id=tenant_id, user_id=actor_user_id,
+                    loan_id=loan.id, amount=money(loan.principal),
+                    phone=loan.borrower.phone, ref=conversation_id)
     return {
         "status": "processing",
         "conversation_id": conversation_id,
@@ -117,7 +128,10 @@ def apply_b2c_result(db, tenant_id, txn: PaymentTransaction, result_code, receip
             step = 7 if loan.product and loan.product.tenure_unit == "weeks" else 30
             tenure = loan.product.tenure_value if loan.product else 4
             loan.due_date = date.today() + timedelta(days=step * max(1, tenure))
-            loan.outstanding_balance = round(loan.total_due, 2)
+            loan.outstanding_balance = money(loan.total_due)  # MPESA-07
+            log_money_event("disburse_settled", tenant_id=tenant_id, loan_id=loan.id,
+                            amount=money(txn.amount), ref=txn.mpesa_ref,
+                            detail=f"outstanding={loan.outstanding_balance}")
             try:
                 sms.sms_loan_disbursed(db, tenant_id, loan.borrower, loan)
             except Exception:
@@ -161,5 +175,8 @@ def execute_refund(db, tenant_id, amount: float, phone: str, loan_id, actor_user
         raw_payload=payload,
     )
     db.add(txn)
+    log_money_event("refund", tenant_id=tenant_id, user_id=actor_user_id,
+                    loan_id=loan_id, amount=money(amount), phone=phone,
+                    ref=txn.mpesa_ref, detail=reason)
     return {"mpesa_ref": txn.mpesa_ref, "amount": float(amount),
             "status": txn.status}

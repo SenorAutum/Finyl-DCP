@@ -15,7 +15,17 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.security import decode_token
 from app.core.permissions import has_permission, permissions_for, COMPANY_SCOPE_ROLES
+from app.core.obs import log_permission_denied
 from app.models import AuditLog, Branch, Staff, TenantModule, User
+
+
+def _req_ip(request: Request | None):
+    if request is None:
+        return None
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else None
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
@@ -68,6 +78,8 @@ def require_module(module_key: str):
     def dependency(
         tenant_id: int = Depends(get_tenant_id),
         db: Session = Depends(get_db),
+        user: User = Depends(get_current_user),
+        request: Request = None,
     ) -> int:
         row = (
             db.query(TenantModule)
@@ -75,6 +87,10 @@ def require_module(module_key: str):
             .first()
         )
         if not row or not row.enabled:
+            log_permission_denied(kind="module", needed=module_key,
+                                  user_id=getattr(user, "id", None),
+                                  role=getattr(user, "role", None), ip=_req_ip(request),
+                                  path=request.url.path if request else None)
             raise HTTPException(
                 status.HTTP_403_FORBIDDEN,
                 f"Module '{module_key}' is not enabled for this tenant",
@@ -85,9 +101,12 @@ def require_module(module_key: str):
 
 def require_role(*roles: str):
     """Restrict an endpoint to specific roles (super_admin always passes)."""
-    def dependency(user: User = Depends(get_current_user)) -> User:
+    def dependency(user: User = Depends(get_current_user), request: Request = None) -> User:
         if user.role == "super_admin" or user.role in roles:
             return user
+        log_permission_denied(kind="role", needed=",".join(roles),
+                              user_id=user.id, role=user.role, ip=_req_ip(request),
+                              path=request.url.path if request else None)
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Insufficient role")
     return dependency
 
@@ -102,13 +121,17 @@ def require_permission(*keys: str, mode: str = "all"):
     super_admin passes unconditionally (wildcard). Returns the User so handlers
     can use it directly.
     """
-    def dependency(user: User = Depends(get_current_user)) -> User:
+    def dependency(user: User = Depends(get_current_user), request: Request = None) -> User:
         checks = [has_permission(user.role, k) for k in keys]
         ok = all(checks) if mode == "all" else any(checks)
         if not ok:
+            joiner = " & " if mode == "all" else " / "
+            log_permission_denied(kind="permission", needed=joiner.join(keys),
+                                  user_id=user.id, role=user.role, ip=_req_ip(request),
+                                  path=request.url.path if request else None)
             raise HTTPException(
                 status.HTTP_403_FORBIDDEN,
-                f"Missing required permission: {' & '.join(keys) if mode == 'all' else ' / '.join(keys)}",
+                f"Missing required permission: {joiner.join(keys)}",
             )
         return user
     return dependency

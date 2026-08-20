@@ -10,12 +10,17 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.core.config import settings
 from app.core.database import Base, SessionLocal, engine, ensure_schema
+from app.core.obs import configure_logging
 from app.core.security import decode_token
 from app import models  # noqa: F401 — register all tables on Base.metadata
 from app.routers import (admin, ai, auth, call_center, cbk, clients, complaints, crm,
                          dashboard, impact, lending, notifications, payments,
                          access, approvals, reporting, integrations, messaging)
+
+# OPS-01: configure structured stdout/journald logging before the app is built.
+configure_logging()
 
 app = FastAPI(
     title="Finyl-DCP API",
@@ -23,11 +28,22 @@ app = FastAPI(
     description="Multi-tenant Digital Credit Provider platform — lending engine, "
                 "M-Pesa integration hub (live Daraja), executive analytics, consumer "
                 "protection, CRM, call center, social impact and CBK compliance.",
+    # API-02: never expose interactive API docs / schema publicly.
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
+
+# API-01: lock CORS to the known production origin. The SPA is served same-origin
+# behind nginx (so browser XHR does not even trigger CORS); an explicit allowlist
+# replaces the previous wildcard, which is invalid combined with credentials.
+_ALLOWED_ORIGINS = [
+    "https://finyl-dcp.abacusai.cloud",
+]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # same-origin in production behind nginx; open for local dev
+    allow_origins=_ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -81,10 +97,12 @@ async def enforce_password_reset(request: Request, call_next):
 
 @app.on_event("startup")
 def on_startup():
-    """Create schema/tables if missing (idempotent). For production migrations,
-    see migrations/001_init.sql (generated from these models)."""
+    """Ensure the schema exists. Table DDL is owned by migrations/*.sql — API-04:
+    `Base.metadata.create_all` runs ONLY when AUTO_CREATE_TABLES is explicitly
+    enabled (throwaway/dev DB), never in production, to avoid silent schema drift."""
     ensure_schema()
-    Base.metadata.create_all(bind=engine)
+    if settings.AUTO_CREATE_TABLES:
+        Base.metadata.create_all(bind=engine)
 
 
 @app.get("/api/health")

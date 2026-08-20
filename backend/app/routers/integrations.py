@@ -4,6 +4,7 @@ Surfaces the live status of every external integration and provides
 'Test connection' actions. Nothing here fabricates success: each service
 reports LIVE / SANDBOX / NOT CONFIGURED from its own credential state.
 """
+import hmac
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -627,13 +628,42 @@ async def _handle_dlr(request: Request, db: Session):
     return result
 
 
+def _require_dlr_token(token: str | None) -> None:
+    """API-05: authenticate the otherwise-unauthenticated Uwazii DLR webhook with a
+    shared secret path token (constant-time compare). When UWAZII_DLR_TOKEN is unset
+    the tokenless legacy routes stay open (backward compatible); once set, only the
+    tokened route is accepted and the tokenless routes 404."""
+    configured = (settings.UWAZII_DLR_TOKEN or "").strip()
+    if not configured:
+        return  # not enforced
+    if not token or not hmac.compare_digest(token, configured):
+        raise HTTPException(404, "Not found")
+
+
+@webhook_router.post("/api/v1/integrations/sms/dlr/{token}")
+async def sms_dlr_tokened(token: str, request: Request, db: Session = Depends(get_db)):
+    """Authenticated Uwazii DLR callback. Configure this URL (with the secret token
+    segment) in the Uwazii account when UWAZII_DLR_TOKEN is set."""
+    _require_dlr_token(token)
+    return await _handle_dlr(request, db)
+
+
 @webhook_router.post("/api/v1/integrations/sms/dlr")
 async def sms_dlr(request: Request, db: Session = Depends(get_db)):
-    """Uwazii delivery-report callback (configure this URL in the Uwazii account)."""
+    """Uwazii delivery-report callback (configure this URL in the Uwazii account).
+    Rejected with 404 once UWAZII_DLR_TOKEN is configured (use the tokened URL)."""
+    _require_dlr_token(None)
     return await _handle_dlr(request, db)
 
 
 # no-/api alias in case a proxy strips the prefix (harmless duplicate route).
 @webhook_router.post("/integrations/sms/dlr")
 async def sms_dlr_alias(request: Request, db: Session = Depends(get_db)):
+    _require_dlr_token(None)
+    return await _handle_dlr(request, db)
+
+
+@webhook_router.post("/integrations/sms/dlr/{token}")
+async def sms_dlr_alias_tokened(token: str, request: Request, db: Session = Depends(get_db)):
+    _require_dlr_token(token)
     return await _handle_dlr(request, db)

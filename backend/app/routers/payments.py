@@ -17,6 +17,7 @@ Two classes of endpoint live here:
 See app/services/mpesa.py for the annotated Daraja client (credential-gated).
 """
 import hmac
+import logging
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -25,6 +26,8 @@ from sqlalchemy.orm import Session, joinedload
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.deps import require_module, require_permission, write_audit
+from app.core.money import split_interest_principal, reduce_balance, money
+from app.core.obs import log_money_event
 from app.models import Loan, PaymentTransaction, PendingApproval, Repayment, User
 from app.schemas import (C2BCallback, StkPushRequest, DisburseRequest,
                          RefundRequest, ReconcileRequest)
@@ -34,6 +37,8 @@ from app.services.disbursement import (execute_disbursement, execute_refund,
                                        apply_b2c_result, mark_b2c_timeout)
 
 router = APIRouter(prefix="/api/v1/payments", tags=["payments"])
+
+logger = logging.getLogger("finyl.payments")
 
 
 # --------------------------------------------------------------------------- #
@@ -171,21 +176,25 @@ def reconcile_payment(body: ReconcileRequest,
                     "outstanding_balance": float(loan.outstanding_balance or 0),
                     "loan_status": loan.status}
 
-    interest_share = loan.interest_rate / (100.0 + loan.interest_rate)
+    # MPESA-07: Decimal money math for the interest/principal split + balance.
+    interest, principal = split_interest_principal(amount, loan.interest_rate)
     rep = Repayment(
-        tenant_id=tenant_id, loan_id=loan.id, amount=amount,
-        interest_component=round(amount * interest_share, 2),
-        principal_component=round(amount * (1 - interest_share), 2),
+        tenant_id=tenant_id, loan_id=loan.id, amount=money(amount),
+        interest_component=interest,
+        principal_component=principal,
         payment_date=datetime.utcnow(), method="reconciliation",
         mpesa_ref=body.mpesa_ref,
     )
     db.add(rep)
-    loan.outstanding_balance = max(0, round(float(loan.outstanding_balance or 0) - amount, 2))
+    loan.outstanding_balance = reduce_balance(loan.outstanding_balance or 0, amount)
     if loan.outstanding_balance <= 0 and loan.status in ("active", "overdue"):
         loan.status = "paid"
     write_audit(db, tenant_id=tenant_id, user=user, action="reconcile.execute",
                 entity_type="loan", entity_id=loan.id,
                 details={"amount": amount, "mpesa_ref": body.mpesa_ref}, request=request)
+    log_money_event("reconcile", tenant_id=tenant_id, user_id=user.id, loan_id=loan.id,
+                    amount=money(amount), ref=body.mpesa_ref,
+                    detail=f"outstanding={loan.outstanding_balance}")
     db.commit()
     return {"status": "reconciled", "outstanding_balance": float(loan.outstanding_balance),
             "loan_status": loan.status}
@@ -207,10 +216,13 @@ def stk_push(body: StkPushRequest,
         raise HTTPException(404, "Loan not found")
     try:
         payload = mpesa.stk_push(loan.borrower.phone, body.amount, loan.account_number)
-    except mpesa.DarajaNotConfigured as exc:
-        raise HTTPException(422, f"M-Pesa (Daraja) credentials required: {exc}")
+    except mpesa.DarajaNotConfigured:
+        # SEC-01: do not leak provider/config internals to the caller.
+        raise HTTPException(422, "M-Pesa (Daraja) credentials are not configured")
     except Exception as exc:
-        raise HTTPException(502, f"Daraja STK push failed: {exc}")
+        # SEC-01: log the detail server-side; return a generic message.
+        logger.error("stk_push_failed loan_id=%s tenant_id=%s: %s", loan.id, tenant_id, exc)
+        raise HTTPException(502, "STK push could not be completed. Please try again later.")
     db.add(PaymentTransaction(tenant_id=tenant_id, type="stk_push", loan_id=loan.id,
                               amount=body.amount, phone=loan.borrower.phone,
                               mpesa_ref=payload["response"]["CheckoutRequestID"],
@@ -218,6 +230,9 @@ def stk_push(body: StkPushRequest,
     write_audit(db, tenant_id=tenant_id, user=user, action="stk_push.execute",
                 entity_type="loan", entity_id=loan.id,
                 details={"amount": float(body.amount)}, request=request)
+    log_money_event("stk_push", tenant_id=tenant_id, user_id=user.id, loan_id=loan.id,
+                    amount=money(body.amount), phone=loan.borrower.phone,
+                    ref=payload["response"].get("CheckoutRequestID"))
     db.commit()
     return payload["response"]
 
@@ -395,15 +410,19 @@ async def stk_callback(token: str, request: Request, db: Session = Depends(get_d
     loan = db.query(Loan).options(joinedload(Loan.borrower)).filter(
         Loan.id == txn.loan_id, Loan.tenant_id == tenant_id).first()
     if existing is None and loan is not None:
-        interest_share = loan.interest_rate / (100.0 + loan.interest_rate)
-        db.add(Repayment(tenant_id=tenant_id, loan_id=loan.id, amount=amount,
-                         interest_component=round(amount * interest_share, 2),
-                         principal_component=round(amount * (1 - interest_share), 2),
+        # MPESA-07: Decimal money math.
+        interest, principal = split_interest_principal(amount, loan.interest_rate)
+        db.add(Repayment(tenant_id=tenant_id, loan_id=loan.id, amount=money(amount),
+                         interest_component=interest,
+                         principal_component=principal,
                          payment_date=datetime.utcnow(), method="stk_push",
                          mpesa_ref=str(receipt)))
-        loan.outstanding_balance = max(0, round(float(loan.outstanding_balance or 0) - amount, 2))
+        loan.outstanding_balance = reduce_balance(loan.outstanding_balance or 0, amount)
         if loan.outstanding_balance <= 0 and loan.status in ("active", "overdue"):
             loan.status = "paid"
+        log_money_event("stk_callback", tenant_id=tenant_id, loan_id=loan.id,
+                        amount=money(amount), ref=str(receipt),
+                        detail=f"outstanding={loan.outstanding_balance}")
         try:
             sms.sms_payment_receipt(db, tenant_id, loan.borrower, loan, amount, str(receipt))
         except Exception:
@@ -457,10 +476,11 @@ async def c2b_callback(token: str, request: Request, db: Session = Depends(get_d
 
     outstanding = float(loan.outstanding_balance or 0)
     overpayment = amount > outstanding
-    interest_share = loan.interest_rate / (100.0 + loan.interest_rate)
-    db.add(Repayment(tenant_id=tenant_id, loan_id=loan.id, amount=amount,
-                     interest_component=round(amount * interest_share, 2),
-                     principal_component=round(amount * (1 - interest_share), 2),
+    # MPESA-07: Decimal money math.
+    interest, principal = split_interest_principal(amount, loan.interest_rate)
+    db.add(Repayment(tenant_id=tenant_id, loan_id=loan.id, amount=money(amount),
+                     interest_component=interest,
+                     principal_component=principal,
                      payment_date=datetime.utcnow(), method="mpesa_c2b", mpesa_ref=ref))
     txn_payload = {**body}
     if overpayment:
@@ -469,9 +489,12 @@ async def c2b_callback(token: str, request: Request, db: Session = Depends(get_d
                             "outstanding_at_receipt": outstanding})
         loan.outstanding_balance = 0
     else:
-        loan.outstanding_balance = max(0, round(outstanding - amount, 2))
+        loan.outstanding_balance = reduce_balance(outstanding, amount)
         if loan.outstanding_balance <= 0 and loan.status in ("active", "overdue"):
             loan.status = "paid"
+    log_money_event("c2b_callback", tenant_id=tenant_id, loan_id=loan.id,
+                    amount=money(amount), phone=cb.MSISDN, ref=str(ref),
+                    detail=f"overpayment={overpayment} outstanding={loan.outstanding_balance}")
     db.add(PaymentTransaction(tenant_id=tenant_id, type="c2b", loan_id=loan.id, amount=amount,
                               phone=cb.MSISDN, mpesa_ref=ref, status="success",
                               raw_payload=txn_payload))

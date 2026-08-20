@@ -10,6 +10,7 @@ from sqlalchemy import (Boolean, Column, DateTime, ForeignKey, Integer, String,
                         Text)
 from sqlalchemy.orm import relationship
 
+from app.core.crypto import EncryptedText
 from app.core.database import Base
 
 
@@ -65,7 +66,9 @@ class ClientDocument(Base):
     doc_type = Column(String(40), default="other")   # see models.lending.DOC_TYPES
     storage_path = Column(Text)             # absolute/relative path within STORAGE_DIR
     ocr_applied = Column(Boolean, default=False)
-    ocr_text = Column(Text)
+    # PII-01: OCR'd ID text is sensitive PII — encrypted at rest (transparent
+    # Fernet via EncryptedText; legacy plaintext rows decrypt unchanged).
+    ocr_text = Column(EncryptedText)
     uploaded_at = Column(DateTime, default=datetime.utcnow)
     uploaded_by = Column(String(120))
 

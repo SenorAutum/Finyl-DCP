@@ -1,17 +1,20 @@
-fastapi>=0.111
-uvicorn[standard]>=0.29
-sqlalchemy>=2.0
-psycopg2-binary>=2.9
-passlib[bcrypt]>=1.7
-bcrypt<4
-PyJWT>=2.8
-httpx>=0.27
-pandas>=2.2
-python-dotenv>=1.0
-pydantic-settings>=2.2
-python-multipart>=0.0.9
-pytesseract>=0.3.10   # OCR wrapper — needs the `tesseract-ocr` system binary
-pillow>=10.3          # image decoding / pre-processing for OCR
-pdf2image>=1.17       # renders PDF IDs to images — needs `poppler-utils`
-pdfplumber>=0.11      # parses official Safaricom M-Pesa statement PDFs
-pikepdf>=9.0          # decrypts password-locked M-Pesa statement PDFs
+# DEP-01: dependencies pinned to exact, audited versions (reproducible builds).
+# Versions match the deployed, working virtualenv. Review pip-audit before bumping.
+fastapi==0.139.2
+uvicorn[standard]==0.51.0
+sqlalchemy==2.0.51
+psycopg2-binary==2.9.12
+passlib[bcrypt]==1.7.4
+bcrypt==3.2.2          # <4 (passlib bcrypt backend compatibility)
+PyJWT==2.13.0
+httpx==0.28.1
+pandas==3.0.3
+python-dotenv==1.2.2
+pydantic-settings==2.14.2
+python-multipart==0.0.32
+cryptography==50.0.0   # PII-01 field-level encryption (Fernet)
+pytesseract==0.3.13    # OCR wrapper — needs the `tesseract-ocr` system binary
+pillow==12.3.0         # image decoding / pre-processing for OCR
+pdf2image==1.17.0      # renders PDF IDs to images — needs `poppler-utils`
+pdfplumber==0.11.10    # parses official Safaricom M-Pesa statement PDFs
+pikepdf==10.11.0       # decrypts password-locked M-Pesa statement PDFs

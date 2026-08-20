@@ -5,6 +5,8 @@ All runtime configuration is sourced from environment variables (see .env.exampl
 at the repo root). This keeps the codebase 100% portable: the same image runs on
 this VM, docker-compose, AWS, GCP, etc. — only the env differs.
 """
+import re
+
 from pydantic_settings import BaseSettings
 from pydantic import model_validator
 
@@ -13,11 +15,25 @@ from pydantic import model_validator
 WEAK_JWT_SECRETS = {"change-me-in-production", "", "changeme", "secret", "your-secret-key"}
 MIN_JWT_SECRET_LEN = 32
 
+# INPUT-03 — DB_SCHEMA is interpolated into `SET search_path` via f-strings in
+# core/database.py. It is config-derived (not user input), but we still validate
+# it against a strict identifier pattern at startup as defence-in-depth so a
+# malformed/injected value can never reach a SQL statement.
+_SCHEMA_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
 
 class Settings(BaseSettings):
     # --- Database ---------------------------------------------------------
     DATABASE_URL: str = "postgresql://finyl:finyl@localhost:5432/finyl_dcp"
     DB_SCHEMA: str = "finyl_dcp"  # dedicated schema; set "public" for a dedicated DB
+    # API-04 — the DB schema is owned by migrations/*.sql. `Base.metadata.create_all`
+    # at startup causes silent schema drift, so it is OFF by default. Set true only
+    # for a throwaway local/dev DB with no migrations applied.
+    AUTO_CREATE_TABLES: bool = False
+
+    # PII-01 — optional explicit key (urlsafe-b64 Fernet key) for field-level PII
+    # encryption at rest. Blank -> a stable key is derived from JWT_SECRET. Never logged.
+    PII_ENCRYPTION_KEY: str = ""
 
     # --- Auth --------------------------------------------------------------
     JWT_SECRET: str = "change-me-in-production"
@@ -65,6 +81,12 @@ class Settings(BaseSettings):
     UWAZII_PASSWORD: str = ""
     UWAZII_ACCESS_TOKEN: str = ""  # optional static override; blank -> use two-step auth
     UWAZII_SENDER_ID: str = ""
+    # API-05 — optional shared-secret token for the unauthenticated Uwazii DLR
+    # (delivery-report) webhook. When set, the DLR callback URL must carry this
+    # token (path segment /sms/dlr/{token} or X-DLR-Token header) or it is 404'd;
+    # the plain tokenless /sms/dlr routes are rejected. Blank -> legacy open
+    # behaviour (delivery status is advisory only). Never logged.
+    UWAZII_DLR_TOKEN: str = ""
 
     # --- Bulk SMS provider placeholders (legacy generic gateway) --------------
     SMS_API_URL: str = "placeholder"
@@ -140,6 +162,14 @@ class Settings(BaseSettings):
                 f"(got {len(secret)} chars, need >= {MIN_JWT_SECRET_LEN}). "
                 "Generate a strong one with: "
                 "python -c \"import secrets;print(secrets.token_urlsafe(48))\""
+            )
+        # INPUT-03: DB_SCHEMA is interpolated into `SET search_path`; enforce a
+        # strict identifier pattern so a malformed value can never reach SQL.
+        schema = (self.DB_SCHEMA or "").strip()
+        if not _SCHEMA_RE.match(schema):
+            raise ValueError(
+                "Refusing to start: DB_SCHEMA is not a valid SQL identifier "
+                "(must match ^[A-Za-z_][A-Za-z0-9_]*$)."
             )
         return self
 

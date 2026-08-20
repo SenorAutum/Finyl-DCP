@@ -43,6 +43,23 @@ LOCKED_FIELDS = ("phone", "national_id", "date_of_birth")
 MAX_BYTES = storage.MAX_BYTES
 OCR_MIMES = ("image/jpeg", "image/jpg", "image/png", "image/webp", "application/pdf")
 
+# INPUT-01: MIME types that browsers may render/execute inline. We never trust the
+# client-supplied Content-Type for these — they are neutralised to a non-active
+# type on ingest so a stored document can never be served as active content.
+DANGEROUS_MIME = {
+    "text/html", "application/xhtml+xml", "image/svg+xml",
+    "application/xml", "text/xml", "application/javascript",
+    "text/javascript", "application/ecmascript", "text/ecmascript",
+}
+
+
+def _safe_mime(content_type: str | None) -> str:
+    """Return a storage-safe MIME, downgrading active/renderable types."""
+    ct = (content_type or "").split(";")[0].strip().lower()
+    if not ct or ct in DANGEROUS_MIME:
+        return "application/octet-stream"
+    return ct
+
 
 # --------------------------------------------------------------------------- #
 # Serializers
@@ -157,8 +174,17 @@ def _sync_nested(db: Session, client: Borrower, tenant_id: int, body: ClientCrea
         target.active = row.active
 
 
+# INPUT-02 — trust/decision fields must never be mass-assigned from the client
+# payload. They are set only by their own server-side flows (eKYC verify sets
+# kyc_status, the CRB check sets credit_score, approval workflow sets approver /
+# is_active). Accepting them from ClientCreate would let a caller self-approve or
+# forge a credit score.
+_TRUST_FIELDS = {"kyc_status", "credit_score", "current_credit_rating",
+                 "approved_by_user_id", "is_active"}
+
+
 def _apply_scalars(client: Borrower, body: ClientCreate) -> None:
-    data = body.model_dump(exclude={"wallets", "next_of_kin"})
+    data = body.model_dump(exclude={"wallets", "next_of_kin"} | _TRUST_FIELDS)
     for key, value in data.items():
         setattr(client, key, value)
 
@@ -301,8 +327,11 @@ def build_router(prefix: str, tag: str) -> APIRouter:
     # ---- documents ---------------------------------------------------------
     @router.get("/{client_id}/documents")
     def list_documents(client_id: int, tenant_id: int = Depends(require_module("lending")),
-                       db: Session = Depends(get_db)):
-        _get_client(db, tenant_id, client_id)
+                       db: Session = Depends(get_db),
+                       scope: UserScope = Depends(get_scope)):
+        client = _get_client(db, tenant_id, client_id)
+        if not scope.can_see_client(client):
+            raise HTTPException(403, "Client is outside your data scope")
         rows = (db.query(ClientDocument)
                 .filter(ClientDocument.client_id == client_id,
                         ClientDocument.tenant_id == tenant_id)
@@ -315,10 +344,13 @@ def build_router(prefix: str, tag: str) -> APIRouter:
                                doc_types: str = Query("", description="Comma-separated doc_type per file"),
                                tenant_id: int = Depends(require_module("lending")),
                                db: Session = Depends(get_db),
-                               user: User = Depends(require_permission("docs.upload"))):
+                               user: User = Depends(require_permission("docs.upload")),
+                               scope: UserScope = Depends(get_scope)):
         """Accepts ANY file type, several at a time. `doc_types` is a parallel,
         comma-separated list (missing entries default to 'other')."""
-        _get_client(db, tenant_id, client_id)
+        client = _get_client(db, tenant_id, client_id)
+        if not scope.can_see_client(client):
+            raise HTTPException(403, "Client is outside your data scope")
         types = [t.strip() for t in doc_types.split(",")] if doc_types else []
         saved = []
         for idx, upload in enumerate(files):
@@ -332,7 +364,7 @@ def build_router(prefix: str, tag: str) -> APIRouter:
             stored, path = storage.save_bytes(tenant_id, client_id, upload.filename or "file", data)
             row = ClientDocument(
                 tenant_id=tenant_id, client_id=client_id, file_name=stored,
-                original_name=upload.filename, mime_type=upload.content_type,
+                original_name=upload.filename, mime_type=_safe_mime(upload.content_type),
                 size_bytes=len(data), doc_type=doc_type, storage_path=path,
                 uploaded_by=user.full_name,
             )
@@ -344,22 +376,35 @@ def build_router(prefix: str, tag: str) -> APIRouter:
     @router.get("/{client_id}/documents/{doc_id}/download")
     def download_document(client_id: int, doc_id: int,
                           tenant_id: int = Depends(require_module("lending")),
-                          db: Session = Depends(get_db)):
+                          db: Session = Depends(get_db),
+                          scope: UserScope = Depends(get_scope)):
+        client = _get_client(db, tenant_id, client_id)
+        if not scope.can_see_client(client):
+            raise HTTPException(403, "Client is outside your data scope")
         doc = (db.query(ClientDocument)
                .filter(ClientDocument.id == doc_id, ClientDocument.client_id == client_id,
                        ClientDocument.tenant_id == tenant_id).first())
         if not doc or not doc.storage_path or not os.path.exists(doc.storage_path):
             raise HTTPException(404, "Document not found")
+        # INPUT-01: force a safe, non-rendering download regardless of stored MIME.
+        safe_name = (doc.original_name or "document").replace('"', "").replace("\r", "").replace("\n", "")
         return Response(
             content=storage.read_bytes(doc.storage_path),
-            media_type=doc.mime_type or "application/octet-stream",
-            headers={"Content-Disposition": f'inline; filename="{doc.original_name}"'},
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": f'attachment; filename="{safe_name}"',
+                "X-Content-Type-Options": "nosniff",
+            },
         )
 
     @router.delete("/{client_id}/documents/{doc_id}")
     def delete_document(client_id: int, doc_id: int,
                         tenant_id: int = Depends(require_module("lending")),
-                        db: Session = Depends(get_db)):
+                        db: Session = Depends(get_db),
+                        scope: UserScope = Depends(get_scope)):
+        client = _get_client(db, tenant_id, client_id)
+        if not scope.can_see_client(client):
+            raise HTTPException(403, "Client is outside your data scope")
         doc = (db.query(ClientDocument)
                .filter(ClientDocument.id == doc_id, ClientDocument.client_id == client_id,
                        ClientDocument.tenant_id == tenant_id).first())

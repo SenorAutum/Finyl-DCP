@@ -66,7 +66,8 @@ def list_borrowers(tenant_id: int = Depends(require_module("lending")),
 @router.post("/borrowers")
 def create_borrower(body: BorrowerCreate, tenant_id: int = Depends(require_module("lending")),
                     db: Session = Depends(get_db)):
-    b = Borrower(tenant_id=tenant_id, **body.model_dump())
+    # INPUT-02: never mass-assign trust/lifecycle fields from client input.
+    b = Borrower(tenant_id=tenant_id, **body.model_dump(exclude={"kyc_status"}))
     db.add(b)
     db.commit()
     return _borrower_dict(b)
@@ -79,7 +80,8 @@ def update_borrower(borrower_id: int, body: BorrowerCreate,
     b = db.query(Borrower).filter(Borrower.id == borrower_id, Borrower.tenant_id == tenant_id).first()
     if not b:
         raise HTTPException(404, "Borrower not found")
-    for k, v in body.model_dump().items():
+    # INPUT-02: kyc_status is a trust field — never settable via this endpoint.
+    for k, v in body.model_dump(exclude={"kyc_status"}).items():
         setattr(b, k, v)
     db.commit()
     return _borrower_dict(b)

@@ -22,6 +22,7 @@ from app.core.database import get_db
 from app.core.deps import get_current_user, get_tenant_id, get_scope, UserScope, write_audit
 from app.core.security import create_access_token, verify_password, hash_password
 from app.core.permissions import permissions_for, ROLE_LABELS
+from app.core.obs import log_auth_event
 from app.models import ApprovalThreshold, MODULE_KEYS, Tenant, TenantModule, User
 from app.schemas import LoginRequest, ChangePasswordRequest, SignupRequest
 
@@ -92,9 +93,12 @@ def _login(db: Session, email: str, password: str, request: Request = None) -> d
     # Generic message: never disclose whether the email exists or is locked.
     invalid = HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid email or password")
 
+    ip = _client_ip(request)
+
     if user and _is_locked(user):
         # Do not leak lock state as a distinct signal to anonymous callers;
         # 423 tells a legitimate user their account is temporarily protected.
+        log_auth_event("login_blocked_locked", email=email, user_id=user.id, ip=ip)
         raise HTTPException(
             status.HTTP_423_LOCKED,
             "Account temporarily locked due to repeated failed logins. "
@@ -111,7 +115,12 @@ def _login(db: Session, email: str, password: str, request: Request = None) -> d
                             entity_id=user.id,
                             details={"failed_attempts": user.failed_login_attempts},
                             request=request)
+                log_auth_event("account_locked", email=email, user_id=user.id, ip=ip,
+                               detail=f"failed_attempts={user.failed_login_attempts}")
             db.commit()
+        # Do not disclose whether the email existed.
+        log_auth_event("login_failed", email=email,
+                       user_id=getattr(user, "id", None), ip=ip)
         raise invalid
 
     if not user.active:
@@ -125,6 +134,7 @@ def _login(db: Session, email: str, password: str, request: Request = None) -> d
     write_audit(db, tenant_id=user.tenant_id, user=user, action="auth.login",
                 entity_type="user", entity_id=user.id, request=request)
     db.commit()
+    log_auth_event("login_success", email=user.email, user_id=user.id, ip=ip, ok=True)
     return {"access_token": token, "token_type": "bearer",
             "force_password_reset": bool(user.force_password_reset)}
 
