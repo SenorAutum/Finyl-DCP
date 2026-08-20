@@ -15,6 +15,8 @@ The return shapes are unchanged from the previous mock so routers/UI keep workin
 import base64
 import random
 import string
+import threading
+import time
 import uuid
 from datetime import datetime
 
@@ -25,18 +27,22 @@ from app.core.config import settings
 SANDBOX_BASE = "https://sandbox.safaricom.co.ke"
 PROD_BASE = "https://api.safaricom.co.ke"
 
+# Values Daraja treats as "not set" (config defaults / .env placeholders).
+_PLACEHOLDERS = {"", "placeholder", "change-me", "changeme"}
+
 
 class DarajaNotConfigured(RuntimeError):
     """Raised when real Daraja credentials are absent."""
 
 
 def base_url() -> str:
-    return PROD_BASE if (settings.DARAJA_ENV or "sandbox").lower().startswith("prod") else SANDBOX_BASE
+    """Live Daraja base URL, derived from DARAJA_ENVIRONMENT via config."""
+    return settings.DARAJA_BASE_URL
 
 
 def is_configured() -> bool:
     for v in (settings.DARAJA_CONSUMER_KEY, settings.DARAJA_CONSUMER_SECRET):
-        if not v or str(v).strip().lower() == "placeholder":
+        if not v or str(v).strip().lower() in _PLACEHOLDERS:
             return False
     return True
 
@@ -45,6 +51,16 @@ def integration_status() -> str:
     if not is_configured():
         return "NOT CONFIGURED"
     return "LIVE" if base_url() == PROD_BASE else "SANDBOX"
+
+
+# --------------------------------------------------------------------------- #
+# OAuth token cache — Daraja tokens live ~1h; cache and reuse until shortly
+# before expiry so we don't fetch a fresh token on every B2C/STK/C2B call.
+# Guarded by a lock because uvicorn may serve requests from a threadpool.
+# --------------------------------------------------------------------------- #
+_token_lock = threading.Lock()
+_token_cache: dict = {"value": None, "expires_at": 0.0}
+_TOKEN_SAFETY_WINDOW = 30  # seconds before real expiry to force a refresh
 
 
 def callback_url(suffix: str) -> str:
@@ -67,17 +83,35 @@ def _timestamp() -> str:
     return datetime.now().strftime("%Y%m%d%H%M%S")
 
 
-def get_access_token() -> str:
-    """OAuth client-credentials token from Daraja."""
+def get_access_token(force_refresh: bool = False) -> str:
+    """OAuth client-credentials token from Daraja, cached until near expiry.
+
+    GET /oauth/v1/generate?grant_type=client_credentials with HTTP Basic auth
+    (consumer key/secret). The token value is never logged. Daraja returns
+    `expires_in` (seconds, ~3599); we refresh _TOKEN_SAFETY_WINDOW seconds early.
+    """
     if not is_configured():
         raise DarajaNotConfigured("Daraja consumer key/secret required.")
-    resp = httpx.get(
-        f"{base_url()}/oauth/v1/generate?grant_type=client_credentials",
-        auth=(settings.DARAJA_CONSUMER_KEY, settings.DARAJA_CONSUMER_SECRET),
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return resp.json()["access_token"]
+    now = time.time()
+    with _token_lock:
+        if (not force_refresh and _token_cache["value"]
+                and now < _token_cache["expires_at"]):
+            return _token_cache["value"]
+        resp = httpx.get(
+            f"{base_url()}/oauth/v1/generate?grant_type=client_credentials",
+            auth=(settings.DARAJA_CONSUMER_KEY, settings.DARAJA_CONSUMER_SECRET),
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        token = data["access_token"]
+        try:
+            ttl = int(float(data.get("expires_in", 3599)))
+        except (TypeError, ValueError):
+            ttl = 3599
+        _token_cache["value"] = token
+        _token_cache["expires_at"] = now + max(0, ttl - _TOKEN_SAFETY_WINDOW)
+        return token
 
 
 def test_connection() -> dict:
@@ -88,7 +122,8 @@ def test_connection() -> dict:
     try:
         token = get_access_token()
         return {"ok": True, "status": integration_status(),
-                "detail": "OAuth token acquired.", "token_preview": token[:8] + "…"}
+                "detail": "OAuth token acquired.",
+                "token_acquired": bool(token)}
     except Exception as exc:
         return {"ok": False, "status": "ERROR", "detail": str(exc)}
 

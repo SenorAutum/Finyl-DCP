@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     # Credential-gated: while key/secret are placeholders the payment endpoints
     # report NOT CONFIGURED and refuse to fake a success. Add real sandbox creds
     # + restart and the same code flips to LIVE (SANDBOX) with zero changes.
-    DARAJA_ENV: str = "sandbox"                    # sandbox | production
+    DARAJA_ENVIRONMENT: str = "sandbox"            # sandbox | production
     DARAJA_CONSUMER_KEY: str = "placeholder"
     DARAJA_CONSUMER_SECRET: str = "placeholder"
     DARAJA_SHORTCODE: str = "placeholder"
@@ -106,6 +106,18 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         extra = "ignore"
+
+    @property
+    def DARAJA_BASE_URL(self) -> str:
+        """Daraja API base URL derived from DARAJA_ENVIRONMENT.
+
+        production -> https://api.safaricom.co.ke
+        sandbox    -> https://sandbox.safaricom.co.ke  (default / any non-prod value)
+        """
+        env = (self.DARAJA_ENVIRONMENT or "sandbox").strip().lower()
+        if env.startswith("prod"):
+            return "https://api.safaricom.co.ke"
+        return "https://sandbox.safaricom.co.ke"
 
     @model_validator(mode="after")
     def _enforce_strong_jwt_secret(self):

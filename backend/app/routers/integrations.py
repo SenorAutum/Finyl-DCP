@@ -69,7 +69,7 @@ def integrations_status(db: Session = Depends(get_db)):
                 "category": "Payments",
                 "status": mpesa.integration_status(),
                 "config": {
-                    "environment": settings.DARAJA_ENV,
+                    "environment": settings.DARAJA_ENVIRONMENT,
                     "shortcode": settings.DARAJA_SHORTCODE or "",
                     "initiator_name": settings.DARAJA_INITIATOR_NAME or "",
                     "consumer_key": _mask(settings.DARAJA_CONSUMER_KEY),
@@ -219,7 +219,7 @@ def _sms_config():
 
 def _mpesa_config():
     return {
-        "environment": settings.DARAJA_ENV,
+        "environment": settings.DARAJA_ENVIRONMENT,
         "shortcode": settings.DARAJA_SHORTCODE or "",
         "initiator_name": settings.DARAJA_INITIATOR_NAME or "",
         "consumer_key": _mask(settings.DARAJA_CONSUMER_KEY),
