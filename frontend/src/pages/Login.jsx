@@ -1,6 +1,6 @@
 // Login page with Finyl-DCP branding + demo credentials.
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation, Link } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 
 const DEMO = [
@@ -19,6 +19,8 @@ const DEMO = [
 export default function Login() {
   const { login } = useAuth();
   const nav = useNavigate();
+  const loc = useLocation();
+  const signupSuccess = loc.state?.signupSuccess || "";
   const [email, setEmail] = useState("admin@mularcredit.co.ke");
   const [password, setPassword] = useState("Finyl@2026");
   const [err, setErr] = useState("");
@@ -57,6 +59,7 @@ export default function Login() {
           </div>
           <h2 className="text-2xl font-extrabold">Sign in</h2>
           <p className="text-sm text-gray-500 mb-6">Access your DCP workspace</p>
+          {signupSuccess && <div className="mb-4 text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">{signupSuccess}</div>}
           <form onSubmit={submit} className="space-y-4">
             <div><label className="label">Email</label>
               <input className="input" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="username" /></div>
@@ -65,6 +68,11 @@ export default function Login() {
             {err && <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{err}</div>}
             <button className="btn-primary w-full justify-center" disabled={busy}>{busy ? "Signing in…" : "Sign in"}</button>
           </form>
+
+          <p className="mt-4 text-sm text-gray-500 text-center">
+            New to Finyl-DCP?{" "}
+            <Link to="/signup" className="text-accent font-semibold hover:underline">Create your DCP account</Link>
+          </p>
 
           <div className="mt-6 card p-4">
             <div className="text-xs font-bold uppercase tracking-wider text-gray-500 mb-2">Demo credentials · password <span className="text-accent">Finyl@2026</span></div>

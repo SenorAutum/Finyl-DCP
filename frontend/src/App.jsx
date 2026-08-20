@@ -4,6 +4,7 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import Layout from "./components/Layout";
 import { AuthProvider, useAuth } from "./hooks/useAuth";
 import Login from "./pages/Login";
+import Signup from "./pages/Signup";
 import ChangePassword from "./pages/ChangePassword";
 import Dashboard from "./pages/dashboard/Dashboard";
 import Clients from "./pages/clients/Clients";
@@ -125,6 +126,7 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<Login />} />
+          <Route path="/signup" element={<Signup />} />
           <Route path="/change-password" element={<ChangePassword />} />
           <Route element={<Shell />}>
             <Route index element={<HomeRedirect />} />

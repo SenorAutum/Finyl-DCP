@@ -17,6 +17,22 @@ class ChangePasswordRequest(BaseModel):
     new_password: str
 
 
+class SignupRequest(BaseModel):
+    """Public self-service DCP (tenant) registration payload.
+
+    organization_name -> new Tenant. admin_* -> the tenant's first user, created
+    as the tenant-scoped administrator (role=system_admin). Validated server-side
+    in the router (email format, strong password, length limits) since
+    email-validator isn't installed for pydantic EmailStr.
+    """
+    organization_name: str
+    admin_full_name: str
+    admin_email: str
+    password: str
+    confirm_password: Optional[str] = None
+    logo_color: Optional[str] = "#10B981"
+
+
 # ---- Tenancy / admin ---------------------------------------------------------
 class TenantCreate(BaseModel):
     name: str

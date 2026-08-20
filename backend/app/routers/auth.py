@@ -7,6 +7,7 @@ AUTH-03: self-service password change that clears force_password_reset.
 AUTH-04: password change / logout bump the user's token_version, revoking every
 previously issued JWT.
 """
+import re
 import threading
 import time
 from collections import defaultdict, deque
@@ -14,14 +15,15 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.deps import get_current_user, get_tenant_id, get_scope, UserScope, write_audit
 from app.core.security import create_access_token, verify_password, hash_password
 from app.core.permissions import permissions_for, ROLE_LABELS
-from app.models import MODULE_KEYS, Tenant, TenantModule, User
-from app.schemas import LoginRequest, ChangePasswordRequest
+from app.models import ApprovalThreshold, MODULE_KEYS, Tenant, TenantModule, User
+from app.schemas import LoginRequest, ChangePasswordRequest, SignupRequest
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
@@ -138,6 +140,127 @@ def login_form(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
                request: Request = None, _rl: None = Depends(rate_limit_login)):
     """OAuth2 password-flow variant (used by Swagger UI)."""
     return _login(db, form.username, form.password, request)
+
+
+# --- AUTH-05: self-service DCP (tenant) signup -------------------------------
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+# Sensible out-of-the-box maker-checker / approval limits so a freshly
+# registered DCP is usable without a manual RBAC seeding step. Mirrors the
+# structure used by seeds/rbac_seed.py.
+_DEFAULT_THRESHOLDS = [
+    ("role", "relationship_officer", "loan_approval", 0),
+    ("role", "branch_manager", "loan_approval", 100000),
+    ("role", "regional_manager", "loan_approval", 500000),
+    ("role", "all", "disbursement", 200000),
+    ("role", "all", "refund", 50000),
+]
+
+
+def _slug_code(name: str) -> str:
+    """Derive an uppercase alphanumeric tenant code (<=20 chars) from a name."""
+    slug = re.sub(r"[^A-Za-z0-9]", "", name or "").upper()[:12]
+    return slug or "DCP"
+
+
+@router.post("/signup", status_code=status.HTTP_201_CREATED)
+def signup(body: SignupRequest, db: Session = Depends(get_db), request: Request = None,
+           _rl: None = Depends(rate_limit_login)):
+    """Public self-service registration for a brand-new DCP (tenant).
+
+    In a single transaction this creates the Tenant, enables every platform
+    module for it, seeds default approval thresholds, and creates the first
+    user as the tenant-scoped administrator (role=system_admin). No JWT is
+    issued; the caller is directed to sign in normally.
+    """
+    # --- server-side validation ---------------------------------------------
+    org = (body.organization_name or "").strip()
+    if not org:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Organization name is required")
+    if len(org) > 120:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "Organization name must be 120 characters or fewer")
+
+    full_name = (body.admin_full_name or "").strip()
+    if not full_name:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Administrator full name is required")
+    if len(full_name) > 160:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "Administrator full name must be 160 characters or fewer")
+
+    email = (body.admin_email or "").strip().lower()
+    if not email or not _EMAIL_RE.match(email) or len(email) > 160:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "A valid administrator email address is required")
+
+    password = body.password or ""
+    if len(password) < 8:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "Password must be at least 8 characters")
+    if len(password) > 128:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "Password must be 128 characters or fewer")
+    if body.confirm_password is not None and body.confirm_password != password:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Passwords do not match")
+
+    color = (body.logo_color or "#10B981").strip() or "#10B981"
+
+    # --- uniqueness pre-checks (case-insensitive) ----------------------------
+    from sqlalchemy import func
+    if db.query(Tenant).filter(func.lower(Tenant.name) == org.lower()).first():
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            "An organization with this name already exists")
+    if db.query(User).filter(func.lower(User.email) == email).first():
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            "An account with this email already exists")
+
+    # --- unique tenant code --------------------------------------------------
+    base = _slug_code(org)
+    code = base
+    n = 2
+    while db.query(Tenant).filter(Tenant.code == code).first():
+        suffix = str(n)
+        code = f"{base[:20 - len(suffix)]}{suffix}"
+        n += 1
+
+    # --- single transaction --------------------------------------------------
+    try:
+        tenant = Tenant(name=org, code=code, logo_color=color, active=True)
+        db.add(tenant)
+        db.flush()  # assign tenant.id
+
+        for key in MODULE_KEYS:
+            db.add(TenantModule(tenant_id=tenant.id, module_key=key, enabled=True))
+
+        for scope_type, scope_key, threshold_type, amount in _DEFAULT_THRESHOLDS:
+            db.add(ApprovalThreshold(tenant_id=tenant.id, scope_type=scope_type,
+                                     scope_key=scope_key, threshold_type=threshold_type,
+                                     amount=amount))
+
+        user = User(email=email, hashed_password=hash_password(password),
+                    full_name=full_name, role="system_admin", tenant_id=tenant.id,
+                    active=True, force_password_reset=False)
+        db.add(user)
+        db.flush()  # assign user.id
+
+        write_audit(db, tenant_id=tenant.id, user=user, action="auth.signup",
+                    entity_type="tenant", entity_id=tenant.id,
+                    details={"organization_name": org, "admin_email": email},
+                    request=request)
+        db.commit()
+    except IntegrityError:
+        # Race: another request registered the same name/email between our
+        # pre-check and commit. Return a clean conflict.
+        db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            "An organization or account with these details already exists")
+
+    return {
+        "ok": True,
+        "tenant": {"id": tenant.id, "name": tenant.name, "code": tenant.code},
+        "admin": {"id": user.id, "email": user.email, "role": user.role},
+        "detail": "Account created. Please sign in with your new credentials.",
+    }
 
 
 @router.post("/change-password")
