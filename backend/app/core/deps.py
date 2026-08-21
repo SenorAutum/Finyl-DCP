@@ -81,6 +81,12 @@ def require_module(module_key: str):
         user: User = Depends(get_current_user),
         request: Request = None,
     ) -> int:
+        # super_admin sees & uses everything — consistent with /auth/me, which
+        # advertises all modules as enabled for super_admin. Mirrors the
+        # super_admin bypass in require_role / require_permission. The tenant's
+        # stored feature flags are unchanged and still gate every other role.
+        if user.role == "super_admin":
+            return tenant_id
         row = (
             db.query(TenantModule)
             .filter(TenantModule.tenant_id == tenant_id, TenantModule.module_key == module_key)

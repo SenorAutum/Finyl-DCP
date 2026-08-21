@@ -12,6 +12,16 @@ export class ApiError extends Error {
   constructor(status, detail) { super(detail); this.status = status; this.detail = detail; }
 }
 
+// Auth endpoints authenticate the user; a 401/423 from them is a *login failure*
+// (wrong password, locked account), NOT an expired session. We must surface the
+// backend's real error message on these instead of clearing the token and
+// redirecting with a misleading "Session expired". The session-expiry redirect
+// stays in force for every other (post-login, authenticated) request.
+const AUTH_ENDPOINTS = ["/api/v1/auth/login", "/api/v1/auth/signup", "/api/v1/auth/change-password"];
+function isAuthEndpoint(path) {
+  return AUTH_ENDPOINTS.some((p) => path === p || path.startsWith(`${p}?`));
+}
+
 export async function api(path, { method = "GET", body, raw } = {}) {
   const headers = {};
   const token = getToken();
@@ -21,7 +31,7 @@ export async function api(path, { method = "GET", body, raw } = {}) {
   if (body) headers["Content-Type"] = "application/json";
 
   const res = await fetch(`${BASE}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined });
-  if (res.status === 401) { setToken(null); window.location.href = "/login"; throw new ApiError(401, "Session expired"); }
+  if (res.status === 401 && !isAuthEndpoint(path)) { setToken(null); window.location.href = "/login"; throw new ApiError(401, "Session expired"); }
   if (raw) return res;
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new ApiError(res.status, errorDetail(res.status, data.detail));
@@ -53,7 +63,7 @@ export async function upload(path, formData) {
   if (tenant) headers["X-Tenant-Id"] = tenant;
 
   const res = await fetch(`${BASE}${path}`, { method: "POST", headers, body: formData });
-  if (res.status === 401) { setToken(null); window.location.href = "/login"; throw new ApiError(401, "Session expired"); }
+  if (res.status === 401 && !isAuthEndpoint(path)) { setToken(null); window.location.href = "/login"; throw new ApiError(401, "Session expired"); }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new ApiError(res.status, errorDetail(res.status, data.detail));
   return data;
