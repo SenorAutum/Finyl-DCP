@@ -1,5 +1,6 @@
 """Core lending models: borrowers, loans, repayments, payment transactions."""
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import (Boolean, Column, Date, DateTime, Float, ForeignKey,
                         Integer, Numeric, String, Text, JSON, UniqueConstraint)
@@ -101,7 +102,7 @@ class Loan(Base):
     staff_id = Column(Integer, ForeignKey("staff.id"))          # loan officer
     branch_id = Column(Integer, ForeignKey("branches.id"))
     principal = Column(Numeric(12, 2), nullable=False)
-    interest_rate = Column(Float, nullable=False)
+    interest_rate = Column(Numeric(6, 3), nullable=False)
     status = Column(String(20), nullable=False, default="pending", index=True)
     application_date = Column(Date)
     approval_date = Column(Date)
@@ -124,8 +125,12 @@ class Loan(Base):
 
     @property
     def total_due(self):
-        """Flat interest total due (principal + interest)."""
-        return float(self.principal) * (1 + self.interest_rate / 100.0)
+        """Flat interest total due (principal + interest), as Decimal money.
+
+        MPESA-07: currency math stays in Decimal (no float) so there is no binary
+        drift; returns a 2dp Decimal that SQLAlchemy Numeric columns accept."""
+        from app.core.money import D, money
+        return money(D(self.principal) * (Decimal(1) + D(self.interest_rate) / Decimal(100)))
 
 
 class Repayment(Base):

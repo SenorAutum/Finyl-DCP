@@ -56,7 +56,7 @@ class Product(Base):
     tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
     name = Column(String(120), nullable=False)
     code = Column(String(20), nullable=False)
-    interest_rate = Column(Float, nullable=False, default=10.0)      # % over tenure
+    interest_rate = Column(Numeric(6, 3), nullable=False, default=10.0)   # % over tenure
     interest_method = Column(String(20), default="flat")             # flat | reducing_balance
     tenure_value = Column(Integer, default=4)
     tenure_unit = Column(String(10), default="weeks")                # weeks | months
@@ -65,7 +65,7 @@ class Product(Base):
     max_amount = Column(Numeric(12, 2), default=100000)
     min_age = Column(Integer, default=18)
     max_age = Column(Integer, default=65)
-    penalty_rate = Column(Float, default=1.0)                        # % per overdue period
+    penalty_rate = Column(Numeric(6, 3), default=1.0)               # % per overdue period
     rules = Column(JSON, default=dict)                               # extensible eligibility rules
     active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)

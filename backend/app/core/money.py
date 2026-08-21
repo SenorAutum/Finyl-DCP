@@ -49,3 +49,31 @@ def reduce_balance(outstanding, amount) -> Decimal:
     if new_bal < 0:
         new_bal = Decimal("0.00")
     return new_bal
+
+
+def apply_in_duplum(principal, total_charges) -> Decimal:
+    """CBK *in duplum* statutory rule: the total of interest + penalties + other
+    charges accrued on a non-performing loan may never exceed the outstanding
+    principal owed at default (Central Bank of Kenya / Banking Act — charges are
+    capped at 100% of principal). Returns `total_charges` capped at `principal`.
+    """
+    principal = money(principal)
+    total_charges = money(total_charges)
+    return total_charges if total_charges <= principal else principal
+
+
+def in_duplum_cap(principal, accrued_charges, new_charge) -> Decimal:
+    """Return the maximum ADDITIONAL charge (interest or penalty) that may be
+    added so that (accrued_charges + result) never exceeds `principal` under the
+    CBK in-duplum rule. Returns a Decimal >= 0 (0 once the cap is already hit).
+
+    `accrued_charges` = interest + penalties already charged on the loan.
+    `new_charge` = the charge we would like to add this period.
+    """
+    principal = money(principal)
+    accrued_charges = money(accrued_charges)
+    new_charge = money(new_charge)
+    headroom = principal - accrued_charges
+    if headroom <= 0:
+        return Decimal("0.00")
+    return new_charge if new_charge <= headroom else headroom

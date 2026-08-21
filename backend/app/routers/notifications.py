@@ -1,16 +1,41 @@
 """SMS notifications: manual send, dispatch log viewer and scheduled-job endpoints
 (repayment reminders 3 days before due; overdue/penalty alerts)."""
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.database import get_db
 from app.core.deps import require_module, require_role
+from app.core.money import D, money, in_duplum_cap
 from app.models import (Loan, SmsLog, Tenant, User, SmsAutomationSetting,
                         SMS_AUTOMATION_DEFAULT_ENABLED, SMS_AUTOMATION_DEFAULT_HOUR)
 from app.schemas import SendSmsRequest
 from app.services import sms
+
+
+def _accrue_overdue_penalty(loan) -> Decimal:
+    """Accrue a one-time overdue penalty onto the loan's outstanding balance,
+    clamped by the CBK *in duplum* rule (interest + penalties may never exceed
+    the principal). Called ONLY on the active->overdue transition, so repeated
+    sweeps of an already-overdue loan never re-apply it (idempotent). Returns the
+    penalty actually added (Decimal, 0.00 if none / cap already reached)."""
+    principal = D(loan.principal)
+    rate = D(loan.interest_rate or 0)
+    product = getattr(loan, "product", None)
+    penalty_rate = D(getattr(product, "penalty_rate", 0) or 0)
+    if principal <= 0 or penalty_rate <= 0:
+        return Decimal("0.00")
+    # Flat interest already charged on this loan (charges accrued so far).
+    accrued_interest = money(principal * rate / Decimal(100))
+    proposed_penalty = money(principal * penalty_rate / Decimal(100))
+    # CBK in-duplum: cap the additional charge so interest+penalties <= principal.
+    allowed = in_duplum_cap(principal, accrued_interest, proposed_penalty)
+    if allowed <= 0:
+        return Decimal("0.00")
+    loan.outstanding_balance = money(D(loan.outstanding_balance or 0) + allowed)
+    return allowed
 
 router = APIRouter(prefix="/api/v1/notifications", tags=["notifications"])
 
@@ -51,17 +76,22 @@ def _run_repayment_reminders(db: Session, tenant_id: int) -> int:
 
 def _run_overdue_alerts(db: Session, tenant_id: int) -> dict:
     today = date.today()
-    loans = (db.query(Loan).options(joinedload(Loan.borrower))
+    loans = (db.query(Loan).options(joinedload(Loan.borrower), joinedload(Loan.product))
              .filter(Loan.tenant_id == tenant_id, Loan.status.in_(["active", "overdue"]),
                      Loan.due_date != None, Loan.due_date < today,
                      Loan.outstanding_balance > 0).all())
     flipped = 0
+    penalty_total = Decimal("0.00")
     for l in loans:
         if l.status == "active":
             l.status = "overdue"
             flipped += 1
+            # One-time overdue penalty on the active->overdue transition only,
+            # capped by the CBK in-duplum rule (idempotent across sweeps).
+            penalty_total += _accrue_overdue_penalty(l)
         sms.sms_overdue_alert(db, tenant_id, l.borrower, l)
-    return {"alerts_sent": len(loans), "flipped_to_overdue": flipped}
+    return {"alerts_sent": len(loans), "flipped_to_overdue": flipped,
+            "penalty_accrued": float(penalty_total)}
 
 
 def _run_defaulting(db: Session, tenant_id: int, grace_days: int = 30) -> int:

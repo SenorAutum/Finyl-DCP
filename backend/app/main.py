@@ -104,6 +104,24 @@ def on_startup():
     ensure_schema()
     if settings.AUTO_CREATE_TABLES:
         Base.metadata.create_all(bind=engine)
+    # In-process auto-reconcile worker (APScheduler). Guarded so a missing
+    # dependency / disabled flag never blocks app boot.
+    try:
+        from app.services.scheduler import start_scheduler
+        start_scheduler()
+    except Exception:  # pragma: no cover
+        import logging
+        logging.getLogger("finyl.scheduler").exception(
+            "start_scheduler failed — app continues without the worker")
+
+
+@app.on_event("shutdown")
+def on_shutdown():
+    try:
+        from app.services.scheduler import shutdown_scheduler
+        shutdown_scheduler()
+    except Exception:  # pragma: no cover
+        pass
 
 
 @app.get("/api/health")

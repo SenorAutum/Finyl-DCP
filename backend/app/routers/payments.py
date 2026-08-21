@@ -158,8 +158,12 @@ def reconcile_payment(body: ReconcileRequest,
 
     MPESA-03 idempotency: if a repayment with the same mpesa_ref already exists for
     this tenant, this is a no-op (prevents double-posting a manual reconciliation)."""
-    loan = (db.query(Loan).options(joinedload(Loan.borrower))
-            .filter(Loan.id == body.loan_id, Loan.tenant_id == tenant_id).first())
+    # Concurrency: lock the loan row so concurrent repayment callbacks serialize
+    # (no double-credit). FOR UPDATE can't be applied with the outer-joined
+    # joinedload; borrower is not needed here so we lock the loan row alone.
+    loan = (db.query(Loan)
+            .filter(Loan.id == body.loan_id, Loan.tenant_id == tenant_id)
+            .with_for_update().first())
     if not loan:
         raise HTTPException(404, "Loan not found")
     amount = float(body.amount)
@@ -408,8 +412,10 @@ async def stk_callback(token: str, request: Request, db: Session = Depends(get_d
     txn.status = "success"
     txn.mpesa_ref = str(receipt)
     txn.raw_payload = {**(txn.raw_payload or {}), "result_callback": body}
-    loan = db.query(Loan).options(joinedload(Loan.borrower)).filter(
-        Loan.id == txn.loan_id, Loan.tenant_id == tenant_id).first()
+    # Concurrency: lock the loan row so concurrent repayment callbacks serialize
+    # (no double-credit). borrower lazy-loads on access below.
+    loan = db.query(Loan).filter(
+        Loan.id == txn.loan_id, Loan.tenant_id == tenant_id).with_for_update().first()
     if existing is None and loan is not None:
         # MPESA-07: Decimal money math.
         interest, principal = split_interest_principal(amount, loan.interest_rate)
@@ -449,8 +455,11 @@ async def c2b_callback(token: str, request: Request, db: Session = Depends(get_d
         return {"ResultCode": 0, "ResultDesc": "Ignored (unparseable)"}
 
     # Derive tenant + loan from the account number in BillRefNumber.
-    loan = (db.query(Loan).options(joinedload(Loan.borrower))
-            .filter(Loan.account_number == cb.BillRefNumber).first())
+    # Concurrency: lock the loan row so concurrent repayment callbacks serialize
+    # (no double-credit). borrower lazy-loads on access below.
+    loan = (db.query(Loan)
+            .filter(Loan.account_number == cb.BillRefNumber)
+            .with_for_update().first())
     if not loan:
         return {"ResultCode": 0, "ResultDesc": f"No loan for account {cb.BillRefNumber}"}
     tenant_id = loan.tenant_id

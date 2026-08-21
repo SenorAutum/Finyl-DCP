@@ -31,6 +31,13 @@ class Settings(BaseSettings):
     # for a throwaway local/dev DB with no migrations applied.
     AUTO_CREATE_TABLES: bool = False
 
+    # In-process auto-reconcile worker (APScheduler in the FastAPI process). When
+    # enabled, a job every SCHEDULER_INTERVAL_MINUTES resolves stuck B2C payouts
+    # for each payments-enabled tenant. Set false to disable (e.g. multi-replica).
+    SCHEDULER_ENABLED: bool = True
+    SCHEDULER_INTERVAL_MINUTES: int = 5
+    SCHEDULER_STUCK_MINUTES: int = 10
+
     # PII-01 — optional explicit key (urlsafe-b64 Fernet key) for field-level PII
     # encryption at rest. Blank -> a stable key is derived from JWT_SECRET. Never logged.
     PII_ENCRYPTION_KEY: str = ""
