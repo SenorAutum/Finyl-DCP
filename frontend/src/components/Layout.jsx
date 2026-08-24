@@ -17,6 +17,7 @@ const NAV = [
     { to: "/clients", label: "Clients", module: "lending", icon: "👥" },
     { to: "/loans", label: "Loans", module: "lending", icon: "📋" },
     { to: "/payments", label: "Payments & SMS", module: "payments", icon: "₿" },
+    { to: "/payments/suspense", label: "Suspense Account", module: "payments", icon: "⏳", anyPerm: ["reconcile.execute"] },
   ]},
   { group: "Approvals", items: [
     { to: "/approvals", label: "Approvals Inbox", icon: "✅",
@@ -31,6 +32,10 @@ const NAV = [
   { group: "Reporting", items: [
     { to: "/reporting", label: "HQ Reporting", icon: "📊",
       anyPerm: ["reports.export", "reports.schedule", "reports.template", "reports.flag"] },
+    { to: "/accounting", label: "Accounting & GL", icon: "📒", anyPerm: ["accounting.export"] },
+  ]},
+  { group: "Messaging", items: [
+    { to: "/messaging/opt-outs", label: "SMS Opt-Outs", icon: "🔕", anyPerm: ["messaging.manage"] },
   ]},
   { group: "Compliance", items: [
     { to: "/cbk", label: "CBK Reporting", module: "cbk_reporting", icon: "🏛" },

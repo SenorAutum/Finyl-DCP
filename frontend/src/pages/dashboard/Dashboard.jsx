@@ -9,6 +9,49 @@ import { Empty, KpiCard, PageHeader, Spinner } from "../../components/ui";
 
 const STATUS_COLORS = { active: "#10B981", paid: "#0D9488", overdue: "#F59E0B", defaulted: "#EF4444", pending: "#9CA3AF", underwriting: "#3B82F6", rejected: "#6B7280", approved: "#14B8A6" };
 
+// Exact 2-decimal KES (fmtKES rounds to whole shillings, unsuitable for provisions).
+const kes2 = (n) =>
+  n == null ? "—" : `KES ${Number(n).toLocaleString("en-KE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const pct = (frac) => (frac == null ? "—" : `${(Number(frac) * 100).toFixed(2)}%`);
+
+// IFRS 9 Expected Credit Loss provisioning summary (additive; renders only when
+// the backend supplies data.ecl). Three staged buckets + total provision + coverage.
+function EclCard({ ecl }) {
+  if (!ecl) return null;
+  const stages = [
+    { key: 1, label: "Stage 1", note: "Performing (12-month ECL)", exp: ecl.stage1_exposure, prov: ecl.stage1_provision, rate: ecl.rates?.stage1_rate, tone: "text-emerald-700" },
+    { key: 2, label: "Stage 2", note: "Under-performing (lifetime ECL)", exp: ecl.stage2_exposure, prov: ecl.stage2_provision, rate: ecl.rates?.stage2_rate, tone: "text-amber-700" },
+    { key: 3, label: "Stage 3", note: "Non-performing (lifetime ECL)", exp: ecl.stage3_exposure, prov: ecl.stage3_provision, rate: ecl.rates?.stage3_rate, tone: "text-red-700" },
+  ];
+  return (
+    <div className="card p-4 mb-5">
+      <div className="flex items-baseline justify-between flex-wrap gap-2 mb-3">
+        <h3 className="font-bold">IFRS 9 Expected Credit Loss</h3>
+        <div className="text-sm text-gray-500">
+          Total provision <span className="font-bold text-charcoal">{kes2(ecl.total_ecl_provision)}</span>
+          <span className="mx-2 text-gray-300">·</span>
+          Coverage ratio <span className="font-bold text-accent">{pct(ecl.coverage_ratio)}</span>
+        </div>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        {stages.map((s) => (
+          <div key={s.key} className="rounded-lg border border-border p-3">
+            <div className="flex items-center justify-between">
+              <div className={`font-bold text-sm ${s.tone}`}>{s.label}</div>
+              <div className="text-[11px] text-gray-400">rate {pct(s.rate)}</div>
+            </div>
+            <div className="text-[11px] text-gray-400 mb-2">{s.note}</div>
+            <div className="text-[11px] font-bold uppercase tracking-wider text-gray-500">Exposure</div>
+            <div className="text-sm font-medium">{kes2(s.exp)}</div>
+            <div className="text-[11px] font-bold uppercase tracking-wider text-gray-500 mt-1.5">Provision</div>
+            <div className="text-sm font-semibold">{kes2(s.prov)}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function Dashboard() {
   const [data, setData] = useState(null);
   const [org, setOrg] = useState(null);
@@ -85,6 +128,9 @@ export default function Dashboard() {
             <KpiCard label="Yield on Portfolio" value={`${k.yield_on_portfolio}%`} tone="good" sub="Interest income / outstanding" />
             <KpiCard label="Active Loans" value={k.active_loans} sub={`${fmtKES(k.total_collected)} collected`} />
           </div>
+
+          {/* IFRS 9 Expected Credit Loss */}
+          <EclCard ecl={data.ecl} />
 
           {/* Charts row */}
           <div className="grid lg:grid-cols-3 gap-4 mb-5">

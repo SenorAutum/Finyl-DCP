@@ -32,7 +32,8 @@ from app.models import (Borrower, ClientDocument, ClientMobileWallet,
                         ClientNextOfKin, CrbCheck, DOC_TYPES, Loan, ImpactSurvey,
                         MpesaStatementAnalysis, NEXT_OF_KIN_RELATIONSHIPS,
                         PaymentTransaction, User, WALLET_OPERATORS)
-from app.schemas import ClientCreate, EkycVerifyRequest, ValidateMpesaRequest
+from app.models import KycConsent
+from app.schemas import ClientCreate, EkycVerifyRequest, ValidateMpesaRequest, ConsentIn
 from app.services import crb, ekyc, mpesa, storage
 from app.services.mpesa_statement import StatementError, analyze_statement
 from app.services.ocr import OcrUnavailable, process_id_files
@@ -694,6 +695,70 @@ def build_router(prefix: str, tag: str) -> APIRouter:
              .filter(CrbCheck.client_id == client_id, CrbCheck.tenant_id == tenant_id)
              .order_by(CrbCheck.id.desc()).first())
         return _crb_dict(c) if c else None
+
+    # -------------------------------------------------------------------------
+    # KYC consent capture (data-processing consent mandatory when submitted).
+    # Legacy borrowers with no consent row are grandfathered — create is not
+    # hard-blocked; consent is only enforced on this endpoint.
+    # -------------------------------------------------------------------------
+    @router.post("/{client_id}/consent")
+    def capture_consent(client_id: int, body: ConsentIn,
+                        tenant_id: int = Depends(require_module("lending")),
+                        db: Session = Depends(get_db),
+                        user: User = Depends(require_permission("clients.edit")),
+                        request: Request = None):
+        _get_client(db, tenant_id, client_id)
+        if not body.consent_data_processing:
+            raise HTTPException(422, "Data-processing consent is required to record consent")
+        ip = request.client.host if (request and request.client) else None
+        row = KycConsent(
+            tenant_id=tenant_id, borrower_id=client_id,
+            consent_data_processing=body.consent_data_processing,
+            consent_credit_check=body.consent_credit_check,
+            consent_marketing=body.consent_marketing,
+            consent_version=body.consent_version,
+            ip_address=ip,
+        )
+        db.add(row)
+        db.flush()
+        write_audit(db, tenant_id=tenant_id, user=user, action="client.consent.capture",
+                    entity_type="kyc_consent", entity_id=row.id,
+                    details={"borrower_id": client_id,
+                             "consent_credit_check": body.consent_credit_check,
+                             "consent_marketing": body.consent_marketing,
+                             "consent_version": body.consent_version}, request=request)
+        db.commit()
+        return {
+            "id": row.id, "borrower_id": client_id,
+            "consent_data_processing": row.consent_data_processing,
+            "consent_credit_check": row.consent_credit_check,
+            "consent_marketing": row.consent_marketing,
+            "consent_version": row.consent_version,
+            "consented_at": row.consented_at.isoformat() if row.consented_at else None,
+        }
+
+    @router.get("/{client_id}/consent")
+    def get_consent(client_id: int, tenant_id: int = Depends(require_module("lending")),
+                    db: Session = Depends(get_db)):
+        _get_client(db, tenant_id, client_id)
+        row = (db.query(KycConsent)
+               .filter(KycConsent.tenant_id == tenant_id,
+                       KycConsent.borrower_id == client_id)
+               .order_by(KycConsent.id.desc()).first())
+        if not row:
+            return {"borrower_id": client_id, "consent": None,
+                    "note": "No consent on file (legacy borrower grandfathered)."}
+        return {
+            "borrower_id": client_id,
+            "consent": {
+                "id": row.id,
+                "consent_data_processing": row.consent_data_processing,
+                "consent_credit_check": row.consent_credit_check,
+                "consent_marketing": row.consent_marketing,
+                "consent_version": row.consent_version,
+                "consented_at": row.consented_at.isoformat() if row.consented_at else None,
+            },
+        }
 
     return router
 

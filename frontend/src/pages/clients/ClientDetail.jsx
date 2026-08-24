@@ -19,6 +19,47 @@ function Row({ label, value }) {
   );
 }
 
+// Data-protection consent status (read-only summary; full capture/update is on the
+// Edit Client screen). Renders whatever the consent endpoint returns.
+function ConsentPanel({ clientId }) {
+  const [data, setData] = useState(undefined); // undefined=loading, null=none
+  useEffect(() => {
+    let ok = true;
+    api(`/api/v1/clients/${clientId}/consent`)
+      .then((r) => ok && setData(r?.consent ?? null))
+      .catch(() => ok && setData(null));
+    return () => { ok = false; };
+  }, [clientId]);
+
+  const Flag = ({ label, on }) => (
+    <div className="flex items-center gap-2 text-sm">
+      <span className={on ? "text-accent" : "text-gray-400"}>{on ? "✓" : "—"}</span>
+      <span className={on ? "font-medium" : "text-gray-400"}>{label}</span>
+    </div>
+  );
+
+  return (
+    <div className="card p-5 mb-5">
+      <h2 className="font-bold text-base mb-3">Data Protection Consent</h2>
+      {data === undefined ? <Spinner /> : data === null ? (
+        <p className="text-sm text-gray-400">No consent recorded yet. Capture it via <span className="font-medium">Edit client</span>.</p>
+      ) : (
+        <>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <Flag label="Data processing" on={data.consent_data_processing} />
+            <Flag label="Credit reference (CRB) check" on={data.consent_credit_check} />
+            <Flag label="Marketing communications" on={data.consent_marketing} />
+          </div>
+          <div className="text-[11px] text-gray-400 mt-3">
+            {data.consent_version && <>Version {data.consent_version} · </>}
+            {data.consented_at && <>Recorded {fmtDate(data.consented_at)}</>}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function ClientDetail() {
   const { id } = useParams();
   const nav = useNavigate();
@@ -83,6 +124,8 @@ export default function ClientDetail() {
           <Row label="Baseline Monthly Sales" value={fmtKES(c.baseline_monthly_sales)} />
         </div>
       </div>
+
+      <ConsentPanel clientId={c.id} />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-5">
         <div className="card overflow-hidden">

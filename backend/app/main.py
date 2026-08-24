@@ -17,7 +17,8 @@ from app.core.security import decode_token
 from app import models  # noqa: F401 — register all tables on Base.metadata
 from app.routers import (admin, ai, auth, call_center, cbk, clients, complaints, crm,
                          dashboard, impact, lending, notifications, payments,
-                         access, approvals, reporting, integrations, messaging)
+                         access, approvals, reporting, integrations, messaging,
+                         accounting)
 from app.routers import settings as dcp_settings
 
 # OPS-01: configure structured stdout/journald logging before the app is built.
@@ -131,7 +132,8 @@ def health():
 
 for r in (auth, admin, clients, lending, payments, notifications, dashboard,
           complaints, crm, call_center, impact, cbk, ai,
-          access, approvals, reporting, integrations, messaging, dcp_settings):
+          access, approvals, reporting, integrations, messaging, dcp_settings,
+          accounting):
     app.include_router(r.router)
 
 # Legacy /api/v1/borrowers alias — same handlers as /api/v1/clients so anything

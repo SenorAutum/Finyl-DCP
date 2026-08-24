@@ -67,6 +67,8 @@ PERMISSIONS = {
     "reports.schedule": "Schedule recurring report generation",
     "reports.template": "Build / save custom report templates",
     "reports.flag": "Flag data anomalies for Compliance",
+    # Accounting
+    "accounting.export": "Export the general ledger (double-entry) & view the Chart of Accounts",
 }
 
 # Convenience groupings reused in role definitions.
@@ -86,6 +88,7 @@ ROLE_PERMISSIONS = {
         "thresholds.view", "thresholds.manage",
         "audit.view", "backups.manage", "payments.upload",
         "messaging.manage",
+        "accounting.export",
         "dashboard.company",  # read-only situational awareness
     },
 
@@ -133,12 +136,14 @@ ROLE_PERMISSIONS = {
         "reconcile.execute", "refund.execute", "refund.approve",
         "collections.stk_push",
         "payments.upload",
+        "accounting.export",
     },
 
     # HQ Operations — central reporting/monitoring, strictly READ-ONLY.
     "hq_operations": {
         "clients.view_all", "loans.view_all", "dashboard.company",
         "reports.export", "reports.schedule", "reports.template", "reports.flag",
+        "accounting.export",
         "audit.view",
     },
 

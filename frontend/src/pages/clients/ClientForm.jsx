@@ -65,6 +65,13 @@ export default function ClientForm({ clientId, onClose, onSaved }) {
   const [err, setErr] = useState("");
   const [tab, setTab] = useState("wallets");
 
+  // KYC data-processing consent (data protection). Required to onboard; captured
+  // via the separate /clients/{id}/consent endpoint after the record is saved.
+  const [consent, setConsent] = useState({
+    consent_data_processing: false, consent_credit_check: false, consent_marketing: false,
+  });
+  const setConsentField = (k) => (e) => setConsent((s) => ({ ...s, [k]: e.target.checked }));
+
   // Documents: queued (not yet uploaded) + saved (already on the server)
   const [queue, setQueue] = useState([]);          // [{file, doc_type}]
   const [saved, setSaved] = useState([]);
@@ -111,6 +118,16 @@ export default function ClientForm({ clientId, onClose, onSaved }) {
       })
       .catch((e) => setErr(e.detail))
       .finally(() => setLoading(false));
+    // Prefill consent from the separate consent record, if one exists.
+    api(`/api/v1/clients/${clientId}/consent`)
+      .then((r) => {
+        if (r?.consent) setConsent({
+          consent_data_processing: !!r.consent.consent_data_processing,
+          consent_credit_check: !!r.consent.consent_credit_check,
+          consent_marketing: !!r.consent.consent_marketing,
+        });
+      })
+      .catch(() => {});
   }, [clientId]);
 
   // ---- document queue -----------------------------------------------------
@@ -241,7 +258,13 @@ export default function ClientForm({ clientId, onClose, onSaved }) {
   // ---- save ---------------------------------------------------------------
   const save = async (e) => {
     e.preventDefault();
-    setErr(""); setSaving(true);
+    setErr("");
+    // Data-protection consent is mandatory to onboard a new client.
+    if (!clientId && !consent.consent_data_processing) {
+      setErr("The client must consent to data processing before onboarding can be saved.");
+      return;
+    }
+    setSaving(true);
     const body = { ...form };
     ["region_id", "branch_id", "approved_by_user_id"].forEach((k) => { body[k] = body[k] ? Number(body[k]) : null; });
     ["date_of_birth", "date_of_issue"].forEach((k) => { body[k] = body[k] || null; });
@@ -269,6 +292,12 @@ export default function ClientForm({ clientId, onClose, onSaved }) {
             method: "POST", body: { client_id: res.id },
           }).catch(() => {});
         }
+      }
+      // Persist KYC consent against the saved client (separate endpoint). Only
+      // sent when data-processing consent is present; failures are non-fatal
+      // (consent can also be captured from the client detail page).
+      if (consent.consent_data_processing) {
+        await api(`/api/v1/clients/${res.id}/consent`, { method: "POST", body: consent }).catch(() => {});
       }
       onSaved?.(res);
     } catch (e2) {
@@ -528,6 +557,31 @@ export default function ClientForm({ clientId, onClose, onSaved }) {
               </Field>
               <Field label="Baseline Employees"><input type="number" className="input" value={form.baseline_employees} onChange={set("baseline_employees")} /></Field>
               <Field label="Credit Score"><input type="number" className="input" value={form.credit_score || 0} onChange={set("credit_score")} /></Field>
+            </div>
+          </div>
+
+          {/* ---------------- Data-protection consent ---------------- */}
+          <div className="card p-5">
+            <h2 className="font-bold text-base mb-1">Data Protection Consent</h2>
+            <p className="text-xs text-gray-500 mb-3">
+              Captured under the Data Protection Act. Consent to data processing is required to onboard a client.
+            </p>
+            <div className="space-y-2">
+              <label className="flex items-start gap-2 text-sm">
+                <input type="checkbox" className="w-4 h-4 mt-0.5 accent-emerald-500"
+                  checked={consent.consent_data_processing} onChange={setConsentField("consent_data_processing")} />
+                <span>Client consents to the processing of their personal data for this loan relationship. <span className="text-red-600">*</span></span>
+              </label>
+              <label className="flex items-start gap-2 text-sm">
+                <input type="checkbox" className="w-4 h-4 mt-0.5 accent-emerald-500"
+                  checked={consent.consent_credit_check} onChange={setConsentField("consent_credit_check")} />
+                <span>Client consents to credit reference bureau (CRB) checks.</span>
+              </label>
+              <label className="flex items-start gap-2 text-sm">
+                <input type="checkbox" className="w-4 h-4 mt-0.5 accent-emerald-500"
+                  checked={consent.consent_marketing} onChange={setConsentField("consent_marketing")} />
+                <span>Client consents to receive marketing communications.</span>
+              </label>
             </div>
           </div>
 

@@ -13,6 +13,9 @@ import Loans from "./pages/lending/Loans";
 import LoanDetail from "./pages/lending/LoanDetail";
 import Products from "./pages/lending/Products";
 import Payments from "./pages/payments/Payments";
+import Suspense from "./pages/payments/Suspense";
+import OptOuts from "./pages/messaging/OptOuts";
+import Accounting from "./pages/accounting/Accounting";
 import Complaints from "./pages/complaints/Complaints";
 import Crm from "./pages/crm/Crm";
 import CallCenter from "./pages/callcenter/CallCenter";
@@ -139,6 +142,9 @@ export default function App() {
             <Route path="/loans/:id" element={<Guard module="lending"><LoanDetail /></Guard>} />
             <Route path="/products" element={<AdminGuard><Products /></AdminGuard>} />
             <Route path="/payments" element={<Guard module="payments"><Payments /></Guard>} />
+            <Route path="/payments/suspense" element={<Guard module="payments"><PermGuard perms={["reconcile.execute"]}><Suspense /></PermGuard></Guard>} />
+            <Route path="/messaging/opt-outs" element={<PermGuard perms={["messaging.manage"]}><OptOuts /></PermGuard>} />
+            <Route path="/accounting" element={<PermGuard perms={["accounting.export"]}><Accounting /></PermGuard>} />
             <Route path="/complaints" element={<Guard module="complaints"><Complaints /></Guard>} />
             <Route path="/crm" element={<Guard module="crm"><Crm /></Guard>} />
             <Route path="/call-center" element={<Guard module="call_center"><CallCenter /></Guard>} />

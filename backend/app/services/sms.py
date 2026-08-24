@@ -18,6 +18,7 @@ store (never hardcoded/committed). When neither username/password nor a static
 token is present the service degrades gracefully: the message is logged with
 status "not_configured" and the triggering action is NEVER interrupted.
 """
+import logging
 import re
 import time
 from datetime import datetime
@@ -26,7 +27,7 @@ import httpx
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models import SmsLog, SmsRateCard, SmsTemplate, Tenant
+from app.models import SmsLog, SmsRateCard, SmsTemplate, Tenant, SmsOptOut
 
 PROVIDER_NAME = "uwazii"
 
@@ -319,6 +320,28 @@ EVENT_KEYS = [
     "overdue_alert", "defaulted", "payment_receipt",
 ]
 
+# Promotional/collections reminders that a borrower may opt out of. Transactional
+# events (loan_disbursed, payment_receipt, loan_qualified) are NEVER suppressed.
+SUPPRESSIBLE_EVENTS = {"repayment_reminder", "overdue_alert", "defaulted"}
+
+
+def is_opted_out(db: Session, tenant_id: int, phone: str) -> bool:
+    """Return True when the phone has an active opt-out for this tenant.
+
+    Fail-safe: any error resolves to False (do not suppress) and logs a warning,
+    so a register problem can never silently drop transactional-adjacent SMS."""
+    try:
+        norm = normalise_phone(phone)
+        row = (db.query(SmsOptOut)
+               .filter(SmsOptOut.tenant_id == tenant_id,
+                       SmsOptOut.phone == norm,
+                       SmsOptOut.active.is_(True)).first())
+        return row is not None
+    except Exception as exc:  # pragma: no cover - defensive
+        logging.getLogger("finyl.sms").warning(
+            "opt-out lookup failed (fail-open, sending): %s", exc)
+        return False
+
 # Canonical placeholder tokens available to every template, with a human label.
 CANONICAL_PLACEHOLDERS = {
     "first_name": "Borrower's first name",
@@ -433,6 +456,11 @@ def _fire(db, tenant_id, phone, event_key, context, trigger_type) -> SmsLog | No
     nothing) when the tenant has switched the template OFF via the active flag."""
     body, active = render_template(db, tenant_id, event_key, context)
     if not active:
+        return None
+    # Opt-out enforcement — only for suppressible (non-transactional) events.
+    if event_key in SUPPRESSIBLE_EVENTS and is_opted_out(db, tenant_id, phone):
+        logging.getLogger("finyl.sms").info(
+            "SMS suppressed for opted-out recipient (event=%s)", event_key)
         return None
     return send_sms(db, tenant_id, phone, body, trigger_type)
 

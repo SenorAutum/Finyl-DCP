@@ -232,3 +232,90 @@ def decide_pending_action(pid: int, body: ApprovalDecision, request: Request,
                 entity_type="pending_approval", entity_id=p.id, details=result, request=request)
     db.commit()
     return {"status": p.status, "result": result}
+
+
+
+# ---------------------------------------------------------------------------
+# Loan risk summary (read-only companion for the approval decision)
+# ---------------------------------------------------------------------------
+@router.get("/loans/{loan_id}/risk-summary")
+def loan_risk_summary(loan_id: int,
+                      tenant_id: int = Depends(get_tenant_id),
+                      user: User = Depends(require_permission("loans.approve")),
+                      db: Session = Depends(get_db)):
+    """Aggregated risk view for an approver: borrower exposure, active loan
+    count, credit score (CRB when configured, else internal/null), arrears/PAR
+    flag, and the requested principal versus the advisory suggested limit.
+    Read-only — performs no mutation."""
+    loan = (db.query(Loan)
+            .options(joinedload(Loan.borrower), joinedload(Loan.product))
+            .filter(Loan.id == loan_id, Loan.tenant_id == tenant_id).first())
+    if not loan:
+        raise HTTPException(404, "Loan not found")
+    borrower = loan.borrower
+
+    # Borrower exposure across active/overdue loans (outstanding balances)
+    active = (db.query(Loan)
+              .filter(Loan.tenant_id == tenant_id,
+                      Loan.borrower_id == loan.borrower_id,
+                      Loan.status.in_(("active", "overdue"))).all())
+    current_exposure = float(sum(float(l.outstanding_balance or 0) for l in active))
+    active_loan_count = len(active)
+
+    today = date.today()
+    par_flag = any(l.due_date and l.due_date < today and float(l.outstanding_balance or 0) > 0
+                   for l in active)
+    arrears_amount = float(sum(float(l.outstanding_balance or 0) for l in active
+                               if l.due_date and l.due_date < today
+                               and float(l.outstanding_balance or 0) > 0))
+
+    # Credit score — CRB when live, else internal score / null with a note
+    from app.services import crb
+    credit_score = None
+    credit_source = "not_configured"
+    credit_note = None
+    if borrower:
+        crb_res = crb.run_check(national_id=borrower.national_id or "",
+                                first_name=borrower.first_name or "",
+                                last_name=borrower.last_name or "",
+                                phone=borrower.phone)
+        if crb_res.get("status") == "ok" and crb_res.get("credit_score") is not None:
+            credit_score = crb_res.get("credit_score")
+            credit_source = "crb"
+        else:
+            internal = getattr(borrower, "credit_score", None)
+            credit_score = internal if internal else None
+            credit_source = "internal" if internal else "not_configured"
+            credit_note = ("CRB not configured; showing internal score."
+                           if internal else
+                           "CRB not configured and no internal score on file.")
+
+    # Requested principal vs advisory suggested limit (reuse lending helper)
+    suggested = None
+    if loan.product:
+        from app.routers.lending import _suggested_limit
+        suggested = _suggested_limit(db, tenant_id, loan.borrower_id, loan.product)
+
+    approval_limit = rbac.loan_approval_limit(db, tenant_id, user)
+    requested_principal = float(loan.principal)
+
+    return {
+        "loan_id": loan.id,
+        "account_number": loan.account_number,
+        "borrower_id": loan.borrower_id,
+        "borrower_name": borrower.full_name if borrower else None,
+        "requested_principal": requested_principal,
+        "current_exposure": current_exposure,
+        "active_loan_count": active_loan_count,
+        "par_flag": par_flag,
+        "arrears_amount": arrears_amount,
+        "credit_score": credit_score,
+        "credit_score_source": credit_source,
+        "credit_score_note": credit_note,
+        "suggested_limit": suggested,
+        "over_suggested_limit": (suggested is not None
+                                 and requested_principal > suggested["suggested_limit"]),
+        "approval_limit": approval_limit,
+        "over_approval_limit": (approval_limit is not None
+                                and requested_principal > approval_limit),
+    }

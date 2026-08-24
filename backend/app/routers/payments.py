@@ -28,9 +28,10 @@ from app.core.database import get_db
 from app.core.deps import require_module, require_permission, write_audit
 from app.core.money import split_interest_principal, reduce_balance, money
 from app.core.obs import log_money_event
-from app.models import Loan, PaymentTransaction, PendingApproval, Repayment, User
+from app.models import Loan, PaymentTransaction, PendingApproval, Repayment, User, SuspenseEntry
 from app.schemas import (C2BCallback, StkPushRequest, DisburseRequest,
-                         RefundRequest, ReconcileRequest)
+                         RefundRequest, ReconcileRequest,
+                         SuspenseAllocateIn, SuspenseRefundIn)
 from app.services import mpesa, sms
 from app.services import rbac as rbac_svc
 from app.services.disbursement import (execute_disbursement, execute_refund,
@@ -39,6 +40,27 @@ from app.services.disbursement import (execute_disbursement, execute_refund,
 router = APIRouter(prefix="/api/v1/payments", tags=["payments"])
 
 logger = logging.getLogger("finyl.payments")
+
+
+def _record_suspense(db: Session, *, tenant_id: int, reason: str, amount, ref,
+                     phone=None, loan_id=None, source="c2b", raw_payload=None):
+    """Additively record a suspense entry, idempotent on (tenant_id, mpesa_ref).
+
+    Returns the entry (existing or new). Does NOT commit — the caller owns the
+    transaction so the suspense row is written atomically with the payment record.
+    """
+    if ref:
+        existing = (db.query(SuspenseEntry)
+                    .filter(SuspenseEntry.tenant_id == tenant_id,
+                            SuspenseEntry.mpesa_ref == str(ref)).first())
+        if existing is not None:
+            return existing
+    entry = SuspenseEntry(tenant_id=tenant_id, source=source,
+                          mpesa_ref=(str(ref) if ref else None), phone=phone,
+                          amount=money(amount), reason=reason, status="open",
+                          matched_loan_id=loan_id, raw_payload=raw_payload or {})
+    db.add(entry)
+    return entry
 
 
 # --------------------------------------------------------------------------- #
@@ -481,6 +503,11 @@ async def c2b_callback(token: str, request: Request, db: Session = Depends(get_d
                                   status="success",
                                   raw_payload={**body, "review": True,
                                                "review_reason": f"loan_status_{loan.status}"}))
+        # Additive: park the funds in suspense (tenant known, loan not collectible).
+        _record_suspense(db, tenant_id=tenant_id, reason="closed_loan", amount=amount,
+                         ref=ref, phone=cb.MSISDN, loan_id=loan.id, source="c2b",
+                         raw_payload={"review_reason": f"loan_status_{loan.status}",
+                                      "account_number": cb.BillRefNumber})
         db.commit()
         return {"ResultCode": 0, "ResultDesc": "Recorded for review (loan not collectible)"}
 
@@ -498,6 +525,14 @@ async def c2b_callback(token: str, request: Request, db: Session = Depends(get_d
         txn_payload.update({"review": True, "review_reason": "overpayment",
                             "outstanding_at_receipt": outstanding})
         loan.outstanding_balance = 0
+        # Additive: park the excess (amount over outstanding) in suspense.
+        excess = round(amount - outstanding, 2)
+        if excess > 0:
+            _record_suspense(db, tenant_id=tenant_id, reason="overpayment", amount=excess,
+                             ref=ref, phone=cb.MSISDN, loan_id=loan.id, source="c2b",
+                             raw_payload={"outstanding_at_receipt": outstanding,
+                                          "amount_received": amount,
+                                          "account_number": cb.BillRefNumber})
     else:
         loan.outstanding_balance = reduce_balance(outstanding, amount)
         if loan.outstanding_balance <= 0 and loan.status in ("active", "overdue"):
@@ -533,3 +568,141 @@ def list_transactions(tenant_id: int = Depends(require_module("payments")),
         "phone": t.phone, "mpesa_ref": t.mpesa_ref, "status": t.status,
         "created_at": t.created_at,
     } for t in rows]}
+
+
+
+# --------------------------------------------------------------------------- #
+# Suspense account — list / allocate to a loan / refund  [reconcile.execute]
+# --------------------------------------------------------------------------- #
+def _suspense_dict(s: SuspenseEntry) -> dict:
+    return {
+        "id": s.id, "source": s.source, "mpesa_ref": s.mpesa_ref, "phone": s.phone,
+        "amount": float(s.amount or 0), "reason": s.reason, "status": s.status,
+        "matched_loan_id": s.matched_loan_id,
+        "created_at": s.created_at, "resolved_at": s.resolved_at,
+        "resolved_by_user_id": s.resolved_by_user_id,
+    }
+
+
+@router.get("/suspense")
+def list_suspense(tenant_id: int = Depends(require_module("payments")),
+                  db: Session = Depends(get_db),
+                  user: User = Depends(require_permission("reconcile.execute")),
+                  status: str = "", page: int = 1, page_size: int = 50):
+    """List suspense-account entries (unapplied receipts) for the tenant."""
+    q = db.query(SuspenseEntry).filter(SuspenseEntry.tenant_id == tenant_id)
+    if status:
+        q = q.filter(SuspenseEntry.status == status)
+    total = q.count()
+    rows = (q.order_by(SuspenseEntry.id.desc())
+            .offset((page - 1) * page_size).limit(page_size).all())
+    open_total = float(sum(float(r.amount or 0) for r in
+                           db.query(SuspenseEntry)
+                           .filter(SuspenseEntry.tenant_id == tenant_id,
+                                   SuspenseEntry.status == "open").all()))
+    return {"total": total, "page": page, "open_balance": open_total,
+            "items": [_suspense_dict(s) for s in rows]}
+
+
+@router.post("/suspense/{entry_id}/allocate")
+def allocate_suspense(entry_id: int, body: SuspenseAllocateIn, request: Request,
+                      tenant_id: int = Depends(require_module("payments")),
+                      db: Session = Depends(get_db),
+                      user: User = Depends(require_permission("reconcile.execute"))):
+    """Apply an open suspense entry to a loan as a repayment.
+
+    Reuses the same Decimal money helpers as /reconcile (interest/principal split,
+    balance reduction). Idempotent: an already-resolved entry is a no-op."""
+    entry = (db.query(SuspenseEntry)
+             .filter(SuspenseEntry.id == entry_id,
+                     SuspenseEntry.tenant_id == tenant_id).with_for_update().first())
+    if not entry:
+        raise HTTPException(404, "Suspense entry not found")
+    if entry.status != "open":
+        return {"status": "already_resolved", "suspense_status": entry.status,
+                "matched_loan_id": entry.matched_loan_id}
+
+    loan = (db.query(Loan)
+            .filter(Loan.id == body.loan_id, Loan.tenant_id == tenant_id)
+            .with_for_update().first())
+    if not loan:
+        raise HTTPException(404, "Loan not found")
+    if loan.status not in ("active", "overdue"):
+        raise HTTPException(400, f"Loan is not collectible (status={loan.status})")
+
+    amount = float(entry.amount or 0)
+    if amount <= 0:
+        raise HTTPException(400, "Suspense entry has no positive amount")
+
+    # Reuse an existing mpesa_ref if free; otherwise derive a suspense-scoped ref
+    # so the repayment idempotency guarantee still holds.
+    rep_ref = entry.mpesa_ref
+    if rep_ref:
+        dup = (db.query(Repayment)
+               .filter(Repayment.tenant_id == tenant_id,
+                       Repayment.mpesa_ref == rep_ref).first())
+        if dup is not None:
+            rep_ref = f"SUS-{entry.id}-{rep_ref}"
+    else:
+        rep_ref = f"SUS-{entry.id}"
+
+    interest, principal = split_interest_principal(amount, loan.interest_rate)
+    rep = Repayment(tenant_id=tenant_id, loan_id=loan.id, amount=money(amount),
+                    interest_component=interest, principal_component=principal,
+                    payment_date=datetime.utcnow(), method="suspense_allocation",
+                    mpesa_ref=rep_ref)
+    db.add(rep)
+    loan.outstanding_balance = reduce_balance(loan.outstanding_balance or 0, amount)
+    if loan.outstanding_balance <= 0 and loan.status in ("active", "overdue"):
+        loan.status = "paid"
+
+    entry.status = "allocated"
+    entry.matched_loan_id = loan.id
+    entry.resolved_at = datetime.utcnow()
+    entry.resolved_by_user_id = user.id
+
+    write_audit(db, tenant_id=tenant_id, user=user, action="suspense.allocate",
+                entity_type="suspense_entry", entity_id=entry.id,
+                details={"loan_id": loan.id, "amount": amount}, request=request)
+    log_money_event("suspense_allocate", tenant_id=tenant_id, user_id=user.id,
+                    loan_id=loan.id, amount=money(amount), ref=rep_ref,
+                    detail=f"suspense_id={entry.id} outstanding={loan.outstanding_balance}")
+    db.commit()
+    return {"status": "allocated", "suspense_id": entry.id, "loan_id": loan.id,
+            "outstanding_balance": float(loan.outstanding_balance),
+            "loan_status": loan.status}
+
+
+@router.post("/suspense/{entry_id}/refund")
+def refund_suspense(entry_id: int, body: SuspenseRefundIn, request: Request,
+                    tenant_id: int = Depends(require_module("payments")),
+                    db: Session = Depends(get_db),
+                    user: User = Depends(require_permission("reconcile.execute"))):
+    """Mark an open suspense entry as refunded to the payer. Records the intent
+    and audits it; the actual payout follows the standard refund/B2C flow."""
+    entry = (db.query(SuspenseEntry)
+             .filter(SuspenseEntry.id == entry_id,
+                     SuspenseEntry.tenant_id == tenant_id).with_for_update().first())
+    if not entry:
+        raise HTTPException(404, "Suspense entry not found")
+    if entry.status != "open":
+        return {"status": "already_resolved", "suspense_status": entry.status}
+
+    entry.status = "refunded"
+    entry.resolved_at = datetime.utcnow()
+    entry.resolved_by_user_id = user.id
+    payload = dict(entry.raw_payload or {})
+    if body.note:
+        payload["refund_note"] = body.note
+    entry.raw_payload = payload
+
+    write_audit(db, tenant_id=tenant_id, user=user, action="suspense.refund",
+                entity_type="suspense_entry", entity_id=entry.id,
+                details={"amount": float(entry.amount or 0), "note": body.note},
+                request=request)
+    log_money_event("suspense_refund", tenant_id=tenant_id, user_id=user.id,
+                    amount=money(entry.amount or 0), ref=entry.mpesa_ref,
+                    detail=f"suspense_id={entry.id}")
+    db.commit()
+    return {"status": "refunded", "suspense_id": entry.id,
+            "amount": float(entry.amount or 0)}

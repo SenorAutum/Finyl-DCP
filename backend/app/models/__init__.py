@@ -18,6 +18,12 @@ from app.models.engagement import (
 from app.models.integrations import (MpesaStatementAnalysis, CrbCheck,
                                      TenantIntegrationConfig, SmsRateCard,
                                      IntegrationTestLog)
+from app.models.additive import (EclProvisionConfig, SuspenseEntry, SmsOptOut,
+                                  KycConsent, ChartOfAccount,
+                                  ECL_DEFAULT_STAGE1_RATE, ECL_DEFAULT_STAGE2_RATE,
+                                  ECL_DEFAULT_STAGE3_RATE, SUSPENSE_SOURCES,
+                                  SUSPENSE_REASONS, SUSPENSE_STATUSES,
+                                  OPT_OUT_SOURCES, COA_TYPES)
 
 # `Client` is the canonical business name; the ORM class (and its table) keep the
 # historical `Borrower`/`borrowers` naming so existing joins/analytics keep working.

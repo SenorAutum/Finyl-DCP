@@ -19,9 +19,11 @@ from app.core.crypto import encrypt_pii, decrypt_pii
 from app.core.permissions import (APPROVAL_TYPES, APPROVAL_TYPE_LABELS, ROLE_LABELS,
                                   eligible_approver_roles)
 from app.models import (ApprovalThreshold, ApproverSetting, MODULE_KEYS,
-                        SmsAutomationSetting, TenantIntegrationConfig, TenantModule, User)
+                        SmsAutomationSetting, TenantIntegrationConfig, TenantModule, User,
+                        EclProvisionConfig, ECL_DEFAULT_STAGE1_RATE,
+                        ECL_DEFAULT_STAGE2_RATE, ECL_DEFAULT_STAGE3_RATE)
 from app.schemas import (DarajaConfigIn, SmsAutomationIn, ThresholdCreate,
-                        ApproverConfigIn, SettingsModuleToggle)
+                        ApproverConfigIn, SettingsModuleToggle, EclConfigIn)
 from app.services import mpesa, rbac
 from app.routers.notifications import get_automation_config
 
@@ -335,3 +337,65 @@ def toggle_module(body: SettingsModuleToggle, request: Request,
                 request=request)
     db.commit()
     return {"module_key": body.module_key, "enabled": bool(body.enabled)}
+
+
+
+# ---------------------------------------------------------------------------
+# IFRS 9 ECL provisioning rate configuration (per tenant)
+# ---------------------------------------------------------------------------
+def _ecl_config_row(db: Session, tenant_id: int):
+    return (db.query(EclProvisionConfig)
+            .filter(EclProvisionConfig.tenant_id == tenant_id).first())
+
+
+@router.get("/ecl-config")
+def get_ecl_config(tenant_id: int = Depends(get_tenant_id),
+                   db: Session = Depends(get_db),
+                   _: User = Depends(require_permission("thresholds.manage"))):
+    """Return the tenant's IFRS 9 ECL staging rates (defaults if unset)."""
+    row = _ecl_config_row(db, tenant_id)
+    if not row:
+        return {
+            "stage1_rate": float(ECL_DEFAULT_STAGE1_RATE),
+            "stage2_rate": float(ECL_DEFAULT_STAGE2_RATE),
+            "stage3_rate": float(ECL_DEFAULT_STAGE3_RATE),
+            "is_default": True,
+        }
+    return {
+        "stage1_rate": float(row.stage1_rate),
+        "stage2_rate": float(row.stage2_rate),
+        "stage3_rate": float(row.stage3_rate),
+        "is_default": False,
+    }
+
+
+@router.put("/ecl-config")
+def put_ecl_config(body: EclConfigIn, request: Request,
+                   tenant_id: int = Depends(get_tenant_id),
+                   db: Session = Depends(get_db),
+                   actor: User = Depends(require_permission("thresholds.manage"))):
+    """Upsert the tenant's IFRS 9 ECL staging rates (fractions, e.g. 0.01 = 1%)."""
+    for name, val in (("stage1_rate", body.stage1_rate),
+                      ("stage2_rate", body.stage2_rate),
+                      ("stage3_rate", body.stage3_rate)):
+        if val < 0 or val > 1:
+            raise HTTPException(422, f"{name} must be between 0 and 1")
+    row = _ecl_config_row(db, tenant_id)
+    if row:
+        row.stage1_rate = body.stage1_rate
+        row.stage2_rate = body.stage2_rate
+        row.stage3_rate = body.stage3_rate
+    else:
+        row = EclProvisionConfig(tenant_id=tenant_id,
+                                 stage1_rate=body.stage1_rate,
+                                 stage2_rate=body.stage2_rate,
+                                 stage3_rate=body.stage3_rate)
+        db.add(row)
+    write_audit(db, tenant_id=tenant_id, user=actor, action="config.ecl.update",
+                entity_type="ecl_provision_config",
+                details=body.model_dump(), request=request)
+    db.commit()
+    return {"stage1_rate": float(row.stage1_rate),
+            "stage2_rate": float(row.stage2_rate),
+            "stage3_rate": float(row.stage3_rate),
+            "is_default": False}

@@ -18,9 +18,10 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.deps import get_current_user, write_audit
 from app.core.permissions import has_permission
-from app.models import SmsTemplate, Tenant, User, SmsAutomationSetting
+from app.core.config import settings
+from app.models import SmsTemplate, Tenant, User, SmsAutomationSetting, SmsOptOut
 from app.schemas import (MessageTemplateIn, MessagePreviewIn, MessageTestIn,
-                         SmsAutomationIn)
+                         SmsAutomationIn, OptOutIn)
 from app.services import sms
 from app.routers.notifications import get_automation_config, run_tenant_jobs
 
@@ -269,3 +270,80 @@ def run_now(request: Request, grace_days: int = 30,
                 details=counts, request=request)
     db.commit()
     return {"tenant_id": ctx.tenant_id, **counts}
+
+
+
+# ---------------------------------------------------------------------------
+# SMS opt-out register — suppress non-transactional SMS for a phone number
+# ---------------------------------------------------------------------------
+@router.get("/opt-outs")
+def list_opt_outs(ctx: MsgCtx = Depends(messaging_ctx), db: Session = Depends(get_db),
+                  active_only: bool = True):
+    """List the tenant's SMS opt-out register."""
+    q = db.query(SmsOptOut).filter(SmsOptOut.tenant_id == ctx.tenant_id)
+    if active_only:
+        q = q.filter(SmsOptOut.active.is_(True))
+    rows = q.order_by(SmsOptOut.id.desc()).all()
+    return {"tenant_id": ctx.tenant_id, "count": len(rows), "items": [{
+        "id": r.id, "phone": r.phone, "source": r.source,
+        "active": bool(r.active),
+        "opted_out_at": r.opted_out_at.isoformat() if r.opted_out_at else None,
+    } for r in rows]}
+
+
+@router.post("/opt-outs")
+def add_opt_out(body: OptOutIn, request: Request,
+                ctx: MsgCtx = Depends(messaging_ctx), db: Session = Depends(get_db)):
+    """Add (or re-activate) a phone number in the opt-out register."""
+    phone = sms.normalise_phone(body.phone)
+    row = (db.query(SmsOptOut)
+           .filter(SmsOptOut.tenant_id == ctx.tenant_id,
+                   SmsOptOut.phone == phone).first())
+    if row:
+        row.active = True
+        row.source = body.source
+    else:
+        row = SmsOptOut(tenant_id=ctx.tenant_id, phone=phone,
+                        source=body.source, active=True)
+        db.add(row)
+    db.flush()
+    write_audit(db, tenant_id=ctx.tenant_id, user=ctx.user, action="messaging.opt_out_add",
+                entity_type="sms_opt_out", entity_id=row.id,
+                details={"phone": phone, "source": body.source}, request=request)
+    db.commit()
+    return {"id": row.id, "phone": row.phone, "active": True, "source": row.source}
+
+
+@router.delete("/opt-outs/{phone}")
+def remove_opt_out(phone: str, request: Request,
+                   ctx: MsgCtx = Depends(messaging_ctx), db: Session = Depends(get_db)):
+    """Remove a phone from the opt-out register (re-enable non-transactional SMS)."""
+    norm = sms.normalise_phone(phone)
+    row = (db.query(SmsOptOut)
+           .filter(SmsOptOut.tenant_id == ctx.tenant_id,
+                   SmsOptOut.phone == norm).first())
+    if not row:
+        raise HTTPException(404, "Opt-out entry not found")
+    row.active = False
+    db.flush()
+    write_audit(db, tenant_id=ctx.tenant_id, user=ctx.user, action="messaging.opt_out_remove",
+                entity_type="sms_opt_out", entity_id=row.id,
+                details={"phone": norm}, request=request)
+    db.commit()
+    return {"phone": norm, "active": False}
+
+
+@router.get("/status")
+def messaging_status(ctx: MsgCtx = Depends(messaging_ctx), db: Session = Depends(get_db)):
+    """Messaging configuration/status: sender ID and opt-out enforcement summary."""
+    active_opt_outs = (db.query(SmsOptOut)
+                       .filter(SmsOptOut.tenant_id == ctx.tenant_id,
+                               SmsOptOut.active.is_(True)).count())
+    return {
+        "tenant_id": ctx.tenant_id,
+        "sender_id": settings.UWAZII_SENDER_ID,
+        "provider": sms.PROVIDER_NAME,
+        "opt_out_enforcement": True,
+        "suppressible_events": sorted(sms.SUPPRESSIBLE_EVENTS),
+        "active_opt_out_count": active_opt_outs,
+    }

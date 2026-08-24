@@ -103,6 +103,69 @@ def portfolio_kpis(loans: pd.DataFrame, repayments: pd.DataFrame) -> dict:
     }
 
 
+# ------------------------- IFRS 9 ECL provisioning --------------------------------
+
+# Default stage rates (fractions) — a per-tenant ecl_provision_config row overrides.
+ECL_DEFAULTS = {"stage1_rate": 0.01, "stage2_rate": 0.20, "stage3_rate": 0.60}
+
+
+def ecl_provisioning(loans: pd.DataFrame, config: dict | None = None) -> dict:
+    """IFRS 9 three-stage Expected-Credit-Loss provisioning over the open book.
+
+    Buckets each OPEN loan (active/overdue/defaulted with outstanding > 0) by
+    days-past-due relative to its due_date:
+        Stage 1: 0-30 dpd (and not-yet-due)        — default 1%
+        Stage 2: 31-90 dpd                          — default 20%
+        Stage 3: 90+ dpd OR status == 'defaulted'   — default 60%
+    Provision = stage exposure x stage rate. Returns an ADDITIVE dict attached to
+    the dashboard overview payload; it never alters existing KPIs.
+
+    Money math for the provisions is done in Decimal (money()) so the figures are
+    currency-exact; exposures/ratios are rounded floats consistent with the rest
+    of the analytics payload.
+    """
+    from app.core.money import D, money
+
+    cfg = {**ECL_DEFAULTS, **(config or {})}
+    r1, r2, r3 = D(cfg["stage1_rate"]), D(cfg["stage2_rate"]), D(cfg["stage3_rate"])
+
+    open_loans = loans[loans["status"].isin(["active", "overdue", "defaulted"])].copy()
+    open_loans = open_loans[open_loans["outstanding_balance"] > 0]
+
+    e1 = e2 = e3 = 0.0
+    if not open_loans.empty:
+        today = pd.Timestamp(_today())
+        due = pd.to_datetime(open_loans["due_date"])
+        dpd = (today - due).dt.days.fillna(0)          # NaT (no due date) -> 0 dpd
+        is_default = open_loans["status"] == "defaulted"
+        stage3 = is_default | (dpd > 90)
+        stage2 = (~stage3) & (dpd > 30)
+        stage1 = ~(stage3 | stage2)
+        e1 = float(open_loans.loc[stage1, "outstanding_balance"].sum())
+        e2 = float(open_loans.loc[stage2, "outstanding_balance"].sum())
+        e3 = float(open_loans.loc[stage3, "outstanding_balance"].sum())
+
+    p1 = money(D(e1) * r1)
+    p2 = money(D(e2) * r2)
+    p3 = money(D(e3) * r3)
+    total_prov = money(p1 + p2 + p3)
+    total_exp = D(e1) + D(e2) + D(e3)
+    coverage = round(float(total_prov / total_exp * 100), 2) if total_exp > 0 else 0.0
+
+    return {
+        "stage1_exposure": round(e1, 2),
+        "stage2_exposure": round(e2, 2),
+        "stage3_exposure": round(e3, 2),
+        "stage1_provision": float(p1),
+        "stage2_provision": float(p2),
+        "stage3_provision": float(p3),
+        "total_ecl_provision": float(total_prov),
+        "coverage_ratio": coverage,
+        "rates": {"stage1_rate": float(r1), "stage2_rate": float(r2),
+                  "stage3_rate": float(r3)},
+    }
+
+
 def monthly_trend(loans: pd.DataFrame, repayments: pd.DataFrame, months: int = 12) -> list[dict]:
     """Disbursement vs collections per month for the trend chart."""
     out = []

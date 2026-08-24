@@ -16,7 +16,8 @@ from app.core.deps import (get_current_user, require_module, require_permission,
 from app.models import (Borrower, Branch, ImpactSurvey, Loan, PaymentTransaction,
                         Product, Region, Repayment, Staff, User)
 from app.schemas import (BorrowerCreate, LoanApplication, LoanStatusUpdate, ProductCreate,
-                         ReassignRequest)
+                         ReassignRequest, QuoteRequest)
+from app.core.money import D, money
 from app.routers.clients import _client_dict as _borrower_dict
 from app.services import mpesa, sms
 from fastapi import Request
@@ -303,3 +304,194 @@ def reassign_loan(loan_id: int, body: ReassignRequest,
                          "reason": body.reason}, request=request)
     db.commit()
     return _loan_dict(loan)
+
+
+
+# ---------------------------------------------------------------------------
+# Loan-origination pricing quote & suggested credit limit (read-only, advisory)
+# ---------------------------------------------------------------------------
+def _quote_breakdown(product: Product, principal) -> dict:
+    """Decimal-accurate pricing preview for a prospective loan. No mutation.
+
+    Fee configuration is read from ``product.rules`` (optional keys, default 0):
+      - ``processing_fee_rate``: percent of principal
+      - ``facility_fee``: flat amount
+    Kenya excise duty is levied at 20% of total fees.
+    """
+    principal = money(principal)
+    rate = D(product.interest_rate or 0)                 # % over the product tenure
+    interest = money(principal * rate / D(100))
+
+    rules = product.rules or {}
+    try:
+        proc_rate = D(str(rules.get("processing_fee_rate", 0) or 0))
+    except Exception:
+        proc_rate = D(0)
+    try:
+        facility_flat = D(str(rules.get("facility_fee", 0) or 0))
+    except Exception:
+        facility_flat = D(0)
+
+    processing_fee = money(principal * proc_rate / D(100))
+    facility_fee = money(facility_flat)
+    total_fees = money(processing_fee + facility_fee)
+    excise_duty = money(total_fees * D("0.20"))          # 20% excise on fees (Kenya)
+    total_cost_of_credit = money(interest + total_fees + excise_duty)
+    total_repayable = money(principal + total_cost_of_credit)
+
+    # APR-style annualised effective rate over the product tenure
+    tenure_value = max(1, int(product.tenure_value or 1))
+    unit = (product.tenure_unit or "weeks").lower()
+    if unit == "weeks":
+        years = D(tenure_value) * D(7) / D(365)
+    elif unit == "months":
+        years = D(tenure_value) / D(12)
+    else:
+        years = D(tenure_value) / D(365)
+    if years <= 0:
+        years = D(1)
+    effective_annual_rate = (money((total_cost_of_credit / principal) / years * D(100))
+                             if principal > 0 else D(0))
+
+    return {
+        "product_id": product.id,
+        "product_name": product.name,
+        "principal": float(principal),
+        "interest_rate": float(rate),
+        "interest_method": product.interest_method,
+        "tenure_value": tenure_value,
+        "tenure_unit": product.tenure_unit,
+        "interest": float(interest),
+        "processing_fee": float(processing_fee),
+        "facility_fee": float(facility_fee),
+        "total_fees": float(total_fees),
+        "excise_duty": float(excise_duty),
+        "excise_rate": 0.20,
+        "total_cost_of_credit": float(total_cost_of_credit),
+        "total_repayable": float(total_repayable),
+        "effective_annual_rate": float(effective_annual_rate),
+    }
+
+
+def _suggested_limit(db: Session, tenant_id: int, borrower_id: int, product: Product) -> dict:
+    """Advisory credit limit derived from borrower repayment history.
+
+    No history -> conservative base from the product's amount band. With history,
+    the borrower's largest prior principal is scaled by an on-time performance
+    multiplier and clamped to the product's [min, max] band.
+    """
+    pmin = D(product.min_amount or 0)
+    pmax = D(product.max_amount or 0)
+
+    prior_loans = (db.query(Loan)
+                   .filter(Loan.tenant_id == tenant_id,
+                           Loan.borrower_id == borrower_id).all())
+    paid = [l for l in prior_loans if l.status == "paid"]
+    active = [l for l in prior_loans if l.status in ("active", "overdue", "defaulted")]
+    current_exposure = money(sum((D(l.outstanding_balance or 0) for l in active), D(0)))
+    total_prior = len(prior_loans)
+    max_prior = max((D(l.principal or 0) for l in prior_loans), default=D(0))
+
+    on_time = 0
+    for l in paid:
+        reps = list(l.repayments or [])
+        if l.due_date and reps:
+            last = max(r.payment_date for r in reps)
+            last_date = last.date() if hasattr(last, "date") else last
+            if last_date <= l.due_date:
+                on_time += 1
+        else:
+            on_time += 1
+    on_time_ratio = (on_time / len(paid)) if paid else None
+
+    if total_prior == 0:
+        suggested = pmin
+        basis = "product_default"
+        rationale = "No repayment history; limit set to the product minimum."
+    else:
+        if on_time_ratio is None:
+            multiplier = D("1.0")
+        elif on_time_ratio >= D("0.9"):
+            multiplier = D("1.5")
+        elif on_time_ratio >= D("0.7"):
+            multiplier = D("1.25")
+        elif on_time_ratio >= D("0.5"):
+            multiplier = D("1.0")
+        else:
+            multiplier = D("0.75")
+        suggested = money(max_prior * multiplier)
+        basis = "history"
+        rationale = (f"Based on {total_prior} prior loan(s), {len(paid)} fully repaid; "
+                     f"largest prior principal {float(max_prior)} scaled by on-time "
+                     f"performance multiplier {float(multiplier)}.")
+
+    # Clamp to the product amount band
+    if pmax > 0:
+        suggested = min(suggested, pmax)
+    suggested = max(suggested, pmin)
+    suggested = money(suggested)
+    headroom = money(max(D(0), suggested - current_exposure))
+
+    return {
+        "borrower_id": borrower_id,
+        "product_id": product.id,
+        "suggested_limit": float(suggested),
+        "current_exposure": float(current_exposure),
+        "available_headroom": float(headroom),
+        "prior_loan_count": total_prior,
+        "fully_repaid_count": len(paid),
+        "active_loan_count": len(active),
+        "max_prior_principal": float(max_prior),
+        "on_time_ratio": (round(on_time_ratio, 3) if on_time_ratio is not None else None),
+        "product_min": float(pmin),
+        "product_max": float(pmax),
+        "basis": basis,
+        "rationale": rationale,
+    }
+
+
+@router.post("/quote")
+def pricing_quote(body: QuoteRequest, tenant_id: int = Depends(require_module("lending")),
+                  db: Session = Depends(get_db),
+                  user: User = Depends(get_current_user)):
+    """Read-only origination pricing preview. Does not create or modify any loan."""
+    product = (db.query(Product)
+               .filter(Product.id == body.product_id, Product.tenant_id == tenant_id).first())
+    if not product:
+        raise HTTPException(404, "Product not found")
+    if not (float(product.min_amount) <= body.principal <= float(product.max_amount)):
+        raise HTTPException(400, f"Amount must be between {product.min_amount} and {product.max_amount}")
+
+    result = {"quote": _quote_breakdown(product, body.principal)}
+    if body.borrower_id is not None:
+        borrower = (db.query(Borrower)
+                    .filter(Borrower.id == body.borrower_id,
+                            Borrower.tenant_id == tenant_id).first())
+        if not borrower:
+            raise HTTPException(404, "Borrower not found")
+        result["suggested_limit"] = _suggested_limit(db, tenant_id, borrower.id, product)
+    return result
+
+
+@router.get("/suggested-limit")
+def suggested_limit(borrower_id: int = Query(...), product_id: int = Query(None),
+                    tenant_id: int = Depends(require_module("lending")),
+                    db: Session = Depends(get_db),
+                    user: User = Depends(get_current_user)):
+    """Advisory credit limit for a borrower. Read-only."""
+    borrower = (db.query(Borrower)
+                .filter(Borrower.id == borrower_id, Borrower.tenant_id == tenant_id).first())
+    if not borrower:
+        raise HTTPException(404, "Borrower not found")
+    if product_id is not None:
+        product = (db.query(Product)
+                   .filter(Product.id == product_id, Product.tenant_id == tenant_id).first())
+        if not product:
+            raise HTTPException(404, "Product not found")
+    else:
+        product = (db.query(Product)
+                   .filter(Product.tenant_id == tenant_id, Product.active)
+                   .order_by(Product.id.asc()).first())
+        if not product:
+            raise HTTPException(404, "No active product configured")
+    return _suggested_limit(db, tenant_id, borrower.id, product)

@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.deps import require_module
+from app.models import EclProvisionConfig
 from app.services import analytics
 
 router = APIRouter(prefix="/api/v1/dashboard", tags=["dashboard"])
@@ -13,6 +14,17 @@ FILTER_KEYS = ("region_id", "branch_id", "product_id", "staff_id", "date_from", 
 
 def _filters(request: Request) -> dict:
     return {k: request.query_params.get(k) for k in FILTER_KEYS if request.query_params.get(k)}
+
+
+def _ecl_config(db: Session, tenant_id: int) -> dict:
+    """Resolve the tenant's IFRS 9 ECL stage rates, falling back to defaults."""
+    row = (db.query(EclProvisionConfig)
+           .filter(EclProvisionConfig.tenant_id == tenant_id).first())
+    if not row:
+        return dict(analytics.ECL_DEFAULTS)
+    return {"stage1_rate": float(row.stage1_rate),
+            "stage2_rate": float(row.stage2_rate),
+            "stage3_rate": float(row.stage3_rate)}
 
 
 @router.get("/overview")
@@ -30,4 +42,6 @@ def overview(request: Request, tenant_id: int = Depends(require_module("dashboar
         "status_mix": analytics.status_mix(floans),
         "product_region_matrix": analytics.product_region_matrix(floans),
         "staff_performance": analytics.staff_performance(db, tenant_id, floans, freps),
+        # ADDITIVE (IFRS 9): expected-credit-loss provisioning over the open book.
+        "ecl": analytics.ecl_provisioning(floans, _ecl_config(db, tenant_id)),
     }

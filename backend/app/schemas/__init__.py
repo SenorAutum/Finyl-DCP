@@ -433,3 +433,43 @@ class AnomalyFlagCreate(BaseModel):
     entity_type: Optional[str] = None
     entity_id: Optional[str] = None
     note: str
+
+
+
+# ---- Additive features (migration 014) --------------------------------------
+
+# Feature 1 — IFRS 9 ECL stage rates (per tenant). Rates are fractions (0.01 = 1%).
+class EclConfigIn(BaseModel):
+    stage1_rate: float
+    stage2_rate: float
+    stage3_rate: float
+
+
+# Feature 2 — loan-origination pricing quote (read-only preview, no mutation).
+class QuoteRequest(BaseModel):
+    product_id: int
+    principal: float
+    borrower_id: Optional[int] = None
+
+
+# Feature 4 — suspense allocation (apply a suspense entry to a loan as repayment).
+class SuspenseAllocateIn(BaseModel):
+    loan_id: int
+
+
+class SuspenseRefundIn(BaseModel):
+    note: Optional[str] = None
+
+
+# Feature 5 — SMS opt-out register entry.
+class OptOutIn(BaseModel):
+    phone: str
+    source: str = "manual"          # keyword | manual | api
+
+
+# Feature 6 — KYC consent capture. data_processing is mandatory when submitted.
+class ConsentIn(BaseModel):
+    consent_data_processing: bool
+    consent_credit_check: bool = False
+    consent_marketing: bool = False
+    consent_version: Optional[str] = None
