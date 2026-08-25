@@ -13,9 +13,11 @@ import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.core.crypto import decrypt_pii
+
 
 def _loans_df(db: Session, tenant_id: int) -> pd.DataFrame:
-    return pd.read_sql(text("""
+    df = pd.read_sql(text("""
         SELECT l.account_number, l.principal::float, l.interest_rate, l.status,
                l.disbursement_date, l.due_date, l.outstanding_balance::float,
                b.first_name, b.last_name, b.national_id, b.phone, b.date_of_birth, b.gender,
@@ -24,6 +26,12 @@ def _loans_df(db: Session, tenant_id: int) -> pd.DataFrame:
         JOIN products p ON p.id = l.product_id
         WHERE l.tenant_id = :t
     """), db.connection(), params={"t": tenant_id})
+    # PII-02: national_id is encrypted at rest, so this raw-SQL read returns the
+    # ciphertext token — decrypt it back to plaintext for the regulatory export
+    # (legacy plaintext rows pass through unchanged).
+    if "national_id" in df.columns and not df.empty:
+        df["national_id"] = df["national_id"].map(decrypt_pii)
+    return df
 
 
 def asset_quality_csv(db: Session, tenant_id: int) -> str:

@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 
+from app.core.crypto import pii_hash
 from app.core.database import get_db
 from app.core.deps import (get_current_user, require_module, require_permission,
                            require_role, get_scope, UserScope, write_audit)
@@ -57,8 +58,11 @@ def list_borrowers(tenant_id: int = Depends(require_module("lending")),
     q = scope.apply_client(q, Borrower)
     if search:
         like = f"%{search}%"
+        # PII-02: national_id is encrypted at rest — match it via the blind index
+        # (exact match on the full ID) instead of a substring ILIKE.
         q = q.filter(or_(Borrower.first_name.ilike(like), Borrower.last_name.ilike(like),
-                         Borrower.national_id.ilike(like), Borrower.phone.ilike(like)))
+                         Borrower.phone.ilike(like),
+                         Borrower.national_id_hash == pii_hash(search.strip())))
     total = q.count()
     rows = q.order_by(Borrower.id.desc()).offset((page - 1) * page_size).limit(page_size).all()
     return {"total": total, "page": page, "items": [_borrower_dict(b) for b in rows]}

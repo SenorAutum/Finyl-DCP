@@ -24,6 +24,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 
 from fastapi import Request
+from app.core.crypto import pii_hash
 from app.core.database import get_db
 from app.core.deps import (get_current_user, require_module, require_permission,
                            get_scope, UserScope, write_audit)
@@ -188,6 +189,9 @@ def _apply_scalars(client: Borrower, body: ClientCreate) -> None:
     data = body.model_dump(exclude={"wallets", "next_of_kin"} | _TRUST_FIELDS)
     for key, value in data.items():
         setattr(client, key, value)
+    # PII-02: the national_id blind index (national_id_hash) is kept in step
+    # automatically by the before_insert/before_update mapper event on Borrower
+    # (see models/lending.py), so every write path stays consistent.
 
 
 # --------------------------------------------------------------------------- #
@@ -231,8 +235,12 @@ def build_router(prefix: str, tag: str) -> APIRouter:
             q = q.filter(Borrower.profile_status == profile_status)
         if search:
             like = f"%{search}%"
+            # PII-02: national_id is encrypted at rest, so a substring ILIKE can no
+            # longer match it. Match the full national_id via its blind index
+            # (exact match) instead, alongside the plaintext name/phone search.
             q = q.filter(or_(Borrower.first_name.ilike(like), Borrower.last_name.ilike(like),
-                             Borrower.national_id.ilike(like), Borrower.phone.ilike(like)))
+                             Borrower.phone.ilike(like),
+                             Borrower.national_id_hash == pii_hash(search.strip())))
         if kyc_status:
             q = q.filter(Borrower.kyc_status == kyc_status)
         total = q.count()

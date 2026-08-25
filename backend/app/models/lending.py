@@ -3,9 +3,11 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (Boolean, Column, Date, DateTime, Float, ForeignKey,
-                        Integer, Numeric, String, Text, JSON, UniqueConstraint)
+                        Integer, Numeric, String, Text, JSON, UniqueConstraint,
+                        event)
 from sqlalchemy.orm import relationship
 
+from app.core.crypto import EncryptedText, pii_hash
 from app.core.database import Base
 
 # "processing" = a B2C disbursement has been accepted by Daraja and is awaiting
@@ -37,7 +39,15 @@ class Borrower(Base):
     first_name = Column(String(60), nullable=False)
     middle_name = Column(String(60))
     last_name = Column(String(60), nullable=False)
-    national_id = Column(String(20), nullable=False)
+    # PII-02: national ID is sensitive PII — encrypted at rest (transparent Fernet
+    # via EncryptedText; stored as an ``enc:v1:`` token in a widened TEXT column,
+    # legacy plaintext rows decrypt unchanged). The Python attribute is always the
+    # plaintext value, so every existing read site (API, CRB, eKYC, exports) is
+    # unaffected. Equality lookup / dedup uses the sibling blind-index column.
+    national_id = Column(EncryptedText, nullable=False)
+    # PII-02 blind index: HMAC-SHA256 of national_id (see core.crypto.pii_hash).
+    # Preserves exact-match search / uniqueness while national_id is encrypted.
+    national_id_hash = Column(String(64), index=True)
     phone = Column(String(20), nullable=False)
     gender = Column(String(10))
     date_of_birth = Column(Date)
@@ -89,6 +99,17 @@ class Borrower(Base):
     def full_name(self):
         parts = [self.first_name, self.middle_name, self.last_name]
         return " ".join(p for p in parts if p)
+
+
+# PII-02: keep the national_id blind index in step with national_id on every
+# write path (clients router, lending router, seeds) — no call site needs to
+# remember to set it. At insert/update time the in-memory attribute is the
+# PLAINTEXT value (EncryptedText only encrypts during the flush's bind step),
+# so hashing here indexes the plaintext, exactly matching lookups from pii_hash.
+@event.listens_for(Borrower, "before_insert")
+@event.listens_for(Borrower, "before_update")
+def _sync_national_id_hash(mapper, connection, target):  # noqa: ARG001
+    target.national_id_hash = pii_hash(getattr(target, "national_id", None))
 
 
 class Loan(Base):

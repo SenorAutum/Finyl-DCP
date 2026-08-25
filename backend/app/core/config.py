@@ -42,6 +42,16 @@ class Settings(BaseSettings):
     # encryption at rest. Blank -> a stable key is derived from JWT_SECRET. Never logged.
     PII_ENCRYPTION_KEY: str = ""
 
+    # PII-02 — dedicated field-encryption key (urlsafe-b64 32-byte Fernet key),
+    # INDEPENDENT of JWT_SECRET. When present it becomes the PRIMARY key used to
+    # encrypt PII (national_id etc.) and to derive the blind-index HMAC key; the
+    # legacy JWT_SECRET-derived key (and any PII_ENCRYPTION_KEY) are retained as
+    # SECONDARY decryption keys via MultiFernet so existing ciphertext still
+    # decrypts and key rotation is a no-downtime re-encrypt. Generate with:
+    #   python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"
+    # Stored only in the environment / .env — never committed, never logged.
+    FIELD_ENCRYPTION_KEY: str = ""
+
     # --- Auth --------------------------------------------------------------
     JWT_SECRET: str = "change-me-in-production"
     JWT_ALGORITHM: str = "HS256"

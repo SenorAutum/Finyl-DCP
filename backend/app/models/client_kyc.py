@@ -42,7 +42,10 @@ class ClientNextOfKin(Base):
     full_name = Column(String(120))
     relationship_type = Column("relationship", String(30))  # column name kept short/readable
     mobile_number = Column(String(20))
-    national_id = Column(String(20))
+    # PII-02: next-of-kin national ID is sensitive PII — encrypted at rest
+    # (transparent Fernet via EncryptedText, widened to TEXT; legacy plaintext
+    # decrypts unchanged). Not used for lookup, so no blind index is needed.
+    national_id = Column(EncryptedText)
     address = Column(String(160))
     active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
