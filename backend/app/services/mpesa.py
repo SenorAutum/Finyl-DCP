@@ -21,6 +21,7 @@ credentials (per-DCP or in .env) + and the SAME code flips to LIVE (SANDBOX).
 The return shapes are unchanged from the previous mock so routers/UI keep working.
 """
 import base64
+import logging
 import random
 import string
 import threading
@@ -32,6 +33,8 @@ from datetime import datetime
 import httpx
 
 from app.core.config import settings
+
+logger = logging.getLogger("finyl.mpesa")
 
 SANDBOX_BASE = "https://sandbox.safaricom.co.ke"
 PROD_BASE = "https://api.safaricom.co.ke"
@@ -63,6 +66,10 @@ class DarajaCreds:
     def base_url(self) -> str:
         env = (self.environment or "sandbox").strip().lower()
         return PROD_BASE if env.startswith("prod") else SANDBOX_BASE
+
+    @property
+    def is_production(self) -> bool:
+        return (self.environment or "sandbox").strip().lower().startswith("prod")
 
     @property
     def configured(self) -> bool:
@@ -147,6 +154,66 @@ def integration_status(creds: DarajaCreds | None = None) -> str:
     if not creds.configured:
         return "NOT CONFIGURED"
     return "LIVE" if creds.base_url == PROD_BASE else "SANDBOX"
+
+
+# Credentials Daraja requires for a LIVE B2C payout. In production ALL of these
+# must be present; a missing one means we must fail closed (never simulate, never
+# silently fall back to sandbox).
+_B2C_REQUIRED_FIELDS = (
+    "consumer_key", "consumer_secret", "shortcode",
+    "initiator_name", "security_credential",
+)
+
+
+def _missing_fields(creds: DarajaCreds, fields) -> list:
+    """Names of the given credential fields that are blank/placeholder."""
+    return [f for f in fields if _clean(getattr(creds, f, None)) is None]
+
+
+def guard_production_b2c(creds: DarajaCreds) -> None:
+    """Fail-closed production guard for B2C payouts.
+
+    When DARAJA_ENVIRONMENT=production, a live payout requires the full set of
+    real credentials. If any is missing/empty we log a clear (secret-free) error
+    and raise DarajaNotConfigured so the payout is REFUSED — the app never
+    silently simulates a payout nor falls back to the sandbox host on a live
+    request. In sandbox this is a no-op, preserving the existing behaviour
+    (real sandbox call when configured, simulated ack when not)."""
+    if not creds.is_production:
+        return
+    missing = _missing_fields(creds, _B2C_REQUIRED_FIELDS)
+    if missing:
+        logger.error(
+            "Daraja B2C payout REFUSED (fail-closed): DARAJA_ENVIRONMENT=production "
+            "but required credential(s) missing/empty: %s. Configure the real "
+            "production credentials or set DARAJA_ENVIRONMENT=sandbox. No payout "
+            "was attempted.",
+            ", ".join(missing),
+        )
+        raise DarajaNotConfigured(
+            "Daraja is set to PRODUCTION but required B2C credentials are missing "
+            f"({', '.join(missing)}). Payout refused (fail-closed)."
+        )
+
+
+def startup_summary(creds: DarajaCreds | None = None) -> str:
+    """A single, SECRET-FREE line describing the active Daraja config, for the
+    boot log. Reports only the environment and yes/no configured booleans —
+    never any credential value."""
+    creds = creds or _settings_creds()
+
+    def _has(v):
+        return "yes" if _clean(v) is not None else "no"
+
+    return (
+        f"Daraja environment: {(creds.environment or 'sandbox')} "
+        f"(base_url={creds.base_url}, status={integration_status(creds)}); "
+        f"consumer key/secret configured: {_has(creds.consumer_key)}; "
+        f"shortcode configured: {_has(creds.shortcode)}; "
+        f"initiator configured: {_has(creds.initiator_name)}; "
+        f"security credential configured: {_has(creds.security_credential)}; "
+        f"passkey configured: {_has(creds.passkey)}"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -313,6 +380,9 @@ def b2c_disburse(phone: str, amount: float, remarks: str,
     _simulate_b2c_accept) so the processing→result state machine is exercised
     end-to-end in the mock/demo without ever fabricating a settled payout."""
     creds = creds or _settings_creds()
+    # Fail-closed: in production, a missing credential must REFUSE the payout —
+    # never silently simulate it or fall back to the sandbox host.
+    guard_production_b2c(creds)
     if not creds.configured:
         return _simulate_b2c_accept(phone, amount, remarks, creds)
     token = get_access_token(creds=creds)

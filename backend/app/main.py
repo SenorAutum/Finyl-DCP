@@ -105,6 +105,12 @@ def on_startup():
     ensure_schema()
     if settings.AUTO_CREATE_TABLES:
         Base.metadata.create_all(bind=engine)
+    # Log the active Daraja (M-Pesa) environment on boot — SECRET-FREE (only the
+    # environment name and yes/no configured booleans). Makes it obvious in the
+    # journal whether the service came up in sandbox or production.
+    import logging
+    from app.services import mpesa
+    logging.getLogger("finyl.startup").info(mpesa.startup_summary())
     # In-process auto-reconcile worker (APScheduler). Guarded so a missing
     # dependency / disabled flag never blocks app boot.
     try:
