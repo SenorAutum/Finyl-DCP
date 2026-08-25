@@ -1,0 +1,10 @@
+# Development / test-only dependencies for Finyl-DCP backend.
+# Install with:  venv/bin/pip install -r requirements-dev.txt
+# These are NOT required to run the production service and are kept separate
+# from requirements.txt so production installs stay unchanged.
+
+pytest==8.3.4
+pytest-cov==6.0.0
+# httpx is already a production dependency (used by the app + TestClient);
+# pinned here too so the test extras install standalone if needed.
+httpx>=0.27
