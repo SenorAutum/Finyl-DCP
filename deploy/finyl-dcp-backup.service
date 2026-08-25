@@ -1,0 +1,14 @@
+[Unit]
+Description=Finyl-DCP PostgreSQL backup (pg_dump -> local + S3)
+After=network-online.target
+Wants=network-online.target
+# /home/ubuntu mounts late at boot (nofail) — do not run before it is present.
+RequiresMountsFor=/home/ubuntu
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/finyl-dcp
+ExecStart=/home/ubuntu/finyl-dcp/deploy/backup_db.sh
+# Retention overrides can be set here if ever needed:
+# Environment=LOCAL_RETENTION_DAYS=7 S3_RETENTION_DAYS=30

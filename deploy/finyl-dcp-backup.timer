@@ -1,0 +1,13 @@
+[Unit]
+Description=Daily Finyl-DCP PostgreSQL backup at 02:00 UTC
+
+[Timer]
+# Run every day at 02:00 UTC. The trailing "UTC" pins the schedule to UTC
+# regardless of the system timezone (systemd >= v240).
+OnCalendar=*-*-* 02:00:00 UTC
+# If the machine was off at 02:00, run the backup as soon as it is back up.
+Persistent=true
+Unit=finyl-dcp-backup.service
+
+[Install]
+WantedBy=timers.target
