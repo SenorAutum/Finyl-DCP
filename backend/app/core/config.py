@@ -87,6 +87,37 @@ class Settings(BaseSettings):
     # cryptographic secret and is never logged.
     MPESA_CALLBACK_TOKEN: str = "finyl-daraja-hook-3f9c2a"
 
+    # --- Safaricom perimeter source-IP allowlist (defence-in-depth) ----------
+    # Comma-separated list of CIDR ranges from which Safaricom delivers Daraja
+    # webhooks. This is the DEFAULT set of well-known Safaricom PRODUCTION egress
+    # ranges — EDIT HERE (or override via the SAFARICOM_IP_ALLOWLIST env var) if
+    # Safaricom notifies you of a new range. Applied ONLY to the unauthenticated
+    # /mpesa/{token}/* callback endpoints; the app resolves the real client IP
+    # from X-Forwarded-For / X-Real-Ip because it runs behind nginx on 127.0.0.1.
+    SAFARICOM_IP_ALLOWLIST: str = (
+        "196.201.214.0/24,196.201.213.0/24,196.201.212.0/24,"
+        "196.201.211.0/24,196.201.176.0/20"
+    )
+    # Enforcement mode for the allowlist above:
+    #   off     -> never check (skip entirely)
+    #   log     -> check and WARN on a non-allowlisted IP, but STILL PROCESS
+    #              (DEFAULT — keeps sandbox / test callbacks working)
+    #   enforce -> REJECT a non-allowlisted IP with 403 BEFORE any processing
+    # Set SAFARICOM_IP_ENFORCE=enforce at go-live (see deploy/DARAJA_GO_LIVE.md).
+    SAFARICOM_IP_ENFORCE: str = "log"
+
+    # --- Durable webhook ingestion / dead-letter / retention ------------------
+    # Every Daraja webhook hit is persisted to mpesa_webhook_events BEFORE
+    # processing so a delivery is never lost on a transient failure. Failed
+    # events are retried with exponential backoff up to WEBHOOK_MAX_ATTEMPTS,
+    # then escalated to `dead` and alerted. Successfully-processed raw payloads
+    # (which may contain PII: phone numbers etc.) are purged after
+    # WEBHOOK_RAW_RETENTION_HOURS, keeping only non-PII event metadata for audit.
+    WEBHOOK_MAX_ATTEMPTS: int = 5
+    WEBHOOK_RETRY_BASE_SECONDS: int = 60          # backoff = base * 2**(attempts-1)
+    WEBHOOK_RAW_RETENTION_HOURS: int = 168        # 7 days (ODPC data-minimisation)
+    WEBHOOK_DEAD_ALERT_THRESHOLD: int = 1         # alert once dead count >= this
+
     # --- Uwazii Mobile bulk-SMS gateway (LIVE) -------------------------------
     # Real credentials are injected into the environment from the secret store;
     # never hardcoded/committed. When the access token is present the SMS service
@@ -157,6 +188,26 @@ class Settings(BaseSettings):
         if env.startswith("prod"):
             return "https://api.safaricom.co.ke"
         return "https://sandbox.safaricom.co.ke"
+
+    @property
+    def safaricom_ip_networks(self) -> list:
+        """Parse SAFARICOM_IP_ALLOWLIST into a list of ipaddress networks.
+
+        Blank / malformed entries are skipped defensively so a single bad CIDR
+        never crashes callback handling. Returns [] when nothing is configured.
+        """
+        import ipaddress
+        nets = []
+        for token in (self.SAFARICOM_IP_ALLOWLIST or "").split(","):
+            token = token.strip()
+            if not token:
+                continue
+            try:
+                nets.append(ipaddress.ip_network(token, strict=False))
+            except ValueError:
+                # Skip a malformed CIDR rather than break the webhook path.
+                continue
+        return nets
 
     @model_validator(mode="after")
     def _enforce_strong_jwt_secret(self):

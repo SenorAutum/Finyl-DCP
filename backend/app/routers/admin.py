@@ -1,10 +1,11 @@
 """Super Admin: tenant management + module feature-flag matrix."""
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.deps import require_role
-from app.models import MODULE_KEYS, Tenant, TenantModule, User
+from app.models import MODULE_KEYS, MpesaWebhookEvent, Tenant, TenantModule, User
 from app.schemas import ModuleToggle, TenantCreate
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"],
@@ -62,3 +63,37 @@ def toggle_module(body: ModuleToggle, db: Session = Depends(get_db)):
     row.enabled = body.enabled
     db.commit()
     return {"tenant_id": body.tenant_id, "module_key": body.module_key, "enabled": row.enabled}
+
+
+@router.get("/webhook-health")
+def webhook_health(db: Session = Depends(get_db)):
+    """Dead-letter / durability dashboard for the Daraja webhook pipeline.
+
+    Platform-wide (super_admin): counts every mpesa_webhook_events row by
+    processing_status and lists the most recent dead-lettered events (payload
+    excluded — only non-PII metadata) so operators can alert/act on them.
+    """
+    rows = (db.query(MpesaWebhookEvent.processing_status,
+                     func.count(MpesaWebhookEvent.id))
+            .group_by(MpesaWebhookEvent.processing_status).all())
+    counts = {status: count for status, count in rows}
+    for status in ("received", "processed", "failed", "dead"):
+        counts.setdefault(status, 0)
+
+    dead = (db.query(MpesaWebhookEvent)
+            .filter(MpesaWebhookEvent.processing_status == "dead")
+            .order_by(MpesaWebhookEvent.received_at.desc())
+            .limit(50).all())
+    return {
+        "counts": counts,
+        "dead_total": counts["dead"],
+        "dead_events": [{
+            "id": e.id,
+            "endpoint": e.endpoint,
+            "tenant_id": e.tenant_id,
+            "shortcode": e.shortcode,
+            "attempts": e.attempts,
+            "last_error": e.last_error,
+            "received_at": e.received_at.isoformat() if e.received_at else None,
+        } for e in dead],
+    }

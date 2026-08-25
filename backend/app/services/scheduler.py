@@ -92,6 +92,74 @@ def run_auto_reconcile():
         db.close()
 
 
+def run_webhook_retry():
+    """One retry tick: reprocess durable Daraja webhook events whose retry is due.
+
+    Picks `failed` mpesa_webhook_events with next_retry_at <= now, reprocesses each
+    idempotently via the SAME processors the live callbacks use (so a retry can
+    never double-credit), and escalates to `dead` + alert after WEBHOOK_MAX_ATTEMPTS
+    (handled inside reprocess_event -> webhook_security.mark_failed). Never raises."""
+    from app.models import MpesaWebhookEvent
+    from app.routers.payments import reprocess_event
+
+    db = SessionLocal()
+    try:
+        now = datetime.utcnow()
+        due = (db.query(MpesaWebhookEvent)
+               .filter(MpesaWebhookEvent.processing_status == "failed",
+                       MpesaWebhookEvent.next_retry_at != None,   # noqa: E711
+                       MpesaWebhookEvent.next_retry_at <= now)
+               .order_by(MpesaWebhookEvent.next_retry_at.asc())
+               .limit(100).all())
+        recovered = dead = 0
+        for event in due:
+            try:
+                if reprocess_event(db, event):
+                    recovered += 1
+                elif event.processing_status == "dead":
+                    dead += 1
+            except Exception:
+                db.rollback()
+                logger.exception("webhook_retry: event %s reprocess failed", event.id)
+        if due:
+            logger.info("webhook_retry: due=%d recovered=%d dead=%d", len(due), recovered, dead)
+    except Exception:
+        logger.exception("webhook_retry: sweep aborted")
+    finally:
+        db.close()
+
+
+def run_webhook_purge():
+    """One purge tick: enforce short retention of raw webhook payloads (ODPC).
+
+    NULLs raw_payload of successfully-`processed` events older than
+    WEBHOOK_RAW_RETENTION_HOURS, keeping the non-PII event metadata for audit.
+    Failed/dead events retain their body until resolved. Never raises."""
+    from app.models import MpesaWebhookEvent
+
+    db = SessionLocal()
+    try:
+        cutoff = datetime.utcnow() - timedelta(hours=max(1, settings.WEBHOOK_RAW_RETENTION_HOURS))
+        stale = (db.query(MpesaWebhookEvent)
+                 .filter(MpesaWebhookEvent.processing_status == "processed",
+                         MpesaWebhookEvent.raw_payload != None,      # noqa: E711
+                         MpesaWebhookEvent.received_at <= cutoff)
+                 .limit(1000).all())
+        purged = 0
+        for event in stale:
+            event.raw_payload = None
+            purged += 1
+        if purged:
+            db.commit()
+            logger.info("webhook_purge: anonymised raw_payload of %d processed events "
+                        "older than %dh", purged, settings.WEBHOOK_RAW_RETENTION_HOURS)
+    except Exception:
+        db.rollback()
+        logger.exception("webhook_purge: aborted")
+    finally:
+        db.close()
+
+
 def start_scheduler():
     """Start the background scheduler once. Safe to call on app startup; logs a
     warning and no-ops if APScheduler is unavailable or disabled by config."""
@@ -112,12 +180,24 @@ def start_scheduler():
                       minutes=settings.SCHEDULER_INTERVAL_MINUTES,
                       id="auto_reconcile", max_instances=1,
                       coalesce=True, replace_existing=True)
+        # Durable-webhook workers: retry failed Daraja events on exponential
+        # backoff (idempotent reprocessing) and purge raw payloads past retention.
+        sched.add_job(run_webhook_retry, "interval",
+                      minutes=2,
+                      id="webhook_retry", max_instances=1,
+                      coalesce=True, replace_existing=True)
+        sched.add_job(run_webhook_purge, "interval",
+                      minutes=60,
+                      id="webhook_purge", max_instances=1,
+                      coalesce=True, replace_existing=True)
         sched.start()
         _scheduler = sched
         logger.info("scheduler started: auto_reconcile every %d min "
-                    "(resolve payouts stuck > %d min)",
+                    "(resolve payouts stuck > %d min); webhook_retry every 2 min; "
+                    "webhook_purge every 60 min (raw retention %dh)",
                     settings.SCHEDULER_INTERVAL_MINUTES,
-                    settings.SCHEDULER_STUCK_MINUTES)
+                    settings.SCHEDULER_STUCK_MINUTES,
+                    settings.WEBHOOK_RAW_RETENTION_HOURS)
     except Exception:
         logger.exception("scheduler failed to start — app continues without it")
 

@@ -88,6 +88,37 @@ class IntegrationTestLog(Base):
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 
+class MpesaWebhookEvent(Base):
+    """Durable ingestion log + dead-letter queue for Daraja M-Pesa webhooks.
+
+    Every incoming callback is persisted here as ``received`` BEFORE the existing
+    processing runs, so a delivery is never lost on a transient failure. The row
+    then flips to ``processed`` (success) or ``failed`` (internal error, with the
+    error text + a scheduled ``next_retry_at``). The APScheduler retry worker
+    reprocesses due ``failed`` rows idempotently and escalates to ``dead`` after
+    ``WEBHOOK_MAX_ATTEMPTS``, emitting an alert.
+
+    ``raw_payload`` is the verbatim body and MAY CONTAIN PII (payer MSISDN /
+    names); the scheduled purge NULLs it for ``processed`` rows older than
+    ``WEBHOOK_RAW_RETENTION_HOURS`` (ODPC data minimisation), keeping only
+    non-PII metadata for audit. Mirrors migration 016 exactly (the ORM builds
+    this table for the SQLite test DB; migrations own the live Postgres schema)."""
+    __tablename__ = "mpesa_webhook_events"
+
+    id = Column(Integer, primary_key=True)
+    # Resolved lazily — NULL until the tenant is determined (or unresolvable).
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
+    endpoint = Column(String(40), nullable=False)      # b2c-result | b2c-timeout | stk-callback | c2b-callback
+    shortcode = Column(String(20))                     # BusinessShortCode when extractable
+    received_at = Column(DateTime, default=datetime.utcnow, index=True)
+    processed_at = Column(DateTime)
+    raw_payload = Column(JSON)                         # verbatim body — MAY CONTAIN PII (purged after retention)
+    processing_status = Column(String(20), nullable=False, default="received")  # received|processed|failed|dead
+    attempts = Column(Integer, nullable=False, default=0)
+    last_error = Column(Text)
+    next_retry_at = Column(DateTime)
+
+
 class TenantIntegrationConfig(Base):
     """Per-tenant integration overrides captured from the DCP Setup screen.
 

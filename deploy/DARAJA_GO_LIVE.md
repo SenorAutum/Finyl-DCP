@@ -205,7 +205,80 @@ blocking Safaricom, and the initiator has the Business Payment role.
 
 ---
 
-## 7. Pre-go-live checklist
+## 7. Webhook hardening (multi-paybill production pilot)
+
+The callback pipeline is hardened for production with three **additive** layers.
+All are on by default in a safe mode; only the IP allowlist needs a deliberate
+flip at go-live.
+
+### 7.1 Safaricom perimeter IP allowlist
+
+An application-layer allowlist runs **only** on the `/mpesa/{token}/*` callbacks
+(defence-in-depth on top of the nginx allow-list and the secret path token). It
+resolves the real client IP behind nginx from `X-Forwarded-For` (first hop) /
+`X-Real-Ip`, and decides using `SAFARICOM_IP_ENFORCE`:
+
+| `SAFARICOM_IP_ENFORCE` | Behaviour                                                        |
+|------------------------|------------------------------------------------------------------|
+| `off`                  | Skip the check entirely.                                         |
+| `log` **(default)**    | Non-allowlisted IP is **processed** but logged as a warning.    |
+| `enforce`              | Non-allowlisted IP is rejected with **HTTP 403 before** processing. |
+
+The allowed ranges come from `SAFARICOM_IP_ALLOWLIST` (comma-separated CIDRs;
+ships with the known Safaricom production ranges). Only the client IP + endpoint
+label are ever logged — **never** the payload or any secret.
+
+> **Go-live action:** set **`SAFARICOM_IP_ENFORCE=enforce`** in `backend/.env`
+> once you have confirmed (from a few days of `log`-mode warnings) that genuine
+> Safaricom callbacks all originate from the configured ranges. Sandbox/testing
+> stays on the default `log` so nothing is ever dropped there. If Safaricom
+> publishes new ranges, add them to `SAFARICOM_IP_ALLOWLIST` **before** flipping
+> to `enforce`.
+
+### 7.2 Durable ingestion, dead-letter queue & retry
+
+Every callback is now persisted to `mpesa_webhook_events` (migration
+`016_webhook_durability.sql`) as `received` **before** any processing, so no
+delivery is ever lost. The existing (unchanged) money logic then runs inside a
+guard:
+
+- **success** → event marked `processed`;
+- **failure / unresolved** (exception, or no matching txn/loan/tenant) → the DB
+  work is rolled back and the event marked `failed` with an **exponential-backoff
+  retry** scheduled (`WEBHOOK_RETRY_BASE_SECONDS`, doubling, capped at 1h);
+- after **`WEBHOOK_MAX_ATTEMPTS`** (default 5) → event escalated to `dead` with a
+  structured **ERROR alert** log line (`ALERT daraja_webhook_dead_letter …`).
+
+**Safaricom always receives HTTP 200** (its expected ack) even on an internal
+failure, so Safaricom does not retry while our durable queue owns the retry.
+Retries re-run the **same idempotent processors** the live callbacks use, so a
+retry can never double-credit a loan.
+
+Two background workers run inside the existing in-process scheduler
+(`SCHEDULER_ENABLED=true`):
+
+- **`webhook_retry`** (every 2 min) — reprocesses due `failed` events.
+- **`webhook_purge`** (every 60 min) — NULLs `raw_payload` of `processed` events
+  older than **`WEBHOOK_RAW_RETENTION_HOURS`** (default 168h = 7 days), keeping
+  only non-PII metadata for audit (ODPC data-minimisation). Failed/dead events
+  retain their body until resolved.
+
+**Monitoring the DLQ:** `GET /api/v1/admin/webhook-health` (super_admin) returns
+event counts by status (`received`/`processed`/`failed`/`dead`) plus the most
+recent dead-lettered events (metadata only, no payload). Alert when `dead` > 0.
+
+### 7.3 Robust multi-paybill tenant resolution
+
+Callbacks are attributed to the owning tenant by the stored transaction (B2C /
+STK) or by `BusinessShortCode → tenant` (C2B/B2C) via each tenant's
+`TenantIntegrationConfig` (`integration='daraja'`, `config.shortcode`). A
+shortcode claimed by two tenants is treated as **ambiguous → unresolved** (never
+guessed). An unroutable callback is recorded with `tenant_id = NULL` + status
+`failed` and alerted — **never silently dropped or misrouted**.
+
+---
+
+## 8. Pre-go-live checklist
 
 - [ ] Production Daraja app created; **production** consumer key & secret in hand.
 - [ ] Production B2C shortcode confirmed.
@@ -217,6 +290,14 @@ blocking Safaricom, and the initiator has the Business Payment role.
 - [ ] `MPESA_CALLBACK_TOKEN` set to a fresh long random value (unique to prod).
 - [ ] All four callback URLs whitelisted/registered on Daraja (see §3).
 - [ ] nginx Safaricom IP allow-list reviewed (`deploy/finyl-dcp.conf`).
+- [ ] `SAFARICOM_IP_ALLOWLIST` reviewed against current Safaricom ranges, then
+      **`SAFARICOM_IP_ENFORCE=enforce`** flipped (after a few days in `log` mode
+      show all genuine callbacks are in-range). See §7.1.
+- [ ] Migration `016_webhook_durability.sql` applied (creates
+      `mpesa_webhook_events`); `SCHEDULER_ENABLED=true` so retry/purge workers run.
+- [ ] Each pilot tenant's paybill saved in `TenantIntegrationConfig`
+      (`integration='daraja'`, `config.shortcode`) for multi-paybill routing (§7.3).
+- [ ] DLQ monitoring wired: alert on `GET /api/v1/admin/webhook-health` `dead` > 0.
 - [ ] `backend/.env` updated; **`.env` is NOT committed to git**.
 - [ ] `DARAJA_ENVIRONMENT=production` flipped **last**, after all creds are set.
 - [ ] Service restarted; boot log shows `environment: production` + all
@@ -227,7 +308,7 @@ blocking Safaricom, and the initiator has the Business Payment role.
 
 ---
 
-## 8. Rollback
+## 9. Rollback
 
 To revert to sandbox at any time (no code change):
 

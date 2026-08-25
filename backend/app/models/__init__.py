@@ -17,7 +17,7 @@ from app.models.engagement import (
 )
 from app.models.integrations import (MpesaStatementAnalysis, CrbCheck,
                                      TenantIntegrationConfig, SmsRateCard,
-                                     IntegrationTestLog)
+                                     IntegrationTestLog, MpesaWebhookEvent)
 from app.models.additive import (EclProvisionConfig, SuspenseEntry, SmsOptOut,
                                   KycConsent, ChartOfAccount,
                                   ECL_DEFAULT_STAGE1_RATE, ECL_DEFAULT_STAGE2_RATE,

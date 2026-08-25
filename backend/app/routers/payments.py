@@ -34,6 +34,7 @@ from app.schemas import (C2BCallback, StkPushRequest, DisburseRequest,
                          SuspenseAllocateIn, SuspenseRefundIn)
 from app.services import mpesa, sms
 from app.services import rbac as rbac_svc
+from app.services import webhook_security as ws
 from app.services.disbursement import (execute_disbursement, execute_refund,
                                        apply_b2c_result, mark_b2c_timeout)
 
@@ -354,13 +355,42 @@ def _find_b2c_txn(db: Session, conversation_id, originator_id=None):
     return txn
 
 
-@router.post("/mpesa/{token}/b2c-result")
-async def b2c_result_callback(token: str, request: Request, db: Session = Depends(get_db)):
-    """Daraja B2C ResultURL — the definitive outcome of a disbursement (MPESA-01).
-    Idempotently applies the result: success activates the loan, failure reverts it
-    to `approved` for retry."""
-    _check_callback_token(token)
-    body = await _read_payload(request)
+# --------------------------------------------------------------------------- #
+# Durable ingestion wrapper (MPESA durability / dead-letter)
+#   Each webhook now: (1) validates the secret path token, (2) applies the
+#   Safaricom perimeter IP allowlist (off/log/enforce), (3) persists the raw
+#   event as `received` BEFORE processing, (4) runs the SAME idempotent
+#   processing as before inside try/except — success -> processed, exception ->
+#   failed + scheduled retry (-> dead + alert after max attempts), and (5)
+#   ALWAYS returns Safaricom's expected acknowledgement (HTTP 200) even on an
+#   internal failure, so Safaricom does not retry while our durable queue owns
+#   the retry. Existing money-movement logic + idempotency guards are unchanged;
+#   they are merely extracted into reusable processor functions so the retry
+#   worker can re-invoke them.
+# --------------------------------------------------------------------------- #
+def _ingest_and_process(db, endpoint, body, processor, default_ack):
+    """Persist the event, run the processor, mark the outcome, ALWAYS return an
+    acknowledgement. On success returns the processor's ack; on any failure
+    returns ``default_ack`` (a standard Daraja ResultCode-0 body)."""
+    tenant_id, shortcode = ws.resolve_tenant_for_webhook(db, endpoint, body)
+    event = ws.record_event(db, endpoint, body, tenant_id=tenant_id, shortcode=shortcode)
+    try:
+        ack, resolved_tenant = processor(db, body)
+        ws.mark_processed(db, event, tenant_id=resolved_tenant or tenant_id)
+        return ack
+    except ws.WebhookUnresolved as exc:
+        db.rollback()
+        ws.mark_failed(db, event, f"unresolved: {exc}")
+        return default_ack
+    except Exception as exc:  # noqa: BLE001 — never leak / never 500 to Safaricom
+        db.rollback()
+        logger.error("webhook_processing_failed endpoint=%s: %s", endpoint, exc)
+        ws.mark_failed(db, event, repr(exc))
+        return default_ack
+
+
+# --- Extracted, idempotent processors (called by the webhook + the retry worker) --
+def _process_b2c_result(db, body) -> tuple[dict, int | None]:
     result = body.get("Result", {}) if isinstance(body, dict) else {}
     conv = result.get("ConversationID")
     orig = result.get("OriginatorConversationID")
@@ -370,56 +400,47 @@ async def b2c_result_callback(token: str, request: Request, db: Session = Depend
         if p.get("Key") == "TransactionReceipt" and p.get("Value"):
             receipt = p.get("Value")
     txn = _find_b2c_txn(db, conv, orig)
-    if txn is not None:
-        apply_b2c_result(db, txn.tenant_id, txn, result_code, receipt, raw=body)
-        db.commit()
-    return {"ResultCode": 0, "ResultDesc": "Result received"}
+    if txn is None:
+        raise ws.WebhookUnresolved(f"no B2C transaction for conv={conv} orig={orig}")
+    apply_b2c_result(db, txn.tenant_id, txn, result_code, receipt, raw=body)
+    db.commit()
+    return {"ResultCode": 0, "ResultDesc": "Result received"}, txn.tenant_id
 
 
-@router.post("/mpesa/{token}/b2c-timeout")
-async def b2c_timeout_callback(token: str, request: Request, db: Session = Depends(get_db)):
-    """Daraja B2C QueueTimeOutURL — payout outcome unknown. Flags the transaction
-    timed_out for the reconcile sweep; does NOT revert the loan (avoids a double
-    payout should it later settle)."""
-    _check_callback_token(token)
-    body = await _read_payload(request)
+def _process_b2c_timeout(db, body) -> tuple[dict, int | None]:
     result = body.get("Result", {}) if isinstance(body, dict) else {}
     conv = result.get("ConversationID")
     orig = result.get("OriginatorConversationID")
     txn = _find_b2c_txn(db, conv, orig)
-    if txn is not None:
-        mark_b2c_timeout(db, txn, raw=body)
-        db.commit()
-    return {"ResultCode": 0, "ResultDesc": "Timeout received"}
+    if txn is None:
+        raise ws.WebhookUnresolved(f"no B2C transaction for conv={conv} orig={orig}")
+    mark_b2c_timeout(db, txn, raw=body)
+    db.commit()
+    return {"ResultCode": 0, "ResultDesc": "Timeout received"}, txn.tenant_id
 
 
-@router.post("/mpesa/{token}/stk-callback")
-async def stk_callback(token: str, request: Request, db: Session = Depends(get_db)):
-    """Daraja STK push CallBackURL — result of a collections prompt. On success
-    records the repayment (idempotent on the M-Pesa receipt) and reduces the
-    balance; on failure marks the transaction failed."""
-    _check_callback_token(token)
-    body = await _read_payload(request)
+def _process_stk_callback(db, body) -> tuple[dict, int | None]:
     cb = ((body.get("Body", {}) or {}).get("stkCallback", {}) or {}) if isinstance(body, dict) else {}
     checkout_id = cb.get("CheckoutRequestID")
     result_code = cb.get("ResultCode")
     if not checkout_id:
-        return {"ResultCode": 0, "ResultDesc": "Ignored"}
+        # Malformed / not routable to a checkout — acknowledge, nothing to do.
+        return {"ResultCode": 0, "ResultDesc": "Ignored"}, None
 
     txn = (db.query(PaymentTransaction)
            .filter(PaymentTransaction.type == "stk_push",
                    PaymentTransaction.mpesa_ref == str(checkout_id)).first())
     if txn is None:
-        return {"ResultCode": 0, "ResultDesc": "Unknown checkout"}
+        raise ws.WebhookUnresolved(f"unknown STK checkout {checkout_id}")
     if txn.status not in ("pending", "processing"):
-        return {"ResultCode": 0, "ResultDesc": "Already processed"}
+        return {"ResultCode": 0, "ResultDesc": "Already processed"}, txn.tenant_id
 
     tenant_id = txn.tenant_id
     if str(result_code) != "0":
         txn.status = "failed"
         txn.raw_payload = {**(txn.raw_payload or {}), "result_callback": body}
         db.commit()
-        return {"ResultCode": 0, "ResultDesc": "Result received"}
+        return {"ResultCode": 0, "ResultDesc": "Result received"}, tenant_id
 
     # Success — pull amount/receipt/phone from the callback metadata.
     meta = {i.get("Name"): i.get("Value")
@@ -457,24 +478,15 @@ async def stk_callback(token: str, request: Request, db: Session = Depends(get_d
         except Exception:
             pass
     db.commit()
-    return {"ResultCode": 0, "ResultDesc": "Result received"}
+    return {"ResultCode": 0, "ResultDesc": "Result received"}, tenant_id
 
 
-@router.post("/mpesa/{token}/c2b-callback")
-async def c2b_callback(token: str, request: Request, db: Session = Depends(get_db)):
-    """Daraja C2B confirmation webhook (MPESA-04).
-
-    Unauthenticated (token + IP allowlist). Derives the tenant + loan from
-    BillRefNumber (never trusts a client JWT), is idempotent on TransID, and
-    cross-checks TransAmount against the outstanding balance: a payment larger than
-    the outstanding is recorded but flagged for review and NOT auto-marked paid."""
-    _check_callback_token(token)
-    body = await _read_payload(request)
+def _process_c2b_callback(db, body) -> tuple[dict, int | None]:
     try:
         cb = C2BCallback(**body)
     except Exception:
         # Malformed — acknowledge (avoid retries) but record nothing.
-        return {"ResultCode": 0, "ResultDesc": "Ignored (unparseable)"}
+        return {"ResultCode": 0, "ResultDesc": "Ignored (unparseable)"}, None
 
     # Derive tenant + loan from the account number in BillRefNumber.
     # Concurrency: lock the loan row so concurrent repayment callbacks serialize
@@ -483,7 +495,9 @@ async def c2b_callback(token: str, request: Request, db: Session = Depends(get_d
             .filter(Loan.account_number == cb.BillRefNumber)
             .with_for_update().first())
     if not loan:
-        return {"ResultCode": 0, "ResultDesc": f"No loan for account {cb.BillRefNumber}"}
+        # Cannot route the money to a loan/tenant — surface it (DLQ + alert)
+        # rather than silently dropping funds (MPESA multi-paybill resolution).
+        raise ws.WebhookUnresolved(f"no loan for account {cb.BillRefNumber}")
     tenant_id = loan.tenant_id
     ref = cb.TransID or mpesa._mpesa_ref()
     amount = float(cb.TransAmount)
@@ -494,7 +508,7 @@ async def c2b_callback(token: str, request: Request, db: Session = Depends(get_d
                 .first())
     if existing is not None:
         return {"ResultCode": 0, "ResultDesc": "Duplicate ignored",
-                "loan_status": loan.status}
+                "loan_status": loan.status}, tenant_id
 
     # Loan not in a collectible state — record the transaction for review only.
     if loan.status not in ("active", "overdue"):
@@ -509,7 +523,7 @@ async def c2b_callback(token: str, request: Request, db: Session = Depends(get_d
                          raw_payload={"review_reason": f"loan_status_{loan.status}",
                                       "account_number": cb.BillRefNumber})
         db.commit()
-        return {"ResultCode": 0, "ResultDesc": "Recorded for review (loan not collectible)"}
+        return {"ResultCode": 0, "ResultDesc": "Recorded for review (loan not collectible)"}, tenant_id
 
     outstanding = float(loan.outstanding_balance or 0)
     overpayment = amount > outstanding
@@ -550,7 +564,91 @@ async def c2b_callback(token: str, request: Request, db: Session = Depends(get_d
     db.commit()
     return {"ResultCode": 0, "ResultDesc": "Confirmation received successfully",
             "loan_status": loan.status, "flagged_for_review": overpayment,
-            "outstanding_balance": float(loan.outstanding_balance)}
+            "outstanding_balance": float(loan.outstanding_balance)}, tenant_id
+
+
+# Retry dispatch: endpoint label -> processor. Used by the scheduler worker to
+# reprocess durable `failed` events idempotently.
+_PROCESSORS = {
+    ws.ENDPOINT_B2C_RESULT: _process_b2c_result,
+    ws.ENDPOINT_B2C_TIMEOUT: _process_b2c_timeout,
+    ws.ENDPOINT_STK_CALLBACK: _process_stk_callback,
+    ws.ENDPOINT_C2B_CALLBACK: _process_c2b_callback,
+}
+
+
+def reprocess_event(db, event) -> bool:
+    """Re-run the idempotent processor for a durable webhook event (retry worker).
+    Returns True on success (event -> processed), False otherwise (event -> failed
+    with the next backoff, or -> dead + alert once max attempts is reached)."""
+    processor = _PROCESSORS.get(event.endpoint)
+    body = event.raw_payload or {}
+    if processor is None:
+        ws.mark_failed(db, event, f"no processor for endpoint {event.endpoint}")
+        return False
+    try:
+        _ack, resolved_tenant = processor(db, body)
+        ws.mark_processed(db, event, tenant_id=resolved_tenant)
+        return True
+    except ws.WebhookUnresolved as exc:
+        db.rollback()
+        ws.mark_failed(db, event, f"unresolved: {exc}")
+        return False
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        ws.mark_failed(db, event, repr(exc))
+        return False
+
+
+@router.post("/mpesa/{token}/b2c-result")
+async def b2c_result_callback(token: str, request: Request, db: Session = Depends(get_db)):
+    """Daraja B2C ResultURL — the definitive outcome of a disbursement (MPESA-01).
+    Idempotently applies the result: success activates the loan, failure reverts it
+    to `approved` for retry. Durably ingested (persist-first) and always acked."""
+    _check_callback_token(token)
+    ws.check_ip_allowlist(request, ws.ENDPOINT_B2C_RESULT)  # 403 before processing in enforce mode
+    body = await _read_payload(request)
+    return _ingest_and_process(db, ws.ENDPOINT_B2C_RESULT, body, _process_b2c_result,
+                               {"ResultCode": 0, "ResultDesc": "Result received"})
+
+
+@router.post("/mpesa/{token}/b2c-timeout")
+async def b2c_timeout_callback(token: str, request: Request, db: Session = Depends(get_db)):
+    """Daraja B2C QueueTimeOutURL — payout outcome unknown. Flags the transaction
+    timed_out for the reconcile sweep; does NOT revert the loan (avoids a double
+    payout should it later settle)."""
+    _check_callback_token(token)
+    ws.check_ip_allowlist(request, ws.ENDPOINT_B2C_TIMEOUT)
+    body = await _read_payload(request)
+    return _ingest_and_process(db, ws.ENDPOINT_B2C_TIMEOUT, body, _process_b2c_timeout,
+                               {"ResultCode": 0, "ResultDesc": "Timeout received"})
+
+
+@router.post("/mpesa/{token}/stk-callback")
+async def stk_callback(token: str, request: Request, db: Session = Depends(get_db)):
+    """Daraja STK push CallBackURL — result of a collections prompt. On success
+    records the repayment (idempotent on the M-Pesa receipt) and reduces the
+    balance; on failure marks the transaction failed."""
+    _check_callback_token(token)
+    ws.check_ip_allowlist(request, ws.ENDPOINT_STK_CALLBACK)
+    body = await _read_payload(request)
+    return _ingest_and_process(db, ws.ENDPOINT_STK_CALLBACK, body, _process_stk_callback,
+                               {"ResultCode": 0, "ResultDesc": "Result received"})
+
+
+@router.post("/mpesa/{token}/c2b-callback")
+async def c2b_callback(token: str, request: Request, db: Session = Depends(get_db)):
+    """Daraja C2B confirmation webhook (MPESA-04).
+
+    Unauthenticated (token + IP allowlist). Derives the tenant + loan from
+    BillRefNumber (never trusts a client JWT), is idempotent on TransID, and
+    cross-checks TransAmount against the outstanding balance: a payment larger than
+    the outstanding is recorded but flagged for review and NOT auto-marked paid."""
+    _check_callback_token(token)
+    ws.check_ip_allowlist(request, ws.ENDPOINT_C2B_CALLBACK)
+    body = await _read_payload(request)
+    return _ingest_and_process(db, ws.ENDPOINT_C2B_CALLBACK, body, _process_c2b_callback,
+                               {"ResultCode": 0, "ResultDesc": "Confirmation received successfully"})
 
 
 @router.get("/transactions")
