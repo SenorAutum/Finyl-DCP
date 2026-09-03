@@ -1,0 +1,29 @@
+# Finyl-DCP — AWS App Runner SOURCE-BASED build config (ALTERNATIVE path).
+#
+# The PRIMARY / most reliable deployment path is the pre-built ECR image wired via
+# deploy/aws/apprunner-service-input.json (see deploy/AWS_OPTION1.md). This file is
+# an OPTIONAL alternative: point an App Runner service at this GitHub repo with
+# "source code" + "Use a configuration file", and App Runner builds the backend
+# Docker image itself on each push.
+#
+# NOTE: because the backend Dockerfile lives in ./backend, source-based build must
+# be configured with the repository source directory set to "backend" in the App
+# Runner console/CLI. Runtime secrets (DATABASE_URL, JWT_SECRET, FIELD_ENCRYPTION_KEY,
+# Daraja creds, etc.) are NOT listed here — configure them as secret-backed
+# environment variables on the service (Secrets Manager) exactly as in the ECR path.
+version: 1.0
+runtime: docker
+build:
+  commands:
+    build:
+      - echo "App Runner builds ./backend/Dockerfile"
+run:
+  # $PORT is provided by App Runner; the Dockerfile CMD honours it (defaults 8000).
+  command: sh -c "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"
+  network:
+    port: 8000
+  env:
+    - name: DB_SCHEMA
+      value: "public"
+    - name: AUTO_CREATE_TABLES
+      value: "false"

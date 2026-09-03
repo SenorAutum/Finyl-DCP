@@ -1,0 +1,88 @@
+{
+  "_comment": "Finyl-DCP — AWS App Runner service definition (ECR-image based, PRIMARY path). Edit every <PLACEHOLDER> then run:  aws apprunner create-service --cli-input-json file://deploy/aws/apprunner-service-input.json --region <REGION>. See deploy/AWS_OPTION1.md for the full runbook. Secrets are referenced by Secrets Manager ARN via RuntimeEnvironmentSecrets and NEVER hardcoded here.",
+
+  "ServiceName": "finyl-dcp-backend",
+
+  "SourceConfiguration": {
+    "AuthenticationConfiguration": {
+      "_comment_AccessRoleArn": "IAM role App Runner assumes to PULL the image from ECR. Create per runbook step (d); trust apprunner.amazonaws.com, attach AWSAppRunnerServicePolicyForECRAccess.",
+      "AccessRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/finyl-dcp-apprunner-ecr-access"
+    },
+    "AutoDeploymentsEnabled": true,
+    "ImageRepository": {
+      "_comment_ImageIdentifier": "ECR image URI built & pushed in runbook step (d). Region is af-south-1 (Cape Town) by default — see residency note in the runbook.",
+      "ImageIdentifier": "<ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/finyl-dcp-backend:latest",
+      "ImageRepositoryType": "ECR",
+      "ImageConfiguration": {
+        "Port": "8000",
+        "RuntimeEnvironmentVariables": {
+          "_comment": "NON-SECRET config only. Every sensitive value goes in RuntimeEnvironmentSecrets below.",
+          "DB_SCHEMA": "public",
+          "AUTO_CREATE_TABLES": "false",
+          "ALLOWED_ORIGINS": "https://<YOUR_NETLIFY_SITE>.netlify.app,https://finyl-dcp.abacusai.cloud",
+          "DARAJA_ENVIRONMENT": "sandbox",
+          "DARAJA_CALLBACK_BASE_URL": "https://<APP_RUNNER_DEFAULT_DOMAIN_OR_CUSTOM_DOMAIN>",
+          "SAFARICOM_IP_ENFORCE": "log",
+          "LLM_BASE_URL": "https://api.openai.com/v1",
+          "LLM_MODEL": "gpt-5.5-mini",
+          "LLM_VISION_MODEL": "gpt-4o",
+          "OCR_PROVIDER": "vision_llm",
+          "STORAGE_DIR": "/app/storage",
+          "SCHEDULER_ENABLED": "true"
+        },
+        "RuntimeEnvironmentSecrets": {
+          "_comment": "Each value is a Secrets Manager secret ARN (created in runbook step (c)). App Runner injects the secret value as the env var at runtime. The App Runner INSTANCE role (InstanceConfiguration.InstanceRoleArn) must have secretsmanager:GetSecretValue on these ARNs.",
+          "DATABASE_URL": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/DATABASE_URL-<SUFFIX>",
+          "JWT_SECRET": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/JWT_SECRET-<SUFFIX>",
+          "FIELD_ENCRYPTION_KEY": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/FIELD_ENCRYPTION_KEY-<SUFFIX>",
+          "PII_ENCRYPTION_KEY": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/PII_ENCRYPTION_KEY-<SUFFIX>",
+          "MPESA_CALLBACK_TOKEN": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/MPESA_CALLBACK_TOKEN-<SUFFIX>",
+          "DARAJA_CONSUMER_KEY": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/DARAJA_CONSUMER_KEY-<SUFFIX>",
+          "DARAJA_CONSUMER_SECRET": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/DARAJA_CONSUMER_SECRET-<SUFFIX>",
+          "DARAJA_SHORTCODE": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/DARAJA_SHORTCODE-<SUFFIX>",
+          "DARAJA_PASSKEY": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/DARAJA_PASSKEY-<SUFFIX>",
+          "DARAJA_SECURITY_CREDENTIAL": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/DARAJA_SECURITY_CREDENTIAL-<SUFFIX>",
+          "LLM_API_KEY": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/LLM_API_KEY-<SUFFIX>",
+          "UWAZII_USERNAME": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/UWAZII_USERNAME-<SUFFIX>",
+          "UWAZII_PASSWORD": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/UWAZII_PASSWORD-<SUFFIX>",
+          "UWAZII_SENDER_ID": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/UWAZII_SENDER_ID-<SUFFIX>",
+          "SMS_API_KEY": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/SMS_API_KEY-<SUFFIX>",
+          "CRB_API_KEY": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/CRB_API_KEY-<SUFFIX>",
+          "CRB_USERNAME": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/CRB_USERNAME-<SUFFIX>",
+          "CRB_PASSWORD": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/CRB_PASSWORD-<SUFFIX>",
+          "EKYC_USERNAME": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/EKYC_USERNAME-<SUFFIX>",
+          "EKYC_PASSWORD": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/EKYC_PASSWORD-<SUFFIX>",
+          "EKYC_STRATEGY_ID": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/EKYC_STRATEGY_ID-<SUFFIX>"
+        }
+      }
+    }
+  },
+
+  "InstanceConfiguration": {
+    "_comment_Cpu_Memory": "0.25 vCPU / 0.5 GB is the smallest App Runner size — a reasonable pilot. Raise for load. Values are estimates; check current App Runner pricing.",
+    "Cpu": "0.25 vCPU",
+    "Memory": "0.5 GB",
+    "_comment_InstanceRoleArn": "IAM role the RUNNING container assumes. Must allow secretsmanager:GetSecretValue on the finyl-dcp/* secret ARNs above (and s3:PutObject on the backups bucket if BACKUP_S3_BUCKET is set). Create per runbook step (c).",
+    "InstanceRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/finyl-dcp-apprunner-instance"
+  },
+
+  "HealthCheckConfiguration": {
+    "Protocol": "HTTP",
+    "Path": "/api/health",
+    "Interval": 10,
+    "Timeout": 5,
+    "HealthyThreshold": 1,
+    "UnhealthyThreshold": 5
+  },
+
+  "NetworkConfiguration": {
+    "_comment": "EgressType VPC routes the service's outbound traffic through a VPC connector so it can reach a PRIVATE (publicly_accessible=false) RDS instance in your VPC. Create the connector in runbook step (b) and put its ARN below. If you instead use a publicly-accessible RDS locked down by security group (quick pilot, see runbook tradeoffs), set EgressType to DEFAULT and remove the EgressConfiguration/VpcConnectorArn block.",
+    "EgressConfiguration": {
+      "EgressType": "VPC",
+      "VpcConnectorArn": "arn:aws:apprunner:<REGION>:<ACCOUNT_ID>:vpcconnector/finyl-dcp-vpc-connector/1/<SUFFIX>"
+    },
+    "IngressConfiguration": {
+      "IsPubliclyAccessible": true
+    }
+  }
+}

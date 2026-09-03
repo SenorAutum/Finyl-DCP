@@ -11,11 +11,13 @@
   publish = "frontend/dist"
 
 # Build-time environment. VITE_API_URL is baked into the bundle at build time.
-# Set it to your backend's PUBLIC URL (no trailing slash) — either here or in the
-# Netlify UI (Site settings → Environment variables). Leaving it blank builds a
-# same-origin bundle, which will NOT work on Netlify (the API is on another host).
+# Set it to your backend's PUBLIC URL — the App Runner base URL, with NO trailing
+# slash and WITHOUT a trailing /api (the frontend already prefixes /api on every
+# request). Set it either here or in the Netlify UI (Site settings → Environment
+# variables). Leaving it blank builds a same-origin bundle, which will NOT work on
+# Netlify (the API is on another host).
 [build.environment]
-  # VITE_API_URL = "https://api.example.com"   # <-- EDIT: your backend URL
+  # VITE_API_URL = "https://xxxxxxxx.af-south-1.awsapprunner.com"   # <-- EDIT: your App Runner backend URL (no trailing slash, no /api)
   NODE_VERSION = "20"
 
 # SPA client-side routing: serve index.html for any non-file path.
@@ -36,6 +38,7 @@
     Permissions-Policy = "geolocation=(), microphone=(), camera=()"
     # Content-Security-Policy: the SPA loads its own assets and calls the backend
     # API via fetch/XHR (connect-src). EDIT the backend origin below to match your
-    # deployment (replace https://api.example.com with your real backend URL).
+    # deployment — replace https://api.example.com with your App Runner base URL
+    # (e.g. https://xxxxxxxx.af-south-1.awsapprunner.com) or custom domain.
     # If you use a different LLM/analytics origin from the browser, add it too.
     Content-Security-Policy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https://api.example.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
