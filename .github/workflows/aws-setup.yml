@@ -1,0 +1,71 @@
+# This is the name of our robot's task. It will show up on GitHub.
+name: Build AWS Database and Network
+
+# This tells the robot to wait until we click the "Run workflow" button to start.
+on:
+  workflow_dispatch:
+
+# These are the basic settings the robot needs to remember.
+env:
+  AWS_REGION: "af-south-1"
+
+jobs:
+  build-aws-infrastructure:
+    # The robot will use a standard Linux computer in the cloud to do the work.
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: The robot logs into AWS using your hidden secrets from Part A.
+      - name: Connect to AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Step 2: The robot creates the Security Groups (the network bouncers).
+      - name: Create Security Groups
+        run: |
+          # Find the main network area in your AWS account.
+          VPC_ID=$(aws ec2 describe-vpcs --filters "Name=isDefault,Values=true" --query "Vpcs[0].VpcId" --output text)
+          
+          # Create the bouncer for the App Runner service.
+          APPRUNNER_SG=$(aws ec2 create-security-group --group-name finyl-apprunner-sg --description "App Runner Security Group" --vpc-id $VPC_ID --query 'GroupId' --output text)
+          
+          # Create the bouncer for the Database.
+          RDS_SG=$(aws ec2 create-security-group --group-name finyl-rds-sg --description "Database Security Group" --vpc-id $VPC_ID --query 'GroupId' --output text)
+          
+          # Tell the database bouncer to only let the App Runner inside (Port 5432).
+          aws ec2 authorize-security-group-ingress --group-id $RDS_SG --protocol tcp --port 5432 --source-group $APPRUNNER_SG
+          
+          # Save these names so the robot can use them in the next steps.
+          echo "RDS_SG=$RDS_SG" >> $GITHUB_ENV
+          echo "APPRUNNER_SG=$APPRUNNER_SG" >> $GITHUB_ENV
+          echo "VPC_ID=$VPC_ID" >> $GITHUB_ENV
+
+      # Step 3: The robot builds the PostgreSQL database.
+      - name: Create Database
+        run: |
+          aws rds create-db-instance \
+            --db-instance-identifier finyl-dcp-db \
+            --db-instance-class db.t3.micro \
+            --engine postgres \
+            --master-username finyladmin \
+            --master-user-password ${{ secrets.DB_PASSWORD }} \
+            --allocated-storage 20 \
+            --vpc-security-group-ids ${{ env.RDS_SG }} \
+            --publicly-accessible false \
+            --region ${{ env.AWS_REGION }}
+
+      # Step 4: The robot creates the VPC Connector (the secure hallway).
+      - name: Create VPC Connector
+        run: |
+          # Find all the small network rooms (subnets) inside the main network.
+          SUBNETS=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=${{ env.VPC_ID }}" --query "Subnets[*].SubnetId" --output text | awk '{print $1","$2","$3}')
+          
+          # Build the hallway connecting App Runner to the database network.
+          aws apprunner create-vpc-connector \
+            --vpc-connector-name finyl-vpc-connector \
+            --subnets $SUBNETS \
+            --security-groups ${{ env.APPRUNNER_SG }} \
+            --region ${{ env.AWS_REGION }}
