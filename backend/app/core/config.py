@@ -57,6 +57,18 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRY_MINUTES: int = 60 * 12
 
+    # --- CORS / browser origins ---------------------------------------------
+    # API-01 — comma-separated list of browser Origins allowed to call the API
+    # with credentials. The default is the live Abacus production origin so the
+    # hosted deployment keeps working unchanged; add your own front-end origin(s)
+    # (e.g. a Netlify site or custom domain) by overriding ALLOWED_ORIGINS in the
+    # environment. main.py parses this into an explicit allowlist (never a
+    # wildcard, which is invalid combined with allow_credentials=True). When the
+    # SPA is served same-origin behind nginx/Docker no browser CORS is triggered
+    # at all, so the default single origin is sufficient for that topology.
+    #   Example (split front-end): ALLOWED_ORIGINS=https://finyl-dcp.abacusai.cloud,https://app.example.com
+    ALLOWED_ORIGINS: str = "https://finyl-dcp.abacusai.cloud"
+
     # --- LLM (OpenAI-compatible chat completions endpoint) ------------------
     # Also powers the vision-LLM National-ID OCR provider. gpt-5.5-mini is a cheap,
     # vision-capable default; gemini-3.5-flash is a good fallback. Configurable.

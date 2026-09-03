@@ -55,6 +55,52 @@ curl -s -H "X-abacus-vm-metadata-token: $TOKEN" \
 
 Filenames are UTC timestamps: `finyl_dcp_YYYYmmddTHHMMSSZ.dump`.
 
+### Off-Abacus configuration (portable hosts)
+
+`deploy/backup_db.sh` is **host-agnostic**. It resolves the off-site S3 target
+in this order, so the same script runs unchanged on Abacus, a plain VPS, AWS,
+etc.:
+
+1. **Explicit environment variables (any host — recommended off Abacus):**
+
+   | Variable | Required | Meaning |
+   |----------|----------|---------|
+   | `BACKUP_S3_BUCKET` | yes (to enable off-site) | S3 bucket name for off-site dumps |
+   | `BACKUP_S3_PREFIX` | no | Key prefix inside the bucket (default `backups/finyl-dcp`) |
+
+   AWS credentials come from the **standard AWS credential chain** — set
+   `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (+ optional `AWS_SESSION_TOKEN`),
+   attach an EC2/ECS instance role, or configure `~/.aws/credentials`. Also set
+   `AWS_DEFAULT_REGION` (or `AWS_REGION`) if your bucket needs it. The script
+   never prints these values. Example (systemd drop-in / cron env / `.env` for
+   the timer):
+   ```bash
+   BACKUP_S3_BUCKET=my-company-finyl-backups
+   BACKUP_S3_PREFIX=finyl-dcp/prod        # optional; defaults to backups/finyl-dcp
+   AWS_ACCESS_KEY_ID=AKIA...              # or use an instance role instead
+   AWS_SECRET_ACCESS_KEY=...
+   AWS_DEFAULT_REGION=eu-west-1
+   ```
+   Resulting off-site path: `s3://my-company-finyl-backups/finyl-dcp/prod/finyl_dcp_<ts>.dump`
+
+2. **Abacus VM metadata (IMDSv2)** — on Abacus, if `BACKUP_S3_BUCKET` is unset,
+   the bucket and path are still auto-discovered from the metadata service
+   (best-effort; the probe times out quickly and never aborts the run on a
+   non-Abacus host).
+
+3. **Neither available** → off-site upload is **skipped with a WARNING** and the
+   backup still produces a verified **local** dump under
+   `backend/storage/backups/` with local retention. The run does **not**
+   hard-fail. Provide `BACKUP_S3_BUCKET` (or a mounted/rsynced off-site copy of
+   the local dumps) to restore off-site protection.
+
+Retention knobs are the same on every host: `LOCAL_RETENTION_DAYS` (default 7)
+and `S3_RETENTION_DAYS` (default 30).
+
+Off Abacus, install the backup timer from `deploy/finyl-dcp-backup.{service,timer}`
+(section 4) or add a cron entry, and ensure the above env vars are present in the
+timer/cron environment (e.g. a systemd `Environment=`/`EnvironmentFile=` drop-in).
+
 ---
 
 ## 3. Listing available backups

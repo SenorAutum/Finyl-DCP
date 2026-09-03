@@ -1,0 +1,41 @@
+# Finyl-DCP — Netlify configuration for the frontend SPA (Option B, split deploy).
+# See deploy/RUNNING_INDEPENDENTLY.md §3. Only used when hosting the frontend on
+# Netlify; the same-origin Docker deployment (Option A) does not need this file.
+#
+# The React app is under frontend/. `base` makes Netlify run the build there, so
+# `command` and `publish` are relative to that base directory.
+
+[build]
+  base = "frontend"
+  command = "npm run build"
+  publish = "frontend/dist"
+
+# Build-time environment. VITE_API_URL is baked into the bundle at build time.
+# Set it to your backend's PUBLIC URL (no trailing slash) — either here or in the
+# Netlify UI (Site settings → Environment variables). Leaving it blank builds a
+# same-origin bundle, which will NOT work on Netlify (the API is on another host).
+[build.environment]
+  # VITE_API_URL = "https://api.example.com"   # <-- EDIT: your backend URL
+  NODE_VERSION = "20"
+
+# SPA client-side routing: serve index.html for any non-file path.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+# --- Security headers ---------------------------------------------------------
+# Applied to every response Netlify serves for this site.
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Strict-Transport-Security = "max-age=31536000; includeSubDomains; preload"
+    Permissions-Policy = "geolocation=(), microphone=(), camera=()"
+    # Content-Security-Policy: the SPA loads its own assets and calls the backend
+    # API via fetch/XHR (connect-src). EDIT the backend origin below to match your
+    # deployment (replace https://api.example.com with your real backend URL).
+    # If you use a different LLM/analytics origin from the browser, add it too.
+    Content-Security-Policy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https://api.example.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"

@@ -36,12 +36,22 @@ app = FastAPI(
     openapi_url=None,
 )
 
-# API-01: lock CORS to the known production origin. The SPA is served same-origin
-# behind nginx (so browser XHR does not even trigger CORS); an explicit allowlist
-# replaces the previous wildcard, which is invalid combined with credentials.
-_ALLOWED_ORIGINS = [
-    "https://finyl-dcp.abacusai.cloud",
-]
+# API-01: lock CORS to an explicit allowlist of origins. The SPA is served
+# same-origin behind nginx (so browser XHR does not even trigger CORS); the
+# allowlist is env-driven (settings.ALLOWED_ORIGINS, comma-separated) so the app
+# is portable to other hosts (Netlify, custom domains, etc.) WITHOUT code
+# changes, while defaulting to the live Abacus production origin. An explicit
+# allowlist replaces the previous wildcard, which is invalid with credentials.
+_DEFAULT_ORIGIN = "https://finyl-dcp.abacusai.cloud"
+_ALLOWED_ORIGINS = []
+for _origin in (settings.ALLOWED_ORIGINS or "").split(","):
+    _origin = _origin.strip()
+    if _origin and _origin not in _ALLOWED_ORIGINS:
+        _ALLOWED_ORIGINS.append(_origin)
+# Never end up with an empty list (which would silently block the SPA) and never
+# use a wildcard together with allow_credentials — fall back to the Abacus origin.
+if not _ALLOWED_ORIGINS:
+    _ALLOWED_ORIGINS = [_DEFAULT_ORIGIN]
 
 app.add_middleware(
     CORSMiddleware,
