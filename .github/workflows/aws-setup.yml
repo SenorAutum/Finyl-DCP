@@ -43,7 +43,7 @@ jobs:
           echo "APPRUNNER_SG=$APPRUNNER_SG" >> $GITHUB_ENV
           echo "VPC_ID=$VPC_ID" >> $GITHUB_ENV
 
-      # Step 3: The robot builds the PostgreSQL database.
+     # Step 3: The robot builds the PostgreSQL database.
       - name: Create Database
         run: |
           aws rds create-db-instance \
@@ -54,7 +54,7 @@ jobs:
             --master-user-password ${{ secrets.DB_PASSWORD }} \
             --allocated-storage 20 \
             --vpc-security-group-ids ${{ env.RDS_SG }} \
-            --publicly-accessible false \
+            --no-publicly-accessible \
             --region ${{ env.AWS_REGION }}
 
       # Step 4: The robot creates the VPC Connector (the secure hallway).
