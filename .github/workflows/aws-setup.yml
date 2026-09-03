@@ -23,20 +23,27 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # Step 2: The robot creates the Security Groups (the network bouncers).
+     # Step 2: The robot creates the Security Groups (idempotent version)
       - name: Create Security Groups
         run: |
           # Find the main network area in your AWS account.
           VPC_ID=$(aws ec2 describe-vpcs --filters "Name=isDefault,Values=true" --query "Vpcs[0].VpcId" --output text)
           
-          # Create the bouncer for the App Runner service.
-          APPRUNNER_SG=$(aws ec2 create-security-group --group-name finyl-apprunner-sg --description "App Runner Security Group" --vpc-id $VPC_ID --query 'GroupId' --output text)
+          # 1. Check if the App Runner bouncer exists. If not, build it.
+          APPRUNNER_SG=$(aws ec2 describe-security-groups --filters "Name=group-name,Values=finyl-apprunner-sg" "Name=vpc-id,Values=$VPC_ID" --query "SecurityGroups[0].GroupId" --output text 2>/dev/null || true)
+          if [ "$APPRUNNER_SG" == "None" ] || [ -z "$APPRUNNER_SG" ]; then
+            APPRUNNER_SG=$(aws ec2 create-security-group --group-name finyl-apprunner-sg --description "App Runner Security Group" --vpc-id $VPC_ID --query 'GroupId' --output text)
+          fi
           
-          # Create the bouncer for the Database.
-          RDS_SG=$(aws ec2 create-security-group --group-name finyl-rds-sg --description "Database Security Group" --vpc-id $VPC_ID --query 'GroupId' --output text)
+          # 2. Check if the Database bouncer exists. If not, build it.
+          RDS_SG=$(aws ec2 describe-security-groups --filters "Name=group-name,Values=finyl-rds-sg" "Name=vpc-id,Values=$VPC_ID" --query "SecurityGroups[0].GroupId" --output text 2>/dev/null || true)
+          if [ "$RDS_SG" == "None" ] || [ -z "$RDS_SG" ]; then
+            RDS_SG=$(aws ec2 create-security-group --group-name finyl-rds-sg --description "Database Security Group" --vpc-id $VPC_ID --query 'GroupId' --output text)
+          fi
           
-          # Tell the database bouncer to only let the App Runner inside (Port 5432).
-          aws ec2 authorize-security-group-ingress --group-id $RDS_SG --protocol tcp --port 5432 --source-group $APPRUNNER_SG
+          # 3. Tell the database bouncer to let the App Runner inside.
+          # (The 2>/dev/null hides the error if the rule was already added during the first run).
+          aws ec2 authorize-security-group-ingress --group-id $RDS_SG --protocol tcp --port 5432 --source-group $APPRUNNER_SG 2>/dev/null || echo "Rule already exists."
           
           # Save these names so the robot can use them in the next steps.
           echo "RDS_SG=$RDS_SG" >> $GITHUB_ENV
