@@ -5,13 +5,90 @@
 
 body { @apply bg-canvas text-charcoal font-sans antialiased; }
 
+/* Tabular figures everywhere numbers matter read best (KPIs, tables, money). */
+.tabnums { font-variant-numeric: tabular-nums; }
+
 @layer components {
-  .card { @apply bg-surface border border-border rounded-xl shadow-sm; }
-  .btn { @apply inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-sm font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed; }
-  .btn-primary { @apply btn bg-accent text-white hover:bg-teal; }
-  .btn-ghost { @apply btn bg-white border border-border text-charcoal hover:bg-gray-50; }
-  .input { @apply w-full px-3 py-2 rounded-lg border border-border bg-white text-sm focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent; }
-  .label { @apply block text-xs font-semibold text-gray-500 mb-1; }
-  .th { @apply px-3 py-2.5 text-left text-[11px] font-bold uppercase tracking-wider text-gray-500 whitespace-nowrap; }
-  .td { @apply px-3 py-2.5 text-sm whitespace-nowrap; }
+  /* Card: soft two-layer elevation, 16px radius, hairline border, gentle hover lift. */
+  .card {
+    @apply bg-surface border border-border rounded-2xl shadow-card transition duration-200 ease-out
+           hover:shadow-card-hover hover:-translate-y-0.5;
+  }
+  /* Gradient "hero" card variant — for stat/summary widgets. */
+  .card-hero {
+    @apply rounded-2xl shadow-card border-0 text-white transition duration-200 ease-out
+           hover:shadow-card-hover hover:-translate-y-0.5 bg-hero-gradient;
+  }
+
+  .btn {
+    @apply inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-sm font-semibold
+           transition-all duration-150 ease-out disabled:opacity-50 disabled:cursor-not-allowed
+           focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40;
+  }
+  /* Primary CTA: emerald→teal gradient with a subtle lift on hover. */
+  .btn-primary {
+    @apply btn text-white shadow-sm bg-brand-gradient hover:brightness-[1.06]
+           hover:shadow-card active:brightness-95;
+  }
+  .btn-ghost {
+    @apply btn bg-white border border-border text-charcoal shadow-sm
+           hover:bg-gray-50 hover:border-gray-300;
+  }
+
+  .input {
+    @apply w-full px-3 py-2 rounded-lg border border-border bg-white text-sm transition
+           placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-accent/30
+           focus:border-accent;
+  }
+  .label { @apply block text-xs font-semibold uppercase tracking-wide text-gray-500 mb-1; }
+
+  /* Table primitives */
+  .th {
+    @apply px-3 py-2.5 text-left text-[11px] font-bold uppercase tracking-wider
+           text-gray-500 whitespace-nowrap bg-surface2 border-b border-border;
+  }
+  .td { @apply px-3 py-2.5 text-sm whitespace-nowrap border-b border-border/70; }
+
+  /* Skeleton loader — shimmering placeholder block. */
+  .skeleton {
+    @apply rounded-md;
+    background-image: linear-gradient(90deg, #eef2f6 25%, #e2e8f0 37%, #eef2f6 63%);
+    background-size: 200% 100%;
+    @apply animate-shimmer;
+  }
 }
+
+/* --- Modern thin custom scrollbars ------------------------------------------ */
+* {
+  scrollbar-width: thin;                     /* Firefox */
+  scrollbar-color: #cbd5e1 transparent;
+}
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background-color: #cbd5e1;
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover { background-color: #94a3b8; background-clip: content-box; }
+
+/* --- Global Recharts polish (inherited by the deferred dashboard) ----------- */
+/* Lighter, dashed grid lines */
+.recharts-cartesian-grid line,
+.recharts-cartesian-grid-horizontal line,
+.recharts-cartesian-grid-vertical line {
+  stroke: #eef1f4;
+  stroke-dasharray: 3 4;
+}
+.recharts-cartesian-axis-line { stroke: #e5e7eb; }
+.recharts-cartesian-axis-tick-value { fill: #9CA3AF; font-size: 11px; }
+/* Card-styled tooltip */
+.recharts-default-tooltip {
+  border-radius: 12px !important;
+  border: 1px solid #E5E7EB !important;
+  box-shadow: 0 8px 24px -14px rgba(16,24,40,0.28) !important;
+  padding: 8px 12px !important;
+  background: #ffffff !important;
+}
+.recharts-tooltip-label { color: #4B5563 !important; font-weight: 600 !important; }

@@ -1,5 +1,6 @@
 // App shell: charcoal sidebar with grouped nav (feature-flag + role aware),
 // topbar with tenant switcher (super_admin), mobile hamburger, AI panel launcher.
+// Desktop sidebar is collapsible to an icon rail (state persisted in localStorage).
 import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import ErrorBoundary from "./ErrorBoundary";
@@ -58,20 +59,45 @@ const NAV = [
   ]},
 ];
 
+// Extra links shown to super_admin under a "Platform" group.
+const PLATFORM = [
+  { to: "/admin", label: "Super Admin", icon: "🛠" },
+  { to: "/integrations", label: "Integrations", icon: "🔌" },
+  { to: "/approver-config", label: "Approver Config", icon: "✅" },
+];
+
 export default function Layout() {
   const { user, logout, canAccess, can, switchTenant } = useAuth();
   const { pathname } = useLocation();            // resets the error boundary per route
   const [open, setOpen] = useState(false);       // mobile sidebar
   const [aiOpen, setAiOpen] = useState(false);
   const [tenants, setTenants] = useState([]);
+  const [collapsed, setCollapsed] = useState(
+    () => localStorage.getItem("finyl.sidebar.collapsed") === "1"
+  );
   const isAdmin = user?.role === "super_admin";
 
   useEffect(() => {
     if (isAdmin) api("/api/v1/auth/tenants").then(setTenants).catch(() => {});
   }, [isAdmin]);
 
-  const NavItems = () => (
-    <nav className="flex-1 overflow-y-auto px-3 pb-4 space-y-4">
+  useEffect(() => {
+    localStorage.setItem("finyl.sidebar.collapsed", collapsed ? "1" : "0");
+  }, [collapsed]);
+
+  // A single nav row — shows icon + label, or an icon-only rail when `mini`.
+  const navClass = (mini) => ({ isActive }) =>
+    `group relative flex items-center rounded-lg text-sm font-medium mb-0.5 transition-colors ${
+      mini ? "justify-center px-0 py-2.5" : "gap-2.5 px-3 py-2"
+    } ${
+      isActive
+        ? "bg-white/10 text-white before:absolute before:left-0 before:top-1/2 before:-translate-y-1/2 before:h-5 before:w-1 before:rounded-r before:bg-accent"
+        : "text-gray-300 hover:bg-white/10 hover:text-white"
+    }`;
+
+  // `mini` collapses to an icon rail (desktop only); the mobile drawer always passes false.
+  const NavItems = ({ mini = false }) => (
+    <nav className={`flex-1 overflow-y-auto pb-4 space-y-4 ${mini ? "px-2" : "px-3"}`}>
       {NAV.map((g) => {
         if (g.superOnly && !isAdmin) return null;
         const items = g.items.filter((i) =>
@@ -81,13 +107,14 @@ export default function Layout() {
         if (!items.length) return null;
         return (
           <div key={g.group}>
-            <div className="px-2 pb-1 text-[10px] font-bold uppercase tracking-widest text-gray-400">{g.group}</div>
+            {!mini && (
+              <div className="px-2 pb-1 text-[10px] font-bold uppercase tracking-widest text-gray-400">{g.group}</div>
+            )}
             {items.map((i) => (
               <NavLink key={i.to} to={i.to} end={i.to === "/"} onClick={() => setOpen(false)}
-                className={({ isActive }) =>
-                  `flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium mb-0.5 transition-colors ${
-                    isActive ? "bg-accent text-white" : "text-gray-300 hover:bg-white/10 hover:text-white"}`}>
-                <span className="w-4 text-center">{i.icon}</span>{i.label}
+                title={mini ? i.label : undefined} className={navClass(mini)}>
+                <span className="w-5 text-center text-base leading-none">{i.icon}</span>
+                {!mini && <span>{i.label}</span>}
               </NavLink>
             ))}
           </div>
@@ -95,59 +122,83 @@ export default function Layout() {
       })}
       {isAdmin && (
         <div>
-          <div className="px-2 pb-1 text-[10px] font-bold uppercase tracking-widest text-gray-400">Platform</div>
-          <NavLink to="/admin" onClick={() => setOpen(false)}
-            className={({ isActive }) =>
-              `flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium ${
-                isActive ? "bg-accent text-white" : "text-gray-300 hover:bg-white/10 hover:text-white"}`}>
-            <span className="w-4 text-center">🛠</span>Super Admin
-          </NavLink>
-          <NavLink to="/integrations" onClick={() => setOpen(false)}
-            className={({ isActive }) =>
-              `flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium ${
-                isActive ? "bg-accent text-white" : "text-gray-300 hover:bg-white/10 hover:text-white"}`}>
-            <span className="w-4 text-center">🔌</span>Integrations
-          </NavLink>
-          <NavLink to="/approver-config" onClick={() => setOpen(false)}
-            className={({ isActive }) =>
-              `flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium ${
-                isActive ? "bg-accent text-white" : "text-gray-300 hover:bg-white/10 hover:text-white"}`}>
-            <span className="w-4 text-center">✅</span>Approver Config
-          </NavLink>
+          {!mini && (
+            <div className="px-2 pb-1 text-[10px] font-bold uppercase tracking-widest text-gray-400">Platform</div>
+          )}
+          {PLATFORM.map((i) => (
+            <NavLink key={i.to} to={i.to} onClick={() => setOpen(false)}
+              title={mini ? i.label : undefined} className={navClass(mini)}>
+              <span className="w-5 text-center text-base leading-none">{i.icon}</span>
+              {!mini && <span>{i.label}</span>}
+            </NavLink>
+          ))}
         </div>
       )}
     </nav>
   );
 
-  const Sidebar = () => (
+  // `mini` renders the collapsed icon rail; used on desktop only.
+  const Sidebar = ({ mini = false }) => (
     <div className="flex flex-col h-full bg-charcoal">
-      <div className="flex items-center gap-2.5 px-5 py-5">
-        <div className="w-9 h-9 rounded-lg flex items-center justify-center font-extrabold text-white" style={{ background: user?.tenant_color || "#10B981" }}>F</div>
-        <div>
-          <div className="text-white font-extrabold leading-tight">Finyl-DCP</div>
-          <div className="text-[10px] text-gray-400 uppercase tracking-wider">{user?.tenant_name || "Platform"}</div>
-        </div>
+      <div className={`flex items-center py-5 ${mini ? "justify-center px-2" : "gap-2.5 px-5"}`}>
+        <div
+          className={`w-9 h-9 rounded-lg flex items-center justify-center font-extrabold text-white shrink-0 ${
+            user?.tenant_color ? "" : "bg-brand-gradient"
+          }`}
+          style={user?.tenant_color ? { background: user.tenant_color } : undefined}
+        >F</div>
+        {!mini && (
+          <div className="min-w-0">
+            <div className="text-white font-extrabold leading-tight truncate">Finyl-DCP</div>
+            <div className="text-[10px] text-gray-400 uppercase tracking-wider truncate">{user?.tenant_name || "Platform"}</div>
+          </div>
+        )}
       </div>
-      <NavItems />
+      <NavItems mini={mini} />
+      {/* Collapse toggle — desktop only */}
+      <button
+        onClick={() => setCollapsed((c) => !c)}
+        title={mini ? "Expand sidebar" : "Collapse sidebar"}
+        className={`hidden lg:flex items-center gap-2 border-t border-white/10 text-gray-400 hover:text-white hover:bg-white/5 transition-colors py-3 ${
+          mini ? "justify-center px-2" : "px-5"
+        }`}
+      >
+        <span className="text-sm leading-none">{mini ? "»" : "«"}</span>
+        {!mini && <span className="text-xs font-medium">Collapse</span>}
+      </button>
     </div>
   );
+
+  const initials = (user?.full_name || "")
+    .split(" ").filter(Boolean).slice(0, 2).map((w) => w[0]).join("").toUpperCase() || "?";
 
   return (
     <div className="min-h-screen flex">
       {/* Desktop sidebar */}
-      <aside className="hidden lg:block w-60 fixed inset-y-0">{Sidebar()}</aside>
-      {/* Mobile drawer */}
+      <aside className={`hidden lg:block fixed inset-y-0 transition-[width] duration-200 ${collapsed ? "w-[68px]" : "w-60"}`}>
+        <Sidebar mini={collapsed} />
+      </aside>
+      {/* Mobile drawer (always full width, never mini) */}
       {open && (
         <div className="lg:hidden fixed inset-0 z-40">
           <div className="absolute inset-0 bg-black/50" onClick={() => setOpen(false)} />
-          <aside className="absolute inset-y-0 left-0 w-64">{Sidebar()}</aside>
+          <aside className="absolute inset-y-0 left-0 w-64 animate-slide-up"><Sidebar /></aside>
         </div>
       )}
 
-      <div className="flex-1 lg:ml-60 flex flex-col min-w-0">
+      <div className={`flex-1 flex flex-col min-w-0 transition-[margin] duration-200 ${collapsed ? "lg:ml-[68px]" : "lg:ml-60"}`}>
         {/* Topbar */}
-        <header className="sticky top-0 z-30 bg-surface border-b border-border px-4 py-3 flex items-center gap-3">
+        <header className="sticky top-0 z-30 bg-surface/90 backdrop-blur border-b border-border px-4 py-3 flex items-center gap-3">
           <button className="lg:hidden btn-ghost !px-2.5" onClick={() => setOpen(true)}>☰</button>
+          {/* Search affordance (visual) */}
+          <div className="hidden md:flex items-center gap-2 w-72 max-w-full rounded-xl border border-border bg-canvas px-3 py-1.5 text-gray-400">
+            <span className="text-sm leading-none">🔍</span>
+            <input
+              type="text"
+              placeholder="Search…"
+              className="flex-1 bg-transparent text-sm text-charcoal placeholder:text-gray-400 focus:outline-none"
+            />
+          </div>
           <div className="flex-1" />
           {isAdmin && tenants.length > 0 && (
             <select className="input !w-auto text-sm" value={user?.tenant_id || ""}
@@ -162,6 +213,10 @@ export default function Layout() {
             <div className="text-sm font-semibold leading-tight">{user?.full_name}</div>
             <div className="text-[11px] text-gray-400 capitalize">{user?.role?.replace("_", " ")}</div>
           </div>
+          <div
+            className="hidden sm:flex w-9 h-9 rounded-full bg-brand-gradient text-white items-center justify-center text-xs font-bold shrink-0"
+            title={user?.full_name}
+          >{initials}</div>
           <button className="btn-ghost !py-1.5" onClick={logout}>Logout</button>
         </header>
 
