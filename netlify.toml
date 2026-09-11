@@ -20,6 +20,21 @@
   # VITE_API_URL = "https://xxxxxxxx.af-south-1.awsapprunner.com"   # <-- EDIT: your App Runner backend URL (no trailing slash, no /api)
   NODE_VERSION = "20"
 
+# --- API proxy (AWS ECS Fargate backend, deploy/AWS_OPTION2_ECS.md) -----------
+# Proxy every /api/* request to the backend running behind the ALB. This keeps
+# the browser same-origin (requests go to the Netlify domain, Netlify forwards
+# them server-side), so there is NO CORS to configure and the CSP connect-src
+# below can stay 'self' — no need to whitelist the ALB origin in the browser.
+# EDIT the destination host to your ALB DNS name (…af-south-1.elb.amazonaws.com)
+# or the custom domain you point at the ALB. Keep the /api prefix and :splat.
+# force = true makes this rewrite win over the SPA catch-all. This block MUST
+# stay ABOVE the "/*" redirect — Netlify evaluates rules top-to-bottom.
+[[redirects]]
+  from = "/api/*"
+  to = "https://REPLACE-WITH-YOUR-ALB-OR-DOMAIN/api/:splat"
+  status = 200
+  force = true
+
 # SPA client-side routing: serve index.html for any non-file path.
 [[redirects]]
   from = "/*"

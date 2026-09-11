@@ -1,0 +1,69 @@
+{
+  "family": "finyl-web",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "runtimePlatform": {
+    "cpuArchitecture": "X86_64",
+    "operatingSystemFamily": "LINUX"
+  },
+  "executionRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/finyl-dcp-ecs-execution",
+  "taskRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/finyl-dcp-ecs-task",
+  "containerDefinitions": [
+    {
+      "name": "finyl-web",
+      "image": "<IMAGE_URI>",
+      "essential": true,
+      "portMappings": [
+        { "containerPort": 8000, "protocol": "tcp" }
+      ],
+      "environment": [
+        { "name": "SCHEDULER_ENABLED", "value": "false" },
+        { "name": "PORT", "value": "8000" },
+        { "name": "DB_SCHEMA", "value": "public" },
+        { "name": "AUTO_CREATE_TABLES", "value": "false" },
+        { "name": "ALLOWED_ORIGINS", "value": "https://<YOUR_NETLIFY_SITE>.netlify.app,https://finyl-dcp.abacusai.cloud" },
+        { "name": "DARAJA_ENVIRONMENT", "value": "sandbox" },
+        { "name": "DARAJA_CALLBACK_BASE_URL", "value": "https://<BACKEND_DOMAIN_OR_ALB_DNS>" },
+        { "name": "SAFARICOM_IP_ENFORCE", "value": "log" },
+        { "name": "LLM_BASE_URL", "value": "https://api.openai.com/v1" },
+        { "name": "LLM_MODEL", "value": "gpt-5.5-mini" },
+        { "name": "LLM_VISION_MODEL", "value": "gpt-4o" },
+        { "name": "OCR_PROVIDER", "value": "vision_llm" },
+        { "name": "STORAGE_DIR", "value": "/app/storage" }
+      ],
+      "secrets": [
+        { "name": "DATABASE_URL", "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/DATABASE_URL-<SUFFIX>" },
+        { "name": "JWT_SECRET", "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/JWT_SECRET-<SUFFIX>" },
+        { "name": "FIELD_ENCRYPTION_KEY", "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/FIELD_ENCRYPTION_KEY-<SUFFIX>" },
+        { "name": "PII_ENCRYPTION_KEY", "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/PII_ENCRYPTION_KEY-<SUFFIX>" },
+        { "name": "MPESA_CALLBACK_TOKEN", "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/MPESA_CALLBACK_TOKEN-<SUFFIX>" },
+        { "name": "DARAJA_CONSUMER_KEY", "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/DARAJA_CONSUMER_KEY-<SUFFIX>" },
+        { "name": "DARAJA_CONSUMER_SECRET", "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/DARAJA_CONSUMER_SECRET-<SUFFIX>" },
+        { "name": "DARAJA_SHORTCODE", "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/DARAJA_SHORTCODE-<SUFFIX>" },
+        { "name": "DARAJA_PASSKEY", "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/DARAJA_PASSKEY-<SUFFIX>" },
+        { "name": "DARAJA_SECURITY_CREDENTIAL", "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/DARAJA_SECURITY_CREDENTIAL-<SUFFIX>" },
+        { "name": "LLM_API_KEY", "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/LLM_API_KEY-<SUFFIX>" },
+        { "name": "UWAZII_USERNAME", "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/UWAZII_USERNAME-<SUFFIX>" },
+        { "name": "UWAZII_PASSWORD", "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/UWAZII_PASSWORD-<SUFFIX>" },
+        { "name": "UWAZII_SENDER_ID", "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/UWAZII_SENDER_ID-<SUFFIX>" },
+        { "name": "SMS_API_KEY", "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/SMS_API_KEY-<SUFFIX>" },
+        { "name": "CRB_API_KEY", "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/CRB_API_KEY-<SUFFIX>" },
+        { "name": "CRB_USERNAME", "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/CRB_USERNAME-<SUFFIX>" },
+        { "name": "CRB_PASSWORD", "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/CRB_PASSWORD-<SUFFIX>" },
+        { "name": "EKYC_USERNAME", "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/EKYC_USERNAME-<SUFFIX>" },
+        { "name": "EKYC_PASSWORD", "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/EKYC_PASSWORD-<SUFFIX>" },
+        { "name": "EKYC_STRATEGY_ID", "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:finyl-dcp/EKYC_STRATEGY_ID-<SUFFIX>" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/finyl-dcp",
+          "awslogs-region": "<REGION>",
+          "awslogs-stream-prefix": "web"
+        }
+      }
+    }
+  ]
+}
