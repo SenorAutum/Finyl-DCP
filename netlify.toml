@@ -31,7 +31,7 @@
 # stay ABOVE the "/*" redirect — Netlify evaluates rules top-to-bottom.
 [[redirects]]
   from = "/api/*"
-  to = "https://finyl-dcp.abacusai.cloud/api/:splat"
+  to = "https://finyl-dcp.onrender.com"
   status = 200
   force = true
 
