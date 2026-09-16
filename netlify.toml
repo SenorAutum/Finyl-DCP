@@ -31,7 +31,7 @@
 # stay ABOVE the "/*" redirect — Netlify evaluates rules top-to-bottom.
 [[redirects]]
   from = "/api/*"
-  to = "https://finyl-dcp.onrender.com"
+  to = "https://finyl-dcp.onrender.com/api/:splat"
   status = 200
   force = true
 
@@ -56,4 +56,4 @@
     # deployment — replace https://api.example.com with your App Runner base URL
     # (e.g. https://xxxxxxxx.af-south-1.awsapprunner.com) or custom domain.
     # If you use a different LLM/analytics origin from the browser, add it too.
-    Content-Security-Policy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https://finyl-dcp.abacusai.cloud; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+    Content-Security-Policy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https://finyl-dcp.onrender.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
