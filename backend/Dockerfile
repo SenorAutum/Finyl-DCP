@@ -20,7 +20,11 @@ COPY migrations ./migrations
 ENV STORAGE_DIR=/app/storage
 RUN mkdir -p /app/storage
 
-# Listen on $PORT when the platform sets one (e.g. AWS App Runner), else 8000.
+# Startup launcher: env-driven seed/reseed then uvicorn (see startup.sh).
+COPY startup.sh .
+RUN chmod +x startup.sh
+
+# Listen on $PORT when the platform sets one (e.g. AWS App Runner / Render), else 8000.
 # Abacus / docker-compose / local set no PORT, so behaviour is unchanged there.
 EXPOSE 8000
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["./startup.sh"]
