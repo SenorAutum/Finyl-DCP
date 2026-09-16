@@ -56,4 +56,4 @@
     # deployment — replace https://api.example.com with your App Runner base URL
     # (e.g. https://xxxxxxxx.af-south-1.awsapprunner.com) or custom domain.
     # If you use a different LLM/analytics origin from the browser, add it too.
-    Content-Security-Policy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https://api.example.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+    Content-Security-Policy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https://finyl-dcp.abacusai.cloud; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
