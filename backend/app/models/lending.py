@@ -86,6 +86,18 @@ class Borrower(Base):
     ekyc_reference = Column(String(60))
     ekyc_checked_at = Column(DateTime)
 
+    # --- Phase 2 (migrations 017, 019, 021) ---------------------------------
+    business_operational_age_months = Column(Integer)
+    is_business_client = Column(Boolean, nullable=False, default=False)
+    date_of_birth_verified = Column(Boolean, nullable=False, default=False)
+    age_verified_at = Column(DateTime(timezone=True))
+    alt_phone = Column(String(20))
+    alt_phone_operator = Column(String(50))
+    alt_phone_validated = Column(Boolean, nullable=False, default=False)
+    alt_phone_validated_at = Column(DateTime(timezone=True))
+    edit_locked = Column(Boolean, nullable=False, default=False)
+    edit_locked_reason = Column(String(200))
+
     loans = relationship("Loan", back_populates="borrower")
     wallets = relationship("ClientMobileWallet", back_populates="client",
                            cascade="all, delete-orphan")
@@ -130,6 +142,7 @@ class Loan(Base):
     disbursement_date = Column(Date)
     due_date = Column(Date)
     outstanding_balance = Column(Numeric(12, 2), default=0)
+    active_lock = Column(Boolean, nullable=False, default=False)  # Phase 2 (migration 021)
     loan_cycle_number = Column(Integer, default=1)   # borrower's Nth loan — drives impact survey gate
     created_at = Column(DateTime, default=datetime.utcnow)
 

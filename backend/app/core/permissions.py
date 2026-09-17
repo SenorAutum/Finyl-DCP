@@ -69,6 +69,30 @@ PERMISSIONS = {
     "reports.flag": "Flag data anomalies for Compliance",
     # Accounting
     "accounting.export": "Export the general ledger (double-entry) & view the Chart of Accounts",
+    # --- Phase 2 additive permissions ---------------------------------------
+    # Guarantors
+    "guarantors.manage": "Create / edit / validate guarantors and their documents",
+    # KYC escalations & validation
+    "kyc.escalate": "Log a KYC mismatch escalation",
+    "kyc.resolve": "Resolve / override a KYC mismatch escalation",
+    # Field operations
+    "field_ops.gps_view": "View officer GPS trails and location alerts",
+    "field_ops.tasks_manage": "Plan and manage officer daily field tasks",
+    # Activity monitoring
+    "activity.view": "View staff activity logs and screenshots",
+    # Collections
+    "collections.ptp_manage": "Create and manage promises-to-pay",
+    "collections.efficiency_view": "View collection-efficiency analytics",
+    # Third-party API clients
+    "api_clients.manage": "Create / revoke third-party API ingestion clients",
+    # Client edit maker-checker
+    "client_edits.request": "Submit a locked-field client edit request",
+    "client_edits.approve_secondary": "First-level approval of a client edit request",
+    "client_edits.approve_primary": "Final approval of a client edit request",
+    # Security config
+    "security.manage": "Manage tenant security config (OTP, device, geo/time fences)",
+    # Global search
+    "search.global": "Use global cross-entity search",
 }
 
 # Convenience groupings reused in role definitions.
@@ -90,6 +114,10 @@ ROLE_PERMISSIONS = {
         "messaging.manage",
         "accounting.export",
         "dashboard.company",  # read-only situational awareness
+        # Phase 2 — configuration & platform-admin surfaces
+        "api_clients.manage", "security.manage", "activity.view",
+        "field_ops.gps_view", "field_ops.tasks_manage",
+        "search.global",
     },
 
     # Relationship Officer — front-line origination within own portfolio.
@@ -99,6 +127,11 @@ ROLE_PERMISSIONS = {
         "loans.view_portfolio", "loans.create",
         "collections.stk_push",
         "dashboard.portfolio",
+        # Phase 2 — front-line field & origination surfaces
+        "guarantors.manage", "kyc.escalate",
+        "collections.ptp_manage",
+        "client_edits.request",
+        "search.global",
     },
 
     # Branch Manager — oversight & approval for a single branch.
@@ -111,6 +144,14 @@ ROLE_PERMISSIONS = {
         "collections.stk_push",
         "org.view", "thresholds.view",
         "dashboard.branch",
+        # Phase 2 — branch oversight surfaces
+        "guarantors.manage", "kyc.escalate", "kyc.resolve",
+        "field_ops.gps_view", "field_ops.tasks_manage",
+        "activity.view",
+        "collections.ptp_manage", "collections.efficiency_view",
+        "client_edits.request", "client_edits.approve_secondary",
+        "client_edits.approve_primary",
+        "search.global",
     },
 
     # Regional Manager — oversight across branches in a region.
@@ -122,6 +163,13 @@ ROLE_PERMISSIONS = {
         "collections.stk_push",
         "org.view", "thresholds.view",
         "dashboard.region",
+        # Phase 2 — regional oversight surfaces
+        "field_ops.gps_view", "field_ops.tasks_manage",
+        "activity.view",
+        "collections.efficiency_view",
+        "kyc.resolve",
+        "client_edits.approve_primary",
+        "search.global",
     },
 
     # Disbursement Officer — company read + disburse approved loans (maker).
@@ -145,6 +193,10 @@ ROLE_PERMISSIONS = {
         "reports.export", "reports.schedule", "reports.template", "reports.flag",
         "accounting.export",
         "audit.view",
+        # Phase 2 — central monitoring surfaces (read-only)
+        "activity.view", "field_ops.gps_view",
+        "collections.efficiency_view",
+        "search.global",
     },
 
     # HQ / Credit Committee — the TOP tier of the loan-approval escalation ladder.

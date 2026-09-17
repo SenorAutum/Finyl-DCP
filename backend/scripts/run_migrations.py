@@ -67,8 +67,30 @@ def _redact(msg: str, url: str) -> str:
     return msg
 
 
+def _parse_baseline_through(argv) -> int | None:
+    """Parse ``--baseline-through N`` / ``--baseline-through=N``.
+
+    Returns the numeric prefix N up to and including which migration files should
+    be MARKED as applied WITHOUT being executed. This adopts a database whose
+    schema was created out-of-band (e.g. by AUTO_CREATE_TABLES / create_all) into
+    migration tracking, so that only genuinely new files run afterwards.
+    """
+    for i, a in enumerate(argv):
+        if a == "--baseline-through" and i + 1 < len(argv):
+            return int(argv[i + 1])
+        if a.startswith("--baseline-through="):
+            return int(a.split("=", 1)[1])
+    return None
+
+
 def main() -> int:
     dry_run = "--dry-run" in sys.argv[1:]
+    try:
+        baseline_through = _parse_baseline_through(sys.argv[1:])
+    except ValueError:
+        print("ERROR: --baseline-through requires an integer, "
+              "e.g. --baseline-through 016", file=sys.stderr)
+        return 1
 
     # Import settings lazily so we can emit a clean message if config is invalid
     # (e.g. a weak JWT_SECRET boot guard) rather than a raw traceback.
@@ -127,11 +149,33 @@ def main() -> int:
             already = {row[0] for row in cur.fetchall()}
         conn.commit()
 
+        if baseline_through is not None:
+            print(f"Baseline mode: marking migrations with prefix <= "
+                  f"{baseline_through:03d} as applied WITHOUT executing them.")
+
+        baselined_count = 0
         for path in files:
             name = os.path.basename(path)
             if name in already:
                 skipped_count += 1
                 print(f"  SKIP    {name} (already applied)")
+                continue
+
+            # Baseline: record (but do NOT execute) files up to the cutoff. Used
+            # to adopt a DB whose schema already exists (create_all) into tracking.
+            if baseline_through is not None and _numeric_key(path)[0] <= baseline_through:
+                if dry_run:
+                    print(f"  BASELINE {name} (dry-run, not recorded)")
+                    baselined_count += 1
+                    continue
+                with conn.cursor() as cur:
+                    cur.execute(f'SET LOCAL search_path TO "{schema}", public')
+                    cur.execute(
+                        "INSERT INTO schema_migrations (filename) VALUES (%s) "
+                        "ON CONFLICT (filename) DO NOTHING", (name,))
+                conn.commit()
+                baselined_count += 1
+                print(f"  BASELINE {name} (marked applied, not executed)")
                 continue
 
             if dry_run:
@@ -162,7 +206,8 @@ def main() -> int:
         conn.close()
 
     verb = "would apply" if dry_run else "applied"
-    print(f"\nDone: {verb} {applied_count}, skipped {skipped_count}.")
+    tail = f", baselined {baselined_count}" if baseline_through is not None else ""
+    print(f"\nDone: {verb} {applied_count}, skipped {skipped_count}{tail}.")
     return 0
 
 

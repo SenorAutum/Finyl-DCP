@@ -21,7 +21,38 @@
 # (e.g. FINYL@2026) BEFORE the first seed runs; otherwise random per-user
 # passwords are generated and written to a gitignored file you cannot read on
 # Render. Seeded users have force_password_reset=True (change on first login).
+#
+# ---------------------------------------------------------------------------
+# SCHEMA MANAGEMENT — two mutually-exclusive strategies:
+#
+#   AUTO_CREATE_TABLES=true   (legacy)  -> app calls Base.metadata.create_all on
+#                                          boot. Simple, but drifts from the SQL
+#                                          migrations and cannot ALTER columns.
+#
+#   RUN_MIGRATIONS=true       (proper)  -> this script runs scripts/run_migrations.py
+#                                          BEFORE the API starts. Migrations are
+#                                          the single source of truth (matches the
+#                                          ECS/RDS target). Set AUTO_CREATE_TABLES
+#                                          =false when using this path.
+#
+# One-time cutover for a DB previously built with AUTO_CREATE_TABLES: set
+#   MIGRATION_BASELINE_THROUGH=016
+# on the FIRST migration boot so the already-existing phase-1 tables (001-016)
+# are recorded as applied WITHOUT re-running their CREATE TABLE statements, and
+# only 017+ actually execute. REMOVE this var after that single deploy.
+# ---------------------------------------------------------------------------
 set -e
+
+if [ "${RUN_MIGRATIONS}" = "true" ]; then
+  if [ -n "${MIGRATION_BASELINE_THROUGH}" ]; then
+    echo "[startup] Running DB migrations (baseline through ${MIGRATION_BASELINE_THROUGH})..."
+    python scripts/run_migrations.py --baseline-through "${MIGRATION_BASELINE_THROUGH}"
+  else
+    echo "[startup] Running DB migrations..."
+    python scripts/run_migrations.py
+  fi
+  echo "[startup] Migrations complete."
+fi
 
 if [ "${RESEED_ON_START}" = "true" ]; then
   echo "[startup] !!! RESEED_ON_START=true — DESTRUCTIVE wipe & reseed !!!"

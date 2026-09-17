@@ -7,6 +7,7 @@ from datetime import datetime
 
 from sqlalchemy import (Boolean, Column, DateTime, ForeignKey, Integer,
                         Numeric, String, Text, JSON)
+from sqlalchemy.dialects.postgresql import JSONB
 
 from app.core.database import Base
 
@@ -129,9 +130,12 @@ class AuditLog(Base):
     user_id = Column(Integer, ForeignKey("users.id"), index=True)
     user_email = Column(String(160))
     action = Column(String(60), nullable=False, index=True)  # e.g. login, user.create, loan.approve
+    action_category = Column(String(100), index=True)        # Phase 2: grouping (auth | kyc | field_ops | ...)
     entity_type = Column(String(40))                         # user | loan | client | branch | ...
     entity_id = Column(String(40))
     details = Column(JSON, default=dict)                     # before/after or free-form context
+    data_before = Column(JSONB)                              # Phase 2: structured pre-change snapshot
+    data_after = Column(JSONB)                               # Phase 2: structured post-change snapshot
     ip = Column(String(50))
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
