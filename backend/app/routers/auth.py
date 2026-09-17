@@ -13,7 +13,7 @@ import time
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -23,7 +23,9 @@ from app.core.deps import get_current_user, get_tenant_id, get_scope, UserScope,
 from app.core.security import create_access_token, verify_password, hash_password
 from app.core.permissions import permissions_for, ROLE_LABELS
 from app.services.authz import effective_permissions
-from app.core.obs import log_auth_event
+from app.core.obs import log_auth_event, log_cbk_event
+from app.core import obs
+from app.services import otp as otp_svc, geo_fence, device_binding
 from app.models import ApprovalThreshold, MODULE_KEYS, Tenant, TenantModule, User
 from app.schemas import LoginRequest, ChangePasswordRequest, SignupRequest
 
@@ -127,14 +129,97 @@ def _login(db: Session, email: str, password: str, request: Request = None) -> d
     if not user.active:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Account disabled")
 
-    # Success — clear the brute-force counters.
+    # Password is correct — clear the brute-force counters up front.
     user.failed_login_attempts = 0
     user.locked_until = None
+    db.commit()
+
+    # --- Phase 2: tenant security enforcement layer -------------------------
+    # Time-fence, geo-fence and device-binding are enforced BEFORE any token or
+    # OTP challenge is issued. All checks are no-ops when the tenant has no
+    # security config or the relevant control is disabled; super_admin bypasses.
+    _enforce_login_fences(db, user, request, ip)
+
+    # --- Phase 2: step-up OTP ----------------------------------------------
+    # When the tenant requires OTP, a correct password is only the first factor:
+    # we issue + deliver a one-time code and return an `otp_required` challenge
+    # instead of a token. The caller completes login via POST /auth/login/otp.
+    cfg = geo_fence.get_config(db, user.tenant_id)
+    if cfg and cfg.require_otp and user.role != "super_admin":
+        code = otp_svc.generate(db, user, purpose="login", ip=ip)
+        delivery = otp_svc.deliver(db, user, code, channels=cfg.otp_channels or ["sms"])
+        log_cbk_event(obs.CBK_OTP_ISSUED, tenant_id=user.tenant_id, user_id=user.id,
+                      entity_type="user", entity_id=user.id, outcome="sent",
+                      detail="login step-up otp")
+        log_auth_event("login_otp_issued", email=user.email, user_id=user.id, ip=ip)
+        return {"otp_required": True, "user_id": user.id,
+                "detail": "Enter the verification code sent to you to finish signing in.",
+                "delivery": delivery}
+
+    return _issue_login_token(db, user, request, ip)
+
+
+def _geo_from_request(request: Request | None):
+    """Read best-effort caller coordinates from the X-Geo-Lat/X-Geo-Lng headers."""
+    if request is None:
+        return None, None
+    try:
+        lat = request.headers.get("x-geo-lat")
+        lng = request.headers.get("x-geo-lng")
+        return (float(lat) if lat else None), (float(lng) if lng else None)
+    except ValueError:
+        return None, None
+
+
+def _enforce_login_fences(db: Session, user: User, request: Request, ip: str) -> None:
+    """Phase 2 login guard: block a correct-password login that violates the
+    tenant's time-fence / geo-fence / device-binding policy. Each control is
+    independent and skipped when disabled; super_admin bypasses entirely."""
+    if user.role == "super_admin":
+        return
+    cfg = geo_fence.get_config(db, user.tenant_id)
+    if not cfg:
+        return
+    # Time-fence: outside permitted working hours.
+    if cfg.time_fence_enabled and geo_fence.evaluate_timefence(db, user.tenant_id) == "outside":
+        log_cbk_event(obs.CBK_TIMEFENCE_BLOCK, tenant_id=user.tenant_id, user_id=user.id,
+                      entity_type="user", entity_id=user.id, outcome="blocked",
+                      detail="login outside working hours")
+        log_auth_event("login_blocked_timefence", email=user.email, user_id=user.id, ip=ip)
+        raise HTTPException(status.HTTP_403_FORBIDDEN,
+                            "Login is not permitted outside your organisation's working hours.")
+    # Geo-fence: caller coordinates outside the permitted radius.
+    if cfg.geofence_enabled:
+        lat, lng = _geo_from_request(request)
+        if geo_fence.evaluate_geofence(db, user.tenant_id, lat, lng) == "outside":
+            log_cbk_event(obs.CBK_GEOFENCE_BLOCK, tenant_id=user.tenant_id, user_id=user.id,
+                          entity_type="user", entity_id=user.id, outcome="blocked",
+                          detail="login outside geofence")
+            log_auth_event("login_blocked_geofence", email=user.email, user_id=user.id, ip=ip)
+            raise HTTPException(status.HTTP_403_FORBIDDEN,
+                                "Login is not permitted from your current location.")
+    # Device-binding: reject an unrecognised device (mirrors deps.require_device_bound).
+    if cfg.device_binding_enabled:
+        fp = request.headers.get("x-device-fingerprint") if request else None
+        if not device_binding.is_known(db, user_id=user.id, fingerprint=fp or ""):
+            log_cbk_event(obs.CBK_DEVICE_REVOKED, tenant_id=user.tenant_id, user_id=user.id,
+                          entity_type="user", entity_id=user.id, outcome="blocked",
+                          detail="login from unrecognised device")
+            log_auth_event("login_blocked_device", email=user.email, user_id=user.id, ip=ip)
+            raise HTTPException(status.HTTP_403_FORBIDDEN,
+                                "This device is not registered. Register it before signing in.")
+
+
+def _issue_login_token(db: Session, user: User, request: Request, ip: str) -> dict:
+    """Mint the access token + write the success audit trail. Shared by the
+    password-only path and the OTP-completion path."""
     token = create_access_token(user.id, user.role, user.tenant_id,
                                 token_version=user.token_version or 0)
     write_audit(db, tenant_id=user.tenant_id, user=user, action="auth.login",
                 entity_type="user", entity_id=user.id, request=request)
     db.commit()
+    log_cbk_event(obs.CBK_LOGIN, tenant_id=user.tenant_id, user_id=user.id,
+                  entity_type="user", entity_id=user.id, outcome="success")
     log_auth_event("login_success", email=user.email, user_id=user.id, ip=ip, ok=True)
     return {"access_token": token, "token_type": "bearer",
             "force_password_reset": bool(user.force_password_reset)}
@@ -151,6 +236,37 @@ def login_form(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
                request: Request = None, _rl: None = Depends(rate_limit_login)):
     """OAuth2 password-flow variant (used by Swagger UI)."""
     return _login(db, form.username, form.password, request)
+
+
+@router.post("/login/otp")
+def login_otp(email: str = Body(..., embed=True), code: str = Body(..., embed=True),
+              db: Session = Depends(get_db), request: Request = None,
+              _rl: None = Depends(rate_limit_login)):
+    """Complete a step-up login: verify the one-time code issued by POST /auth/login
+    (when the tenant has ``require_otp`` enabled) and mint the access token.
+
+    The OTP is the second factor; it exists only because a correct password was
+    already presented in the first leg. The OTP service enforces a 5-minute expiry
+    and a 3-attempt cap, and this endpoint shares the per-IP login rate limiter."""
+    ip = _client_ip(request)
+    user = db.query(User).filter(User.email == (email or "").lower().strip()).first()
+    invalid = HTTPException(status.HTTP_401_UNAUTHORIZED,
+                            "Invalid or expired verification code")
+    if not user or _is_locked(user) or not user.active:
+        log_auth_event("login_otp_failed", email=email,
+                       user_id=getattr(user, "id", None), ip=ip)
+        raise invalid
+    ok, reason = otp_svc.verify(db, user, code, purpose="login")
+    if not ok:
+        log_cbk_event(obs.CBK_LOGIN_FAILED, tenant_id=user.tenant_id, user_id=user.id,
+                      entity_type="user", entity_id=user.id, outcome=reason,
+                      detail="login otp verify failed")
+        log_auth_event("login_otp_failed", email=email, user_id=user.id, ip=ip,
+                       detail=reason)
+        raise invalid
+    log_cbk_event(obs.CBK_OTP_VERIFIED, tenant_id=user.tenant_id, user_id=user.id,
+                  entity_type="user", entity_id=user.id, outcome="ok")
+    return _issue_login_token(db, user, request, ip)
 
 
 # --- AUTH-05: self-service DCP (tenant) signup -------------------------------

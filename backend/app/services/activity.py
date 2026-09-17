@@ -34,6 +34,33 @@ def log_events(db: Session, *, tenant_id: int, user_id: int, events: list,
     return n
 
 
+def record_request(db: Session, *, tenant_id: int, user_id: int, method: str,
+                   path: str, status_code: int, ip: str | None = None,
+                   device_fingerprint: str | None = None,
+                   session_id: str | None = None) -> ActivityLog | None:
+    """Persist a single server-side activity event for a mutating API request.
+
+    Called from the app's activity-logging middleware. Honours the tenant's
+    ``activity_log_enabled`` flag and never raises — a logging failure must not
+    break the underlying request. Returns the row (or None when disabled/failed)."""
+    try:
+        if not _enabled(db, tenant_id):
+            return None
+        row = ActivityLog(
+            tenant_id=tenant_id, user_id=user_id,
+            session_id=session_id, event_type=f"{method} {path}",
+            event_detail={"method": method, "path": path, "status": status_code},
+            ip=ip, device_fingerprint=device_fingerprint,
+            recorded_at=datetime.now(timezone.utc),
+        )
+        db.add(row)
+        db.commit()
+        return row
+    except Exception:
+        db.rollback()
+        return None
+
+
 def log_screenshot(db: Session, *, tenant_id: int, user_id: int, storage_path: str,
                    thumbnail_path=None, capture_trigger="action", event_type=None,
                    session_id=None, activity_log_id=None) -> ScreenshotLog:

@@ -14,14 +14,40 @@ from app.core.crypto import pii_hash
 from app.core.database import get_db
 from app.core.deps import (get_current_user, require_module, require_permission,
                            require_role, get_scope, UserScope, write_audit)
-from app.models import (Borrower, Branch, ImpactSurvey, Loan, PaymentTransaction,
-                        Product, Region, Repayment, Staff, User)
+from app.models import (Borrower, Branch, ImpactSurvey, Loan, LoanActiveLockLog,
+                        PaymentTransaction, Product, Region, Repayment, Staff, User)
 from app.schemas import (BorrowerCreate, LoanApplication, LoanStatusUpdate, ProductCreate,
                          ReassignRequest, QuoteRequest)
 from app.core.money import D, money
-from app.routers.clients import _client_dict as _borrower_dict
-from app.services import mpesa, sms
+from app.core import obs
+from app.routers.clients import _client_dict as _borrower_dict, LOCKED_FIELDS
+from app.services import mpesa, sms, client_edit
+from datetime import datetime, timezone
 from fastapi import Request
+
+# Loan statuses that keep a borrower record edit-locked (an obligation is live).
+ACTIVE_LOAN_STATUSES = ("active", "disbursed", "arrears", "overdue")
+
+
+def _release_active_lock(db: Session, loan: Loan, user) -> None:
+    """Clear a loan's active-lock on a terminal transition, and unlock the borrower
+    for editing when they have no other live obligation. Closes the open lock log."""
+    loan.active_lock = False
+    open_log = (db.query(LoanActiveLockLog)
+                .filter(LoanActiveLockLog.loan_id == loan.id,
+                        LoanActiveLockLog.unlock_at.is_(None))
+                .order_by(LoanActiveLockLog.id.desc()).first())
+    if open_log:
+        open_log.unlock_at = datetime.now(timezone.utc)
+        open_log.unlock_reason = f"loan->{loan.status}"
+    # Only unlock the borrower if no other active loan keeps them locked.
+    others = (db.query(Loan)
+              .filter(Loan.tenant_id == loan.tenant_id,
+                      Loan.borrower_id == loan.borrower_id, Loan.id != loan.id,
+                      Loan.status.in_(ACTIVE_LOAN_STATUSES)).first())
+    if not others and loan.borrower is not None:
+        loan.borrower.edit_locked = False
+        loan.borrower.edit_locked_reason = None
 
 router = APIRouter(prefix="/api/v1/lending", tags=["lending"])
 
@@ -85,6 +111,21 @@ def update_borrower(borrower_id: int, body: BorrowerCreate,
     b = db.query(Borrower).filter(Borrower.id == borrower_id, Borrower.tenant_id == tenant_id).first()
     if not b:
         raise HTTPException(404, "Borrower not found")
+    # Record-level lock (Phase 2): when the borrower is edit-locked (active loan)
+    # their locked identity fields are frozen and must go through the maker-checker
+    # edit-request workflow rather than this direct PUT.
+    record_locked = bool(getattr(b, "edit_locked", False)) or \
+        client_edit.has_active_loan(db, tenant_id=tenant_id, client_id=b.id)
+    if record_locked:
+        changed = [f for f in LOCKED_FIELDS
+                   if str(getattr(body, f, None) or "") != str(getattr(b, f, None) or "")]
+        if changed:
+            obs.log_cbk_event(obs.CBK_EDIT_LOCK_ENFORCED, tenant_id=tenant_id,
+                              entity_type="borrower", entity_id=b.id, outcome="blocked",
+                              detail=",".join(changed))
+            raise HTTPException(
+                409, "Borrower is edit-locked (active loan). Locked field(s) "
+                     f"{', '.join(changed)} require an approved edit request.")
     # INPUT-02: kyc_status is a trust field — never settable via this endpoint.
     for k, v in body.model_dump(exclude={"kyc_status"}).items():
         setattr(b, k, v)
@@ -94,17 +135,40 @@ def update_borrower(borrower_id: int, body: BorrowerCreate,
 
 # ---------- Product configuration ---------------------------------------------------
 
-@router.get("/products")
-def list_products(tenant_id: int = Depends(require_module("lending")), db: Session = Depends(get_db)):
-    rows = db.query(Product).filter(Product.tenant_id == tenant_id).order_by(Product.id).all()
-    return [{
+LOAN_CATEGORIES = ["personal", "business", "secured", "unsecured"]
+
+
+def _product_dict(p: Product) -> dict:
+    return {
         "id": p.id, "name": p.name, "code": p.code, "interest_rate": p.interest_rate,
         "interest_method": p.interest_method, "tenure_value": p.tenure_value,
         "tenure_unit": p.tenure_unit, "repayment_frequency": p.repayment_frequency,
         "min_amount": float(p.min_amount), "max_amount": float(p.max_amount),
         "min_age": p.min_age, "max_age": p.max_age, "penalty_rate": p.penalty_rate,
         "rules": p.rules, "active": p.active,
-    } for p in rows]
+        # Phase 2 — product-level requirement flags.
+        "loan_category": p.loan_category,
+        "requires_guarantor": bool(p.requires_guarantor),
+        "requires_collateral": bool(p.requires_collateral),
+        "requires_next_of_kin": bool(p.requires_next_of_kin),
+        "business_op_age_required": bool(getattr(p, "business_op_age_required", False)),
+    }
+
+
+@router.get("/products")
+def list_products(tenant_id: int = Depends(require_module("lending")),
+                  db: Session = Depends(get_db),
+                  loan_category: str = Query("", description="Filter by loan_category"),
+                  active_only: bool = Query(False)):
+    q = db.query(Product).filter(Product.tenant_id == tenant_id)
+    if loan_category:
+        if loan_category not in LOAN_CATEGORIES:
+            raise HTTPException(400, f"Invalid loan_category. Valid: {LOAN_CATEGORIES}")
+        q = q.filter(Product.loan_category == loan_category)
+    if active_only:
+        q = q.filter(Product.active.is_(True))
+    rows = q.order_by(Product.id).all()
+    return [_product_dict(p) for p in rows]
 
 
 @router.post("/products")
@@ -149,6 +213,7 @@ def _loan_dict(l: Loan) -> dict:
         "escalation_level": getattr(l, "escalation_level", None),
         "approved_by_user_id": getattr(l, "approved_by_user_id", None),
         "decision_note": getattr(l, "decision_note", None),
+        "active_lock": bool(getattr(l, "active_lock", False)),
     }
 
 
@@ -270,9 +335,17 @@ def transition_loan(loan_id: int, body: LoanStatusUpdate,
 
     prev = loan.status
     loan.status = body.status
+    # Active-lock lifecycle: a settled loan releases the borrower edit-lock; a loan
+    # that goes overdue/defaulted stays locked (the obligation is still live).
+    if body.status in ("paid", "closed", "written_off"):
+        _release_active_lock(db, loan, scope.user)
+        obs.log_cbk_event(obs.CBK_LOAN_ACTIVE_LOCK, tenant_id=tenant_id,
+                          user_id=getattr(scope.user, "id", None),
+                          entity_type="loan", entity_id=loan.id, outcome="released")
     write_audit(db, tenant_id=tenant_id, user=scope.user, action="loan.transition",
                 entity_type="loan", entity_id=loan.id,
-                details={"from": prev, "to": body.status}, request=request)
+                details={"from": prev, "to": body.status,
+                         "active_lock": loan.active_lock}, request=request)
     # Notify the borrower when a loan is moved to the defaulted status.
     if body.status == "defaulted":
         try:

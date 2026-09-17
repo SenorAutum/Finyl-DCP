@@ -9,6 +9,15 @@ Everything here is own-tenant and server-side validated. Secrets (M-Pesa/Daraja
 credentials) are ENCRYPTED AT REST with Fernet (app.core.crypto.encrypt_pii) and
 NEVER returned in plaintext — responses expose a boolean "configured" plus the
 last-4 characters only.
+
+Phase 2 note — the two additional configuration surfaces under ``/api/v1/settings``
+are their own routers, registered directly on the app (see main.py) so they can
+carry finer-grained permission gates than this router's blanket system_admin gate:
+  * ``routers/validation_prefs.py`` -> ``/api/v1/settings/validation-prefs``
+    (tenant KYC mandatory/optional toggles, gated ``security.manage``)
+  * ``routers/security_config.py``  -> ``/api/v1/settings/security``
+    (OTP / device-binding / geo-/time-fence config, gated ``security.manage``)
+They intentionally live outside this module but share the same URL namespace.
 """
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session

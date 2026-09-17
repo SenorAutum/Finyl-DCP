@@ -111,6 +111,55 @@ async def enforce_password_reset(request: Request, call_next):
     return await call_next(request)
 
 
+# --- Phase 2: server-side activity-logging middleware ------------------------
+# Records every authenticated, state-changing API call (POST/PUT/PATCH/DELETE)
+# into activity_logs, honouring each tenant's activity_log_enabled flag. This is
+# the server-side companion to the client-driven /api/v1/activity/log endpoint and
+# gives an immutable, tamper-evident trail of who changed what (CBK mandate).
+# It runs AFTER the handler so the real response status is captured, and never
+# blocks or fails the underlying request.
+_ACTIVITY_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+_ACTIVITY_SKIP_PREFIXES = ("/api/v1/activity",)  # avoid logging the log ingest itself
+
+
+@app.middleware("http")
+async def record_activity(request: Request, call_next):
+    response = await call_next(request)
+    try:
+        path = request.url.path
+        method = request.method.upper()
+        auth = request.headers.get("authorization", "")
+        if (method in _ACTIVITY_METHODS and path.startswith("/api/v1/")
+                and not path.startswith(_ACTIVITY_SKIP_PREFIXES)
+                and auth.lower().startswith("bearer ")):
+            token = auth.split(" ", 1)[1].strip()
+            try:
+                payload = decode_token(token)
+            except pyjwt.PyJWTError:
+                payload = None
+            if payload is not None:
+                user_id = int(payload.get("sub", 0))
+                tenant_id = payload.get("tenant_id")
+                if user_id and tenant_id:
+                    xff = request.headers.get("x-forwarded-for")
+                    ip = xff.split(",")[0].strip() if xff else (
+                        request.client.host if request.client else None)
+                    fp = request.headers.get("x-device-fingerprint")
+                    db = SessionLocal()
+                    try:
+                        from app.services import activity as activity_svc
+                        activity_svc.record_request(
+                            db, tenant_id=int(tenant_id), user_id=user_id,
+                            method=method, path=path,
+                            status_code=getattr(response, "status_code", 0),
+                            ip=ip, device_fingerprint=fp)
+                    finally:
+                        db.close()
+    except Exception:  # pragma: no cover — never break a request over logging
+        pass
+    return response
+
+
 @app.on_event("startup")
 def on_startup():
     """Ensure the schema exists. Table DDL is owned by migrations/*.sql — API-04:

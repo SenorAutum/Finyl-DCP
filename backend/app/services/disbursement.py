@@ -134,6 +134,18 @@ def apply_b2c_result(db, tenant_id, txn: PaymentTransaction, result_code, receip
             tenure = loan.product.tenure_value if loan.product else 4
             loan.due_date = date.today() + timedelta(days=step * max(1, tenure))
             loan.outstanding_balance = money(loan.total_due)  # MPESA-07
+            # Phase 2 — active-loan lock: freeze the borrower's locked identity
+            # fields for the life of the obligation and open a lock-log entry.
+            loan.active_lock = True
+            if loan.borrower is not None:
+                loan.borrower.edit_locked = True
+                loan.borrower.edit_locked_reason = f"active_loan:{loan.id}"
+            try:
+                from app.models import LoanActiveLockLog
+                db.add(LoanActiveLockLog(tenant_id=tenant_id, loan_id=loan.id,
+                                         unlock_reason=None))
+            except Exception:
+                pass
             log_money_event("disburse_settled", tenant_id=tenant_id, loan_id=loan.id,
                             amount=money(txn.amount), ref=txn.mpesa_ref,
                             detail=f"outstanding={loan.outstanding_balance}")

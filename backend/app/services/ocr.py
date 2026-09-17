@@ -461,3 +461,75 @@ def process_id_files(files: list[tuple[str, str, bytes]]) -> dict:
         "raw_text": result["raw_text"],
         "extracted_at": datetime.utcnow().isoformat() + "Z",
     }
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: canonical 1:1 structured field map
+# ---------------------------------------------------------------------------
+# Bump this whenever the canonical field set or normalisation logic changes; it
+# is persisted alongside the mapping so downstream consumers can detect stale
+# extractions and re-run them.
+OCR_FIELD_MAP_VERSION = "2.0"
+
+# The exact, ordered set of fields the ID → field mapping guarantees. Every key
+# is always present (value None when the engine could not read it) so the
+# mapping is a stable 1:1 contract rather than a variable-shape dict.
+OCR_CANONICAL_FIELDS = (
+    "national_id", "serial_number",
+    "first_name", "middle_name", "last_name",
+    "date_of_birth", "district_of_birth",
+    "place_of_issue", "date_of_issue",
+)
+
+
+def extract_fields_structured(files: list[tuple[str, str, bytes]], *,
+                              db=None, document=None) -> dict:
+    """Run OCR and return a *validated, 1:1* Kenyan-ID field map (plan §2.3).
+
+    Unlike ``process_id_files`` (which returns whatever the engine happened to
+    read), this guarantees the full canonical field set — ID number, serial,
+    first/middle/last name, date of birth, district of birth, place of issue and
+    date of issue — with every key present (None when unread) plus a per-field
+    confidence score and a single aggregate confidence.
+
+    When ``db`` and ``document`` (a ``ClientDocument``) are supplied, the result is
+    persisted onto the document: ``ocr_field_mapping`` (JSONB), ``ocr_confidence``
+    (aggregate 0-1) and ``ocr_version`` are set, and ``ocr_applied``/``ocr_text``
+    are refreshed. Returns the structured payload either way.
+    """
+    raw = process_id_files(files)
+    src_fields = raw.get("fields", {}) or {}
+    src_conf = raw.get("confidence", {}) or {}
+
+    field_map: dict = {}
+    conf_map: dict = {}
+    for key in OCR_CANONICAL_FIELDS:
+        field_map[key] = src_fields.get(key)
+        conf_map[key] = round(float(src_conf.get(key, 0.0)), 2) if src_fields.get(key) not in (None, "") else 0.0
+
+    populated = [conf_map[k] for k in OCR_CANONICAL_FIELDS if field_map.get(k) not in (None, "")]
+    aggregate = round(sum(populated) / len(populated), 4) if populated else 0.0
+    completeness = round(len(populated) / len(OCR_CANONICAL_FIELDS), 2)
+
+    payload = {
+        "engine": raw.get("engine"),
+        "engine_notes": raw.get("engine_notes", []),
+        "files_processed": raw.get("files_processed", len(files)),
+        "ocr_version": OCR_FIELD_MAP_VERSION,
+        "fields": field_map,
+        "field_confidence": conf_map,
+        "confidence": aggregate,
+        "completeness": completeness,
+        "raw_text": raw.get("raw_text", ""),
+        "extracted_at": datetime.utcnow().isoformat() + "Z",
+    }
+
+    if db is not None and document is not None:
+        document.ocr_applied = True
+        document.ocr_text = (raw.get("raw_text") or "")[:20000]
+        document.ocr_field_mapping = field_map
+        document.ocr_confidence = aggregate
+        document.ocr_version = OCR_FIELD_MAP_VERSION
+        db.commit()
+
+    return payload
