@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { useNavigate, useLocation, Link } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
+import OtpInput from "../components/OtpInput";
 
 const DEMO = [
   ["superadmin@finyl.app", "Super Admin (all tenants)"],
@@ -17,7 +18,7 @@ const DEMO = [
 ];
 
 export default function Login() {
-  const { login } = useAuth();
+  const { login, loginOtp } = useAuth();
   const nav = useNavigate();
   const loc = useLocation();
   const signupSuccess = loc.state?.signupSuccess || "";
@@ -25,17 +26,39 @@ export default function Login() {
   const [password, setPassword] = useState("Finyl@2026");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
+  const [step, setStep] = useState("password"); // "password" | "otp"
+  const [otp, setOtp] = useState("");
+  const [otpInfo, setOtpInfo] = useState(null); // { detail, delivery }
 
   const submit = async (e) => {
     e.preventDefault();
     setBusy(true); setErr("");
     try {
       const res = await login(email, password);
+      if (res?.otp_required) {
+        setOtpInfo({ detail: res.detail, delivery: res.delivery });
+        setOtp("");
+        setStep("otp");
+        return;
+      }
       nav(res?.force_password_reset ? "/change-password" : "/");
     }
     catch (ex) { setErr(ex.detail || "Login failed"); }
     finally { setBusy(false); }
   };
+
+  const submitOtp = async (e) => {
+    e.preventDefault();
+    setBusy(true); setErr("");
+    try {
+      const res = await loginOtp(email, otp);
+      nav(res?.force_password_reset ? "/change-password" : "/");
+    }
+    catch (ex) { setErr(ex.detail || "Invalid or expired code"); }
+    finally { setBusy(false); }
+  };
+
+  const backToPassword = () => { setStep("password"); setErr(""); setOtp(""); setOtpInfo(null); };
 
   return (
     <div className="min-h-screen grid lg:grid-cols-2">
@@ -57,17 +80,34 @@ export default function Login() {
             <div className="w-9 h-9 rounded-lg bg-accent flex items-center justify-center font-extrabold text-white">F</div>
             <span className="text-lg font-extrabold">Finyl-DCP</span>
           </div>
-          <h2 className="text-2xl font-extrabold">Sign in</h2>
-          <p className="text-sm text-gray-500 mb-6">Access your DCP workspace</p>
-          {signupSuccess && <div className="mb-4 text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">{signupSuccess}</div>}
-          <form onSubmit={submit} className="space-y-4">
-            <div><label className="label">Email</label>
-              <input className="input" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="username" /></div>
-            <div><label className="label">Password</label>
-              <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" /></div>
-            {err && <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{err}</div>}
-            <button className="btn-primary w-full justify-center" disabled={busy}>{busy ? "Signing in…" : "Sign in"}</button>
-          </form>
+          <h2 className="text-2xl font-extrabold">{step === "otp" ? "Verify your identity" : "Sign in"}</h2>
+          <p className="text-sm text-gray-500 mb-6">{step === "otp" ? "Enter the one-time code to continue" : "Access your DCP workspace"}</p>
+          {signupSuccess && step === "password" && <div className="mb-4 text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">{signupSuccess}</div>}
+
+          {step === "password" ? (
+            <form onSubmit={submit} className="space-y-4">
+              <div><label className="label">Email</label>
+                <input className="input" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="username" /></div>
+              <div><label className="label">Password</label>
+                <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" /></div>
+              {err && <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{err}</div>}
+              <button className="btn-primary w-full justify-center" disabled={busy}>{busy ? "Signing in…" : "Sign in"}</button>
+            </form>
+          ) : (
+            <form onSubmit={submitOtp} className="space-y-4">
+              <div className="text-sm text-gray-600 bg-canvas border border-border rounded-lg px-3 py-2">
+                {otpInfo?.detail || "A one-time code was sent to you."}
+                {otpInfo?.delivery && <span className="text-gray-400"> · via {otpInfo.delivery}</span>}
+              </div>
+              <div>
+                <label className="label">One-time code</label>
+                <OtpInput value={otp} onChange={setOtp} disabled={busy} />
+              </div>
+              {err && <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{err}</div>}
+              <button className="btn-primary w-full justify-center" disabled={busy || otp.length < 6}>{busy ? "Verifying…" : "Verify & sign in"}</button>
+              <button type="button" className="btn-ghost w-full justify-center" onClick={backToPassword} disabled={busy}>← Back</button>
+            </form>
+          )}
 
           <p className="mt-4 text-sm text-gray-500 text-center">
             New to Finyl-DCP?{" "}

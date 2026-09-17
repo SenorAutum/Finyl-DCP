@@ -19,10 +19,24 @@ export function AuthProvider({ children }) {
 
   const login = async (email, password) => {
     const res = await api("/api/v1/auth/login", { method: "POST", body: { email, password } });
+    // Tenants with OTP enforced return { otp_required: true, ... } instead of a
+    // token — do NOT establish a session; the caller collects the code and calls
+    // loginOtp() to complete the second step.
+    if (res.otp_required) return res;
     setToken(res.access_token);
     setTenantOverride(null);
     await refresh();
     return res; // includes force_password_reset so the caller can route to /change-password
+  };
+
+  // Second login step for OTP-enforced tenants: exchange the emailed/SMS code for
+  // a session token.
+  const loginOtp = async (email, code) => {
+    const res = await api("/api/v1/auth/login/otp", { method: "POST", body: { email, code } });
+    setToken(res.access_token);
+    setTenantOverride(null);
+    await refresh();
+    return res;
   };
 
   // AUTH-03/04: self-service password change. Returns a fresh token (old ones
@@ -99,7 +113,7 @@ export function AuthProvider({ children }) {
   const scope = user?.scope || null;
 
   return (
-    <AuthCtx.Provider value={{ user, loading, login, logout, changePassword, switchTenant, canAccess, can, canAll, scope }}>
+    <AuthCtx.Provider value={{ user, loading, login, loginOtp, logout, changePassword, switchTenant, canAccess, can, canAll, scope }}>
       {children}
     </AuthCtx.Provider>
   );
