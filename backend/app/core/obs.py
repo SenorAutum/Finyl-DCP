@@ -74,3 +74,68 @@ def log_money_event(action: str, *, tenant_id=None, user_id=None, loan_id=None,
     money_log.info(_kv(evt="money", action=action, tenant_id=tenant_id,
                        user_id=user_id, loan_id=loan_id, amount=amount,
                        phone=phone, ref=ref, detail=detail))
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — immutable audit trail (CBK Digital Credit Providers mandate)
+# ---------------------------------------------------------------------------
+#
+# The DB enforces immutability at rest: migration 021 installs ON UPDATE/ON
+# DELETE ``DO INSTEAD NOTHING`` rules on ``audit_logs`` so rows can only ever be
+# INSERTed — no ORM or raw path can mutate or hard-delete a posted entry. This
+# module complements that with an insert-only application contract: audit rows
+# are written via ``deps.write_audit`` (INSERT) and NEVER loaded-then-mutated.
+# Do not add an update/delete code path for AuditLog; treat it as append-only.
+#
+# CBK-relevant structured event *types* — a stable, greppable vocabulary that
+# regulators and SOC tooling can key off. Use these as the ``action`` value on
+# audit rows and on the structured security log so the two correlate.
+
+# Auth & access
+CBK_LOGIN = "cbk.auth.login"
+CBK_LOGIN_FAILED = "cbk.auth.login_failed"
+CBK_OTP_ISSUED = "cbk.auth.otp_issued"
+CBK_OTP_VERIFIED = "cbk.auth.otp_verified"
+CBK_DEVICE_BOUND = "cbk.auth.device_bound"
+CBK_DEVICE_REVOKED = "cbk.auth.device_revoked"
+CBK_GEOFENCE_BLOCK = "cbk.access.geofence_block"
+CBK_TIMEFENCE_BLOCK = "cbk.access.timefence_block"
+# KYC & onboarding
+CBK_KYC_DECISION = "cbk.kyc.decision"
+CBK_KYC_ESCALATION = "cbk.kyc.escalation"
+CBK_FACE_VALIDATION = "cbk.kyc.face_validation"
+CBK_AGE_REJECTED = "cbk.kyc.age_rejected"
+CBK_CLIENT_CONVERTED = "cbk.kyc.client_converted"
+# Client data governance
+CBK_CLIENT_EDIT_REQUEST = "cbk.client.edit_request"
+CBK_CLIENT_EDIT_APPROVED = "cbk.client.edit_approved"
+CBK_CLIENT_EDIT_REJECTED = "cbk.client.edit_rejected"
+CBK_WALLET_LOCKED = "cbk.client.wallet_locked"
+CBK_EDIT_LOCK_ENFORCED = "cbk.client.edit_lock_enforced"
+# Lending
+CBK_LOAN_ACTIVE_LOCK = "cbk.loan.active_lock"
+CBK_DISBURSEMENT = "cbk.loan.disbursement"
+# Collections
+CBK_PTP_CREATED = "cbk.collections.ptp_created"
+CBK_RATIBA_CONSENT = "cbk.collections.ratiba_consent"
+
+# Set of every CBK event type, for validation/enumeration in tooling.
+CBK_EVENT_TYPES = frozenset(
+    v for k, v in list(globals().items())
+    if k.startswith("CBK_") and isinstance(v, str)
+)
+
+
+def log_cbk_event(action: str, *, tenant_id=None, user_id=None, entity_type=None,
+                  entity_id=None, outcome=None, detail=None) -> None:
+    """Emit a structured CBK-mandate audit event to the security log.
+
+    This is the *observability* half of the audit trail (greppable, routed to
+    SOC/journald). The durable, immutable half is the ``audit_logs`` row written
+    by ``deps.write_audit``. Callers that persist an audit row for a regulated
+    action should also call this so the log stream and the DB stay correlated.
+    Pass one of the ``CBK_*`` constants as ``action``.
+    """
+    security_log.info(_kv(evt="cbk", action=action, tenant_id=tenant_id,
+                          user_id=user_id, entity_type=entity_type,
+                          entity_id=entity_id, outcome=outcome, detail=detail))

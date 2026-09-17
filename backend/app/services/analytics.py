@@ -383,3 +383,75 @@ def build_ai_snapshot(db: Session, tenant_id: int) -> dict:
                       "by_type": aml["flag_type"].value_counts().to_dict() if len(aml) else {}},
         "impact": impact_analytics(db, tenant_id).get("totals", {}),
     }
+
+
+
+# ------------------------- Phase 2: lead conversion & executive -----------------
+
+def lead_conversion(db: Session, tenant_id: int, f: dict | None = None) -> dict:
+    """CRM lead-conversion funnel: total leads, converted-to-client rate, and a
+    breakdown by Cold/Warm/Hot temperature and by pipeline stage. Optionally
+    scoped by region_id / staff_id via the shared filter dict."""
+    f = f or {}
+    where = ["tenant_id = :t"]
+    params: dict = {"t": tenant_id}
+    if f.get("region_id"):
+        where.append("region_id = :r"); params["r"] = int(f["region_id"])
+    if f.get("staff_id"):
+        where.append("assigned_staff_id = :s"); params["s"] = int(f["staff_id"])
+    if f.get("date_from"):
+        where.append("created_at >= :df"); params["df"] = f["date_from"]
+    if f.get("date_to"):
+        where.append("created_at <= :dt"); params["dt"] = f["date_to"]
+    clause = " AND ".join(where)
+    df = _read_df(db, f"""
+        SELECT id, stage, stage_detail, bm_approval_status, converted_to_client_id
+        FROM crm_leads WHERE {clause}
+    """, params)
+    total = int(len(df))
+    converted = int(df["converted_to_client_id"].notna().sum()) if total else 0
+    bm_approved = int((df["bm_approval_status"] == "approved").sum()) if total else 0
+    rate = round(converted / total * 100, 1) if total else 0.0
+    by_temp = df["stage_detail"].value_counts().to_dict() if total else {}
+    by_stage = df["stage"].value_counts().to_dict() if total else {}
+    return {
+        "total_leads": total, "converted": converted,
+        "bm_approved": bm_approved, "conversion_rate_pct": rate,
+        "by_temperature": {k: int(v) for k, v in by_temp.items()},
+        "by_stage": {k: int(v) for k, v in by_stage.items()},
+    }
+
+
+def product_performance(loans: pd.DataFrame, repayments: pd.DataFrame) -> list[dict]:
+    """Per-product book size, active count, interest recovered and default rate."""
+    if loans is None or len(loans) == 0:
+        return []
+    rows = []
+    for pid, grp in loans.groupby("product_id"):
+        rep = repayments[repayments["product_id"] == pid] if len(repayments) else repayments
+        n = int(len(grp))
+        defaulted = int((grp["status"] == "defaulted").sum())
+        rows.append({
+            "product_id": int(pid),
+            "product_name": grp["product_name"].iloc[0] if "product_name" in grp else None,
+            "loans": n,
+            "active": int((grp["status"] == "active").sum()),
+            "portfolio": round(float(grp["principal"].sum()), 2),
+            "interest_recovered": round(float(rep["interest_component"].sum()) if len(rep) else 0.0, 2),
+            "default_rate_pct": round(defaulted / n * 100, 1) if n else 0.0,
+        })
+    rows.sort(key=lambda r: r["portfolio"], reverse=True)
+    return rows
+
+
+def executive_surface(db: Session, tenant_id: int, loans: pd.DataFrame,
+                      repayments: pd.DataFrame, f: dict | None = None) -> dict:
+    """Executive dashboard payload (plan §Frontend line 449): headline KPIs, officer
+    rankings (top by net margin), product performance, and the lead-conversion rate."""
+    officers = staff_performance(db, tenant_id, loans, repayments)
+    return {
+        "kpis": portfolio_kpis(loans, repayments),
+        "officer_rankings": officers[:10],
+        "product_performance": product_performance(loans, repayments),
+        "lead_conversion": lead_conversion(db, tenant_id, f),
+    }

@@ -113,6 +113,16 @@ def pii_hash(value: str | None) -> str | None:
     return hmac.new(_index_key(), normalised.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
+# Spec alias: the guarantor ID blind index is created with this name in the
+# implementation plan (core/crypto.py — "add hash_field() for guarantor ID blind
+# index"). It is identical to pii_hash; kept as a named export so call sites and
+# docs that reference hash_field resolve to the same domain-separated HMAC.
+def hash_field(value: str | None) -> str | None:
+    """Alias of :func:`pii_hash` — deterministic blind index for exact-match
+    lookup on an encrypted column (e.g. guarantor national_id)."""
+    return pii_hash(value)
+
+
 def encrypt_pii(plaintext: str | None) -> str | None:
     """Encrypt a string, returning an ``enc:v1:`` token. None/empty pass through.
     Already-encrypted input (``enc:v1:`` prefix) is returned unchanged so the call

@@ -36,8 +36,28 @@ from app.models import (Borrower, ClientDocument, ClientMobileWallet,
 from app.models import KycConsent
 from app.schemas import ClientCreate, EkycVerifyRequest, ValidateMpesaRequest, ConsentIn
 from app.services import crb, ekyc, mpesa, storage
+from app.services import alt_phone_validation, client_edit
 from app.services.mpesa_statement import StatementError, analyze_statement
-from app.services.ocr import OcrUnavailable, process_id_files
+from app.services.ocr import OcrUnavailable, process_id_files, extract_fields_structured
+from app.core import obs
+
+# Minimum onboarding age (CBK Digital Credit Providers — adult borrowers only).
+MIN_ONBOARDING_AGE = 18
+
+
+def _age_years(dob) -> int | None:
+    """Whole years old as of today, or None when the DOB is missing/unparseable."""
+    if not dob:
+        return None
+    if isinstance(dob, str):
+        try:
+            dob = datetime.fromisoformat(dob).date()
+        except ValueError:
+            return None
+    if isinstance(dob, datetime):
+        dob = dob.date()
+    today = date.today()
+    return today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
 
 # Primary identity fields locked from relationship officers (field-level lock).
 LOCKED_FIELDS = ("phone", "national_id", "date_of_birth")
@@ -68,7 +88,10 @@ def _safe_mime(content_type: str | None) -> str:
 # --------------------------------------------------------------------------- #
 def _wallet_dict(w: ClientMobileWallet) -> dict:
     return {"id": w.id, "mobile_number": w.mobile_number, "wallet_number": w.wallet_number,
-            "operator": w.operator, "active": bool(w.active)}
+            "operator": w.operator, "active": bool(w.active),
+            "wallet_locked": bool(getattr(w, "wallet_locked", False)),
+            "locked_at": getattr(w, "locked_at", None),
+            "locked_by": getattr(w, "locked_by", None)}
 
 
 def _nok_dict(n: ClientNextOfKin) -> dict:
@@ -278,8 +301,21 @@ def build_router(prefix: str, tag: str) -> APIRouter:
                       db: Session = Depends(get_db),
                       user: User = Depends(require_permission("clients.create")),
                       request: Request = None):
+        # Age gate (CBK): reject an under-age applicant up front. A missing DOB is
+        # allowed at draft capture but leaves the client un-age-verified (the KYC
+        # decision engine treats "age unknown" as a fail when age is mandatory).
+        age = _age_years(getattr(body, "date_of_birth", None))
+        if age is not None and age < MIN_ONBOARDING_AGE:
+            obs.log_cbk_event(obs.CBK_AGE_REJECTED, tenant_id=tenant_id,
+                              user_id=user.id, entity_type="client", outcome="rejected",
+                              detail=f"age={age}")
+            raise HTTPException(422, f"Applicant must be at least {MIN_ONBOARDING_AGE} "
+                                     f"years old (computed age: {age}).")
         client = Borrower(tenant_id=tenant_id)
         _apply_scalars(client, body)
+        if age is not None and age >= MIN_ONBOARDING_AGE:
+            client.date_of_birth_verified = True
+            client.age_verified_at = datetime.utcnow()
         if not client.onboarded_by:
             client.onboarded_by = user.full_name
         # A relationship officer owns the client they create, and their new
@@ -319,6 +355,20 @@ def build_router(prefix: str, tag: str) -> APIRouter:
             # normalise for comparison
             if str(new_val or "") != str(old_val or ""):
                 changed_locked.append(f)
+        # Record-level lock (Phase 2): once a client has an active loan (or has been
+        # explicitly edit-locked) their locked identity fields are frozen for
+        # EVERYONE — even users with clients.edit_locked. Such changes must go
+        # through the maker-checker edit-request workflow (routers/client_edits.py).
+        record_locked = bool(getattr(client, "edit_locked", False)) or \
+            client_edit.has_active_loan(db, tenant_id=tenant_id, client_id=client.id)
+        if changed_locked and record_locked:
+            obs.log_cbk_event(obs.CBK_EDIT_LOCK_ENFORCED, tenant_id=tenant_id,
+                              user_id=user.id, entity_type="client", entity_id=client.id,
+                              outcome="blocked", detail=",".join(changed_locked))
+            raise HTTPException(
+                409, "This client is edit-locked (active loan). Locked field(s) "
+                     f"{', '.join(changed_locked)} must be changed via an approved "
+                     "edit request (POST /clients/{id}/edit-request).")
         if changed_locked and not may_edit_locked:
             raise HTTPException(
                 422, f"You are not permitted to change locked field(s): "
@@ -448,22 +498,25 @@ def build_router(prefix: str, tag: str) -> APIRouter:
             payload.append((upload.filename or "file", mime, data))
         if not payload:
             raise HTTPException(400, "Queue no OCR-able file — add a JPEG, PNG or PDF of the ID.")
-        try:
-            result = process_id_files(payload)
-        except OcrUnavailable as exc:
-            # 503 (not 500) so the UI can show an actionable message.
-            raise HTTPException(503, f"OCR engine unavailable: {exc}")
-
+        # Locate the client's latest document up-front so the structured field
+        # map can be persisted onto it (ocr_field_mapping / ocr_confidence /
+        # ocr_version) when a client_id is supplied.
+        doc = None
         if client_id:
             client = _get_client(db, tenant_id, client_id)
             doc = (db.query(ClientDocument)
                    .filter(ClientDocument.client_id == client.id,
                            ClientDocument.tenant_id == tenant_id)
                    .order_by(ClientDocument.id.desc()).first())
-            if doc:
-                doc.ocr_applied = True
-                doc.ocr_text = result["raw_text"][:20000]
-                db.commit()
+        try:
+            # Phase 2: return the validated 1:1 canonical field map and persist it
+            # onto the document when one exists. Falls back cleanly for anonymous
+            # (no client_id) OCR previews.
+            result = extract_fields_structured(payload, db=db if doc else None,
+                                               document=doc)
+        except OcrUnavailable as exc:
+            # 503 (not 500) so the UI can show an actionable message.
+            raise HTTPException(503, f"OCR engine unavailable: {exc}")
         return result
 
     # ---- eKYC --------------------------------------------------------------
@@ -490,12 +543,22 @@ def build_router(prefix: str, tag: str) -> APIRouter:
         except Exception as exc:
             raise HTTPException(502, f"eKYC provider request failed: {exc}")
         status_map = {"VERIFIED": "verified", "NOT_VERIFIED": "not_verified"}
+        kyc_decision = None
         if client:
             client.ekyc_status = status_map.get(result.get("status"), "error")
             client.ekyc_reference = result.get("reference")
             client.ekyc_checked_at = datetime.utcnow()
-            if client.ekyc_status == "verified" and client.kyc_status in (None, "draft", "pending"):
-                client.kyc_status = "validated"
+            # Phase 2: the eKYC provider result is ONE input, not the verdict. The
+            # authoritative pass/fail/escalate comes from the centralised decision
+            # engine, which enforces every check the tenant marked mandatory. We no
+            # longer flip kyc_status to "validated" on a provider VERIFIED alone
+            # (that was the manual-override shortcut) — the engine decides.
+            decision = ekyc.authoritative_decision(db, tenant_id=tenant_id,
+                                                   client_id=client.id)
+            kyc_decision = decision.as_dict()
+            new_status = ekyc.KYC_STATUS_BY_DECISION.get(decision.decision)
+            if new_status and client.kyc_status in (None, "draft", "pending", "escalation"):
+                client.kyc_status = new_status
             db.commit()
         return {
             "status": status_map.get(result.get("status"), "error"),
@@ -504,6 +567,8 @@ def build_router(prefix: str, tag: str) -> APIRouter:
             "verified_name": result.get("verifiedName"),
             "checks": result.get("checks", {}),
             "provider": result.get("provider", settings_provider_name()),
+            # Authoritative KYC verdict (None for an anonymous, client-less check).
+            "kyc_decision": kyc_decision,
             "raw": result,
         }
 
@@ -529,10 +594,29 @@ def build_router(prefix: str, tag: str) -> APIRouter:
             mpesa_ref=resp.get("ConversationID"),
             status="success" if matched else "failed", raw_payload=payload,
         ))
+        locked_wallets = []
         if client:
             client.mpesa_validated = matched
             client.mpesa_validation_name = resp.get("RegisteredName")
             client.mpesa_validated_at = datetime.utcnow()
+            # Auto-lock the validated wallet(s): once the M-Pesa name check passes,
+            # the client's payout number is frozen so it cannot be silently swapped
+            # after underwriting. Matching is by the validated MSISDN; if none match
+            # (e.g. formatting), lock all of the client's wallets defensively.
+            if matched:
+                msisdn = str(resp.get("MSISDN") or "")
+                tail = msisdn[-9:]
+                for w in client.wallets:
+                    num = str(w.mobile_number or w.wallet_number or "")
+                    if not w.wallet_locked and (not tail or tail in num or num[-9:] == tail):
+                        w.wallet_locked = True
+                        w.locked_at = datetime.utcnow()
+                        w.locked_by = "system"
+                        locked_wallets.append(w.id)
+                if locked_wallets:
+                    obs.log_cbk_event(obs.CBK_WALLET_LOCKED, tenant_id=tenant_id,
+                                      entity_type="client", entity_id=client.id,
+                                      outcome="locked", detail=str(locked_wallets))
         db.commit()
         return {
             "matched": matched,
@@ -541,8 +625,39 @@ def build_router(prefix: str, tag: str) -> APIRouter:
             "national_id": national_id,
             "result_desc": resp["ResultDesc"],
             "checked_at": resp["CheckedAt"],
+            "wallets_locked": locked_wallets,
             "raw": payload,
         }
+
+    # ---- alternate-phone validation ---------------------------------------
+    @router.post("/{client_id}/validate-alt-phone")
+    def validate_alt_phone(client_id: int,
+                           tenant_id: int = Depends(require_module("lending")),
+                           db: Session = Depends(get_db),
+                           user: User = Depends(require_permission("clients.edit")),
+                           scope: UserScope = Depends(get_scope),
+                           request: Request = None):
+        """Validate the client's stored alternate phone (operator + M-Pesa name check)."""
+        client = _get_client(db, tenant_id, client_id)
+        if not scope.can_see_client(client):
+            raise HTTPException(403, "Client is outside your data scope")
+        if not client.alt_phone:
+            raise HTTPException(400, "Client has no alternate phone on file")
+        result = alt_phone_validation.validate(
+            db, tenant_id=tenant_id, phone=client.alt_phone,
+            expected_name=client.full_name)
+        ok = result.get("status") == "validated"
+        client.alt_phone_operator = result.get("operator")
+        client.alt_phone_validated = ok
+        if ok:
+            client.alt_phone_validated_at = datetime.utcnow()
+        write_audit(db, tenant_id=tenant_id, user=user, action="client.validate_alt_phone",
+                    entity_type="client", entity_id=client.id,
+                    details={"operator": result.get("operator"),
+                             "status": result.get("status"),
+                             "name_match": result.get("name_match")}, request=request)
+        db.commit()
+        return {"client_id": client.id, "alt_phone_validated": ok, **result}
 
     # ---- nested collection helpers (optional direct access) ----------------
     @router.delete("/{client_id}/wallets/{wallet_id}")

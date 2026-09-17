@@ -32,6 +32,30 @@ class EkycNotConfigured(RuntimeError):
     """Raised when eKYC has no real credentials and mock mode is off."""
 
 
+def authoritative_decision(db, *, tenant_id: int, client_id: int):
+    """Phase 2 — the SINGLE source of truth for whether a client passes KYC.
+
+    ``verify_identity`` above is only ONE input (the external ID-registry check).
+    The binding pass/fail/escalate verdict is produced by the centralised decision
+    engine in ``kyc_decisions.evaluate``, which runs every check the tenant has
+    marked mandatory (age, M-Pesa, face, alt-phone, CRB, guarantor) in sequence.
+
+    There is deliberately NO manual-override parameter here: callers cannot pass a
+    "force pass" flag. A client is validated only when the engine returns ``pass``.
+    Returns the ``KycDecision`` dataclass (``.decision``, ``.reasons``, ``.checks``).
+    """
+    from app.services import kyc_decisions
+    return kyc_decisions.evaluate(db, tenant_id=tenant_id, client_id=client_id)
+
+
+# Map the authoritative engine verdict onto the borrower.kyc_status column.
+KYC_STATUS_BY_DECISION = {
+    "pass": "validated",
+    "escalate": "escalation",
+    "fail": "rejected",
+}
+
+
 def is_configured() -> bool:
     """True when real Creditinfo IDM credentials are present."""
     for v in (settings.EKYC_USERNAME, settings.EKYC_PASSWORD, settings.EKYC_STRATEGY_ID):
