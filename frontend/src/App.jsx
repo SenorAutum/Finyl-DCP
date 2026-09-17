@@ -35,6 +35,15 @@ import Backups from "./pages/access/Backups";
 import AuditLog from "./pages/access/AuditLog";
 import Reporting from "./pages/reporting/Reporting";
 import Configuration from "./pages/settings/Configuration";
+import Guarantors from "./pages/guarantors/Guarantors";
+import GuarantorDetail from "./pages/guarantors/GuarantorDetail";
+import Collections from "./pages/collections/Collections";
+import Efficiency from "./pages/collections/Efficiency";
+import FieldOps from "./pages/field/FieldOps";
+import KycEscalations from "./pages/kyc/KycEscalations";
+import ApiClients from "./pages/access/ApiClients";
+import ClientEdits from "./pages/clients/ClientEdits";
+import ExecutiveDashboard from "./pages/dashboard/ExecutiveDashboard";
 import { Spinner } from "./components/ui";
 
 // Ordered fallbacks: first module the user can access becomes their home page.
@@ -138,6 +147,8 @@ export default function App() {
             <Route path="/clients/:id" element={<Guard module="lending"><ClientDetail /></Guard>} />
             {/* Legacy path kept so old bookmarks/links still resolve. */}
             <Route path="/borrowers" element={<Navigate to="/clients" replace />} />
+            <Route path="/guarantors" element={<Guard module="lending"><Guarantors /></Guard>} />
+            <Route path="/guarantors/:id" element={<Guard module="lending"><GuarantorDetail /></Guard>} />
             <Route path="/loans" element={<Guard module="lending"><Loans /></Guard>} />
             <Route path="/loans/:id" element={<Guard module="lending"><LoanDetail /></Guard>} />
             <Route path="/products" element={<AdminGuard><Products /></AdminGuard>} />
@@ -150,6 +161,14 @@ export default function App() {
             <Route path="/call-center" element={<Guard module="call_center"><CallCenter /></Guard>} />
             <Route path="/impact" element={<Guard module="impact"><Impact /></Guard>} />
             <Route path="/cbk" element={<Guard module="cbk_reporting"><Cbk /></Guard>} />
+            {/* Phase 3: collections, field ops, KYC escalations, client edits, executive dashboard */}
+            <Route path="/collections" element={<Guard module="lending"><PermGuard perms={["collections.ptp_manage", "collections.efficiency_view"]}><Collections /></PermGuard></Guard>} />
+            <Route path="/collections/efficiency" element={<Guard module="lending"><PermGuard perms={["collections.efficiency_view"]}><Efficiency /></PermGuard></Guard>} />
+            <Route path="/field" element={<Guard module="lending"><PermGuard perms={["field_ops.tasks_manage", "field_ops.gps_view"]}><FieldOps /></PermGuard></Guard>} />
+            <Route path="/kyc-escalations" element={<Guard module="lending"><PermGuard perms={["kyc.escalate", "kyc.resolve"]}><KycEscalations /></PermGuard></Guard>} />
+            <Route path="/client-edits" element={<Guard module="lending"><PermGuard perms={["client_edits.request", "client_edits.approve_primary", "client_edits.approve_secondary"]}><ClientEdits /></PermGuard></Guard>} />
+            <Route path="/dashboard/executive" element={<Guard module="dashboard"><ExecutiveDashboard /></Guard>} />
+            <Route path="/access/api-clients" element={<AdminGuard><ApiClients /></AdminGuard>} />
             {/* RBAC: approvals, administration & reporting (permission-gated) */}
             <Route path="/approvals" element={<PermGuard perms={["loans.approve", "clients.approve", "disburse.approve", "refund.approve"]}><Approvals /></PermGuard>} />
             <Route path="/access/users" element={<AdminGuard><Users /></AdminGuard>} />

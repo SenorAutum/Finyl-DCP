@@ -60,6 +60,99 @@ function ConsentPanel({ clientId }) {
   );
 }
 
+// Biometric face-validation status (ID photo vs selfie). Read-only summary;
+// renders whatever the face-validation-status endpoint returns.
+function FaceValidationPanel({ clientId }) {
+  const [data, setData] = useState(undefined); // undefined=loading, null=unavailable
+  useEffect(() => {
+    let ok = true;
+    api(`/api/v1/clients/${clientId}/face-validation-status`)
+      .then((r) => ok && setData(r ?? null))
+      .catch(() => ok && setData(null));
+    return () => { ok = false; };
+  }, [clientId]);
+
+  if (data === undefined || data === null) return null;
+
+  const tone = data.result === "pass" ? { badge: "bg-emerald-100 text-emerald-700", label: "Passed" }
+    : data.result === "fail" ? { badge: "bg-red-100 text-red-700", label: "Failed" }
+    : { badge: "bg-gray-100 text-gray-500", label: "Not run" };
+
+  return (
+    <div className="card p-5 mb-5">
+      <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
+        <h2 className="font-bold text-base">Face Validation</h2>
+        <span className={`inline-flex px-2 py-0.5 rounded-full text-[11px] font-semibold ${tone.badge}`}>{tone.label}</span>
+      </div>
+      {data.result === "not_run" ? (
+        <p className="text-sm text-gray-400">
+          Biometric face validation has not been run for this client.
+          {data.mandatory && <span className="text-amber-600 font-medium"> It is mandatory for your organisation.</span>}
+        </p>
+      ) : (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+          <Row label="Match score" value={data.match_score != null ? `${(data.match_score * 100).toFixed(1)}%` : "—"} />
+          <Row label="Liveness" value={data.liveness_pass == null ? "—" : data.liveness_pass ? "Pass" : "Fail"} />
+          <Row label="Provider" value={data.provider} />
+          <Row label="Validated" value={fmtDate(data.validated_at)} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Pending/approved change-requests raised against this client's locked fields.
+// The list endpoint is permission-gated, so a 403 simply hides the panel.
+function EditRequestsPanel({ clientId }) {
+  const [items, setItems] = useState(undefined); // undefined=loading, null=unavailable
+  useEffect(() => {
+    let ok = true;
+    api(`/api/v1/clients/edit-requests?client_id=${clientId}`)
+      .then((r) => ok && setItems(r.items || []))
+      .catch(() => ok && setItems(null));
+    return () => { ok = false; };
+  }, [clientId]);
+
+  if (items === undefined || items === null || items.length === 0) return null;
+
+  return (
+    <div className="card overflow-hidden mt-5">
+      <div className="px-5 py-3 border-b border-border font-bold text-base">Field Edit Requests</div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead><tr>
+            <th className="th">Tier</th><th className="th">Fields</th><th className="th">Requested by</th>
+            <th className="th">Status</th><th className="th">Requested</th>
+          </tr></thead>
+          <tbody>
+            {items.map((r) => (
+              <tr key={r.id} className="border-t border-border align-top">
+                <td className="td capitalize">{(r.edit_tier || "").replace(/_/g, " ")}</td>
+                <td className="td">
+                  {Object.keys(r.field_changes || {}).length === 0 ? "—" : (
+                    <div className="space-y-0.5">
+                      {Object.entries(r.field_changes).map(([field, ch]) => (
+                        <div key={field} className="text-[12px]">
+                          <span className="font-semibold">{field.replace(/_/g, " ")}:</span>{" "}
+                          <span className="text-gray-400 line-through">{String(ch?.old_value ?? "—")}</span>{" → "}
+                          <span className="text-charcoal">{String(ch?.new_value ?? "—")}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </td>
+                <td className="td">{r.requested_by || "—"}</td>
+                <td className="td"><Badge value={r.status} /></td>
+                <td className="td">{fmtDate(r.requested_at)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 export default function ClientDetail() {
   const { id } = useParams();
   const nav = useNavigate();
@@ -87,6 +180,17 @@ export default function ClientDetail() {
             {can("clients.edit") && <button className="btn-primary" onClick={() => setEditing(true)}>Edit client</button>}
           </>
         } />
+
+      {c.edit_locked && (
+        <div className="mb-5 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-3 flex items-start gap-2">
+          <span>🔒</span>
+          <span>
+            <span className="font-semibold">Primary fields are edit-locked.</span> Changes to protected
+            fields (phone, National ID, date of birth) require an approved edit request.
+            {c.edit_locked_reason && <span className="block text-amber-700 mt-0.5">Reason: {c.edit_locked_reason}</span>}
+          </span>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-5">
         <KpiCard label="KYC status" value={<Badge value={c.kyc_status} />} />
@@ -126,6 +230,8 @@ export default function ClientDetail() {
       </div>
 
       <ConsentPanel clientId={c.id} />
+
+      <FaceValidationPanel clientId={c.id} />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-5">
         <div className="card overflow-hidden">
@@ -241,6 +347,8 @@ export default function ClientDetail() {
           )}
         </div>
       </div>
+
+      <EditRequestsPanel clientId={c.id} />
 
       {editing && (
         <ClientForm clientId={c.id} onClose={() => setEditing(false)}

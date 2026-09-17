@@ -17,7 +17,7 @@ export class ApiError extends Error {
 // backend's real error message on these instead of clearing the token and
 // redirecting with a misleading "Session expired". The session-expiry redirect
 // stays in force for every other (post-login, authenticated) request.
-const AUTH_ENDPOINTS = ["/api/v1/auth/login", "/api/v1/auth/signup", "/api/v1/auth/change-password"];
+const AUTH_ENDPOINTS = ["/api/v1/auth/login", "/api/v1/auth/login/otp", "/api/v1/auth/signup", "/api/v1/auth/change-password"];
 function isAuthEndpoint(path) {
   return AUTH_ENDPOINTS.some((p) => path === p || path.startsWith(`${p}?`));
 }

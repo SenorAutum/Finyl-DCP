@@ -7,6 +7,7 @@ import ErrorBoundary from "./ErrorBoundary";
 import { useAuth } from "../hooks/useAuth";
 import { api } from "../lib/api";
 import AiPanel from "./AiPanel";
+import GlobalSearch from "./GlobalSearch";
 
 // Nav items gate on a tenant module flag (`module`) and/or a permission key
 // (`perm` = require one, `anyPerm` = hold any of). Items with neither are always shown.
@@ -19,6 +20,21 @@ const NAV = [
     { to: "/loans", label: "Loans", module: "lending", icon: "📋" },
     { to: "/payments", label: "Payments & SMS", module: "payments", icon: "₿" },
     { to: "/payments/suspense", label: "Suspense Account", module: "payments", icon: "⏳", anyPerm: ["reconcile.execute"] },
+  ]},
+  { group: "Registry", items: [
+    { to: "/guarantors", label: "Guarantors", module: "lending", icon: "🤝" },
+    { to: "/client-edits", label: "Edit Requests", icon: "✏️",
+      anyPerm: ["client_edits.request", "client_edits.approve_secondary", "client_edits.approve_primary"] },
+    { to: "/kyc-escalations", label: "KYC Escalations", icon: "🔍",
+      anyPerm: ["kyc.escalate", "kyc.resolve"] },
+  ]},
+  { group: "Field & Collections", items: [
+    { to: "/field", label: "Field Ops", icon: "📍",
+      anyPerm: ["field_ops.tasks_manage", "field_ops.gps_view"] },
+    { to: "/collections", label: "Collections", icon: "💼",
+      anyPerm: ["collections.ptp_manage", "collections.efficiency_view"] },
+    { to: "/collections/efficiency", label: "Efficiency", icon: "📈",
+      anyPerm: ["collections.efficiency_view"] },
   ]},
   { group: "Approvals", items: [
     { to: "/approvals", label: "Approvals Inbox", icon: "✅",
@@ -52,6 +68,7 @@ const NAV = [
     { to: "/access/payments", label: "Payment Upload", icon: "📥" },
     { to: "/access/backups", label: "Backups & Integrity", icon: "🗄" },
     { to: "/access/audit", label: "Audit Trail", icon: "📜" },
+    { to: "/access/api-clients", label: "API Clients", icon: "🔑" },
     { to: "/messaging", label: "SMS Messaging", icon: "✉" },
   ]},
   { group: "Configuration", superOnly: true, items: [
@@ -71,6 +88,7 @@ export default function Layout() {
   const { pathname } = useLocation();            // resets the error boundary per route
   const [open, setOpen] = useState(false);       // mobile sidebar
   const [aiOpen, setAiOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [tenants, setTenants] = useState([]);
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem("finyl.sidebar.collapsed") === "1"
@@ -84,6 +102,18 @@ export default function Layout() {
   useEffect(() => {
     localStorage.setItem("finyl.sidebar.collapsed", collapsed ? "1" : "0");
   }, [collapsed]);
+
+  // ⌘K / Ctrl+K opens the global search palette (component handles Esc to close).
+  useEffect(() => {
+    const h = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setSearchOpen(true);
+      }
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, []);
 
   // A single nav row — shows icon + label, or an icon-only rail when `mini`.
   const navClass = (mini) => ({ isActive }) =>
@@ -190,15 +220,16 @@ export default function Layout() {
         {/* Topbar */}
         <header className="sticky top-0 z-30 bg-surface/90 backdrop-blur border-b border-border px-4 py-3 flex items-center gap-3">
           <button className="lg:hidden btn-ghost !px-2.5" onClick={() => setOpen(true)}>☰</button>
-          {/* Search affordance (visual) */}
-          <div className="hidden md:flex items-center gap-2 w-72 max-w-full rounded-xl border border-border bg-canvas px-3 py-1.5 text-gray-400">
+          {/* Global search launcher (⌘K) */}
+          <button
+            onClick={() => setSearchOpen(true)}
+            className="hidden md:flex items-center gap-2 w-72 max-w-full rounded-xl border border-border bg-canvas px-3 py-1.5 text-gray-400 hover:border-accent/40 transition-colors"
+          >
             <span className="text-sm leading-none">🔍</span>
-            <input
-              type="text"
-              placeholder="Search…"
-              className="flex-1 bg-transparent text-sm text-charcoal placeholder:text-gray-400 focus:outline-none"
-            />
-          </div>
+            <span className="flex-1 text-left text-sm">Search…</span>
+            <kbd className="text-[10px] font-semibold border border-border rounded px-1.5 py-0.5">⌘K</kbd>
+          </button>
+          <button className="md:hidden btn-ghost !px-2.5" onClick={() => setSearchOpen(true)}>🔍</button>
           <div className="flex-1" />
           {isAdmin && tenants.length > 0 && (
             <select className="input !w-auto text-sm" value={user?.tenant_id || ""}
@@ -228,6 +259,7 @@ export default function Layout() {
       </div>
 
       {aiOpen && <AiPanel onClose={() => setAiOpen(false)} />}
+      <GlobalSearch open={searchOpen} onClose={() => setSearchOpen(false)} />
     </div>
   );
 }

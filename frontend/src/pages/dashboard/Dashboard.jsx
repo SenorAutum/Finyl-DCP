@@ -1,11 +1,13 @@
 // Executive Financial Health & Staff Analysis Dashboard.
 import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Label, Legend, Pie, PieChart,
   ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import { api, fmtKES } from "../../lib/api";
 import { Empty, KpiCard, PageHeader, Skeleton } from "../../components/ui";
+import { useAuth } from "../../hooks/useAuth";
 
 const STATUS_COLORS = { active: "#10B981", paid: "#0D9488", overdue: "#F59E0B", defaulted: "#EF4444", pending: "#9CA3AF", underwriting: "#3B82F6", rejected: "#6B7280", approved: "#14B8A6" };
 
@@ -104,6 +106,8 @@ function DashboardSkeleton() {
 }
 
 export default function Dashboard() {
+  const nav = useNavigate();
+  const { can, user } = useAuth();
   const [data, setData] = useState(null);
   const [org, setOrg] = useState(null);
   const [products, setProducts] = useState([]);
@@ -143,7 +147,10 @@ export default function Dashboard() {
 
   return (
     <div>
-      <PageHeader title="Executive Dashboard" crumbs={["Dashboard"]} />
+      <PageHeader title="Executive Dashboard" crumbs={["Dashboard"]}
+        actions={(user?.role === "super_admin" || can("reports.export")) && (
+          <button className="btn-primary" onClick={() => nav("/dashboard/executive")}>Executive Analytics →</button>
+        )} />
 
       {/* Global filter bar */}
       <div className="card p-3 mb-5 grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-2">
