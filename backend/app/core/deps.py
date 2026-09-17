@@ -217,6 +217,81 @@ def get_scope(user: User = Depends(get_current_user), db: Session = Depends(get_
     return UserScope(user, db)
 
 
+# ---------------------------------------------------------------------------
+# Phase 2 — device binding, geo/time fences, third-party API auth
+# ---------------------------------------------------------------------------
+def get_device_fingerprint(x_device_fingerprint: str | None = Header(default=None)) -> str | None:
+    """Extract the client device fingerprint header (opt-in device binding)."""
+    return x_device_fingerprint
+
+
+def require_device_bound(user: User = Depends(get_current_user),
+                         db: Session = Depends(get_db),
+                         x_device_fingerprint: str | None = Header(default=None),
+                         request: Request = None) -> User:
+    """403 when tenant device-binding is on and the caller's device is unknown.
+
+    super_admin bypasses. When the tenant has device-binding disabled this is a
+    no-op pass-through.
+    """
+    if user.role == "super_admin":
+        return user
+    from app.services.geo_fence import get_config
+    from app.services import device_binding
+    cfg = get_config(db, user.tenant_id)
+    if not cfg or not cfg.device_binding_enabled:
+        return user
+    if not device_binding.is_known(db, user_id=user.id, fingerprint=x_device_fingerprint or ""):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Unrecognised device")
+    return user
+
+
+def require_geo_fence(user: User = Depends(get_current_user),
+                      db: Session = Depends(get_db),
+                      x_geo_lat: str | None = Header(default=None),
+                      x_geo_lng: str | None = Header(default=None)) -> User:
+    """403 when tenant geofence is on and the caller is outside it (super_admin bypass)."""
+    if user.role == "super_admin":
+        return user
+    from app.services.geo_fence import evaluate_geofence
+    try:
+        lat = float(x_geo_lat) if x_geo_lat else None
+        lng = float(x_geo_lng) if x_geo_lng else None
+    except ValueError:
+        lat = lng = None
+    verdict = evaluate_geofence(db, user.tenant_id, lat, lng)
+    if verdict == "outside":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Outside permitted geofence")
+    return user
+
+
+def require_time_fence(user: User = Depends(get_current_user),
+                       db: Session = Depends(get_db)) -> User:
+    """403 when tenant time-fence is on and the request is outside working hours."""
+    if user.role == "super_admin":
+        return user
+    from app.services.geo_fence import evaluate_timefence
+    if evaluate_timefence(db, user.tenant_id) == "outside":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Outside permitted working hours")
+    return user
+
+
+def get_api_client(x_api_key: str | None = Header(default=None),
+                   db: Session = Depends(get_db)):
+    """Authenticate an inbound third-party request via X-Api-Key + rate limit.
+
+    Returns the ThirdPartyApiClient row. Raises 401/429 on failure. Use in
+    ingestion endpoints that are called by external systems (not logged-in users).
+    """
+    from app.services import third_party_auth
+    client = third_party_auth.authenticate(db, x_api_key)
+    if not client:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or missing API key")
+    if not third_party_auth.check_rate_limit(client):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Rate limit exceeded")
+    return client
+
+
 def write_audit(db: Session, *, tenant_id, user, action, entity_type=None,
                 entity_id=None, details=None, request: Request | None = None):
     """Append an audit-trail entry. Never raises — auditing must not break flows."""

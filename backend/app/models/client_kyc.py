@@ -6,8 +6,9 @@ filtered by tenant without a join) and cascade-delete with the client.
 """
 from datetime import datetime
 
-from sqlalchemy import (Boolean, Column, DateTime, ForeignKey, Integer, String,
-                        Text)
+from sqlalchemy import (Boolean, Column, DateTime, ForeignKey, Integer, Numeric,
+                        String, Text)
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 
 from app.core.crypto import EncryptedText
@@ -26,6 +27,10 @@ class ClientMobileWallet(Base):
     wallet_number = Column(String(30))
     operator = Column(String(30))       # see models.lending.WALLET_OPERATORS
     active = Column(Boolean, default=True)
+    # --- Phase 2 (migration 019): wallet lock after M-Pesa validation --------
+    wallet_locked = Column(Boolean, nullable=False, default=False)
+    locked_at = Column(DateTime(timezone=True))
+    locked_by = Column(String(100))     # 'system' or user email
     created_at = Column(DateTime, default=datetime.utcnow)
 
     client = relationship("Borrower", back_populates="wallets")
@@ -72,6 +77,10 @@ class ClientDocument(Base):
     # PII-01: OCR'd ID text is sensitive PII — encrypted at rest (transparent
     # Fernet via EncryptedText; legacy plaintext rows decrypt unchanged).
     ocr_text = Column(EncryptedText)
+    # --- Phase 2 (migration 020): richer OCR metadata ------------------------
+    ocr_field_mapping = Column(JSONB)
+    ocr_confidence = Column(Numeric(5, 4))
+    ocr_version = Column(String(20))
     uploaded_at = Column(DateTime, default=datetime.utcnow)
     uploaded_by = Column(String(120))
 

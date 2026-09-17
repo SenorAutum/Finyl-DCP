@@ -473,3 +473,34 @@ class ConsentIn(BaseModel):
     consent_credit_check: bool = False
     consent_marketing: bool = False
     consent_version: Optional[str] = None
+
+
+
+# ── Phase 2 per-domain schemas (re-exported for `from app.schemas import X`) ──
+from app.schemas.guarantor import (  # noqa: E402,F401
+    GuarantorBusinessIn, GuarantorCreate, GuarantorUpdate,
+    GuarantorDocumentIn, GuarantorValidateIn,
+)
+from app.schemas.kyc_escalation import (  # noqa: E402,F401
+    KycEscalationCreate, KycEscalationUpdate, ValidationPrefsUpdate,
+)
+from app.schemas.face_validation import FaceValidateIn  # noqa: E402,F401
+from app.schemas.field_ops import (  # noqa: E402,F401
+    GpsLogIn, DailyTaskCreate, DailyTaskUpdate, ClientHomeGeoIn, BusinessPhotoIn,
+)
+from app.schemas.security import (  # noqa: E402,F401
+    SecurityConfigUpdate, OtpRequestIn, OtpVerifyIn, DeviceRegisterIn,
+)
+from app.schemas.activity import (  # noqa: E402,F401
+    ActivityEvent, ActivityBulkIn, ScreenshotIn,
+)
+from app.schemas.collections import (  # noqa: E402,F401
+    PtpCreate, PtpUpdate, BankStatementIn, RatibaConsentIn, RatibaInitiateIn,
+)
+from app.schemas.client_edit import (  # noqa: E402,F401
+    ClientEditRequestIn, ClientEditRejectIn,
+)
+from app.schemas.third_party import (  # noqa: E402,F401
+    ApiClientCreate, MpesaStatementIngestIn, BankStatementIngestIn,
+)
+from app.schemas.search import SearchHit, SearchResponse  # noqa: E402,F401

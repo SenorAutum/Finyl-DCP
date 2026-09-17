@@ -68,4 +68,10 @@ class Product(Base):
     penalty_rate = Column(Numeric(6, 3), default=1.0)               # % per overdue period
     rules = Column(JSON, default=dict)                               # extensible eligibility rules
     active = Column(Boolean, default=True)
+    # --- Phase 2 (migration 017): product-level requirement flags -----------
+    loan_category = Column(String(20))          # personal | business | secured | unsecured
+    requires_guarantor = Column(Boolean, nullable=False, default=False)
+    requires_collateral = Column(Boolean, nullable=False, default=False)
+    requires_next_of_kin = Column(Boolean, nullable=False, default=True)
+    business_op_age_required = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)

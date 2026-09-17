@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import (Boolean, Column, Date, DateTime, Float, ForeignKey,
                         Integer, Numeric, String, Text)
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 
 from app.core.database import Base
@@ -27,6 +28,15 @@ class CrmLead(Base):
     assigned_staff_id = Column(Integer, ForeignKey("staff.id"))
     estimated_loan_amount = Column(Numeric(12, 2), default=0)
     notes = Column(Text)
+    # --- Phase 2 (migration 022): Cold/Warm/Hot pipeline + BM approval -------
+    stage_detail = Column(String(10), nullable=False, default="cold")   # cold | warm | hot
+    bm_approval_status = Column(String(20))                             # pending | approved | rejected
+    bm_approved_by = Column(Integer, ForeignKey("users.id"))
+    bm_approved_at = Column(DateTime(timezone=True))
+    bm_rejection_reason = Column(Text)
+    converted_to_client_id = Column(Integer, ForeignKey("borrowers.id"))
+    conversion_triggered_at = Column(DateTime(timezone=True))
+    conversion_validations = Column(JSONB)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     assigned_staff = relationship("Staff")

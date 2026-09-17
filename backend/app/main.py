@@ -20,6 +20,10 @@ from app.routers import (admin, ai, auth, call_center, cbk, clients, complaints,
                          access, approvals, reporting, integrations, messaging,
                          accounting)
 from app.routers import settings as dcp_settings
+# Phase 2 routers
+from app.routers import (guarantors, kyc_escalations, face_validation,
+                         validation_prefs, field_ops, security_config, activity,
+                         collections, third_party, client_edits, search)
 
 # OPS-01: configure structured stdout/journald logging before the app is built.
 configure_logging()
@@ -146,11 +150,24 @@ def health():
     return {"status": "ok", "service": "finyl-dcp"}
 
 
+# client_edits shares the /api/v1/clients prefix and defines the literal
+# /clients/edit-requests route — it MUST be registered before the clients
+# router, whose GET /{client_id} would otherwise swallow "edit-requests".
+app.include_router(client_edits.router)
+
 for r in (auth, admin, clients, lending, payments, notifications, dashboard,
           complaints, crm, call_center, impact, cbk, ai,
           access, approvals, reporting, integrations, messaging, dcp_settings,
-          accounting):
+          accounting,
+          # Phase 2
+          guarantors, kyc_escalations, face_validation, validation_prefs,
+          field_ops, security_config, activity, collections, third_party,
+          search):
     app.include_router(r.router)
+
+# Phase 2 secondary routers (cross-prefix / distinct-auth endpoints).
+app.include_router(collections.extra_router)
+app.include_router(third_party.ingestion_router)
 
 # Legacy /api/v1/borrowers alias — same handlers as /api/v1/clients so anything
 # built against the old path keeps working after the Clients rename.
