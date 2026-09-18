@@ -35,6 +35,7 @@ import shutil
 from datetime import date, datetime
 
 from app.core.config import settings
+from app.services import mrz as mrz_parser
 
 
 class OcrUnavailable(RuntimeError):
@@ -74,6 +75,28 @@ class TesseractOcrProvider(OcrProvider):
                            "`apt-get install -y tesseract-ocr` (and poppler-utils for PDFs).")
         return True, ""
 
+    @staticmethod
+    def _preprocess(img):
+        """Clean up a phone photo for OCR: orient, upscale, grayscale, boost
+        contrast and sharpen. Massively improves Tesseract accuracy on the small,
+        low-contrast text of a laminated ID card."""
+        from PIL import Image, ImageOps, ImageFilter
+        try:
+            img = ImageOps.exif_transpose(img)          # honour camera rotation
+        except Exception:
+            pass
+        if img.mode not in ("L", "RGB"):
+            img = img.convert("RGB")
+        # Upscale small photos — Tesseract wants ~300 DPI equivalent.
+        if max(img.size) < 1800:
+            factor = 1800 / max(img.size)
+            img = img.resize((int(img.width * factor), int(img.height * factor)),
+                             Image.LANCZOS)
+        gray = ImageOps.grayscale(img)
+        gray = ImageOps.autocontrast(gray, cutoff=2)     # stretch dynamic range
+        gray = gray.filter(ImageFilter.SHARPEN)
+        return gray
+
     def image_to_text(self, data: bytes, mime_type: str, filename: str = "") -> str:
         ok, why = self.available()
         if not ok:
@@ -83,6 +106,9 @@ class TesseractOcrProvider(OcrProvider):
 
         pytesseract.pytesseract.tesseract_cmd = settings.TESSERACT_CMD
         is_pdf = (mime_type or "").endswith("pdf") or filename.lower().endswith(".pdf")
+        # PSM 4 = assume a single column of text of variable sizes — best fit for
+        # an ID card. Also OCR the MRZ band, which uses the OCR-B font.
+        cfg = "--oem 3 --psm 4"
 
         if is_pdf:
             try:
@@ -93,17 +119,14 @@ class TesseractOcrProvider(OcrProvider):
                 pages = convert_from_bytes(data, dpi=300, first_page=1, last_page=4)
             except Exception as exc:
                 raise OcrUnavailable(f"Could not rasterise the PDF — is poppler-utils installed? ({exc})")
-            return "\n".join(pytesseract.image_to_string(p, lang=settings.OCR_LANGUAGES)
-                             for p in pages)
+            return "\n".join(
+                pytesseract.image_to_string(self._preprocess(p),
+                                            lang=settings.OCR_LANGUAGES, config=cfg)
+                for p in pages)
 
         img = Image.open(io.BytesIO(data))
-        if img.mode not in ("L", "RGB"):
-            img = img.convert("RGB")
-        # Upscale small phone photos — Tesseract needs ~300 DPI equivalent.
-        if max(img.size) < 1400:
-            factor = 1400 / max(img.size)
-            img = img.resize((int(img.width * factor), int(img.height * factor)))
-        return pytesseract.image_to_string(img, lang=settings.OCR_LANGUAGES)
+        proc = self._preprocess(img)
+        return pytesseract.image_to_string(proc, lang=settings.OCR_LANGUAGES, config=cfg)
 
 
 # --------------------------------------------------------------------------- #
@@ -112,20 +135,31 @@ class TesseractOcrProvider(OcrProvider):
 # Fields the model must return. Kept in sync with parse_kenyan_id() output so the
 # frontend and Borrower model see an identical shape regardless of engine.
 VISION_FIELDS = [
-    "serial_number", "national_id", "first_name", "middle_name", "last_name",
-    "full_name", "date_of_birth", "sex", "district_of_birth", "place_of_issue",
-    "date_of_issue", "district", "division", "location", "sub_location",
+    "document_type", "serial_number", "national_id", "first_name", "middle_name",
+    "last_name", "full_name", "date_of_birth", "sex", "nationality",
+    "district_of_birth", "place_of_issue", "date_of_issue", "date_of_expiry",
+    "district", "division", "location", "sub_location",
 ]
 
 _VISION_PROMPT = (
-    "You are a precise OCR engine for the Kenyan National ID card. You are given "
-    "one or more images (front and/or back of the same card). Read the printed "
-    "text and return ONLY a single minified JSON object — no markdown, no prose. "
-    "Use these exact keys: " + ", ".join(VISION_FIELDS) + ". "
+    "You are a precise OCR engine for East African identity documents. You are "
+    "given one or more images (front and/or back, or multiple pages of the SAME "
+    "document). Read every printed field and return ONLY a single minified JSON "
+    "object — no markdown, no prose. Use these exact keys: "
+    + ", ".join(VISION_FIELDS) + ". "
+    "The document may be any of these types — set 'document_type' accordingly: "
+    "'national_id' (2nd-generation Kenyan ID, laminated), 'maisha_card' "
+    "(3rd-generation Kenyan polycarbonate ID / Maisha Namba, 2023+), 'passport' "
+    "(Kenyan or other passport), 'alien_id' (foreign national / alien card), or "
+    "'other'. "
     "Rules: dates MUST be ISO format YYYY-MM-DD. 'sex' is 'male' or 'female'. "
-    "'national_id' is the ID NUMBER (7-9 digits), 'serial_number' is the longer "
-    "document serial. Merge front and back into one object. If a field is not "
-    "visible use null. Do not invent values."
+    "'national_id' is the ID/serial NUMBER (7-9 digits for a Kenyan ID; the "
+    "document number for a passport/alien card). 'serial_number' is the longer "
+    "document serial when distinct. If the document has a Machine-Readable Zone "
+    "(the two or three rows of monospaced text with '<' characters at the bottom), "
+    "read it carefully — it is the most reliable source for names, number, date "
+    "of birth and expiry. Merge front and back (and the MRZ) into one object. If "
+    "a field is not visible use null. Do not invent values."
 )
 
 
@@ -379,6 +413,20 @@ def parse_kenyan_id(text: str) -> dict:
     place("location", "location", 0.75)
     place("district", "district", 0.75)
 
+    # Tag the document type from the free-text side. A card with a district-of-
+    # birth / place-of-issue block is the classic 2nd-gen National ID; anything
+    # else is refined by the MRZ parser (passport / maisha_card / alien_id).
+    if any(out.get(k) for k in ("national_id", "serial_number", "first_name")):
+        low = text.lower()
+        if "passport" in low:
+            put("document_type", "passport", 0.6)
+        elif "maisha" in low or "kadi ya maisha" in low:
+            put("document_type", "maisha_card", 0.6)
+        elif "alien" in low or "refugee" in low or "foreign national" in low:
+            put("document_type", "alien_id", 0.6)
+        else:
+            put("document_type", "national_id", 0.55)
+
     out["_confidence"] = conf
     return out
 
@@ -410,7 +458,16 @@ def _tesseract_extract(files: list[tuple[str, str, bytes]]) -> dict:
     for filename, mime, data in files:
         text = provider.image_to_text(data, mime, filename)
         raw_chunks.append(f"----- {filename} -----\n{text.strip()}")
+        # 1) Free-text regex parse of the human-readable side of the card.
         per_file.append({"file": filename, **parse_kenyan_id(text)})
+        # 2) MRZ parse (passport / Maisha card / alien card). The MRZ is check-
+        #    digit validated, so when present it is the most reliable source and
+        #    is merged with higher confidence than the free-text fields.
+        mrz_fields = mrz_parser.parse_mrz(text)
+        if mrz_fields:
+            conf = mrz_fields.pop("_confidence", {})
+            mrz_fields.pop("_mrz", None)
+            per_file.append({"file": filename, "_confidence": conf, **mrz_fields})
     merged = merge_results(per_file)
     confidence = merged.pop("_confidence", {})
     merged.pop("file", None)
@@ -475,10 +532,11 @@ OCR_FIELD_MAP_VERSION = "2.0"
 # is always present (value None when the engine could not read it) so the
 # mapping is a stable 1:1 contract rather than a variable-shape dict.
 OCR_CANONICAL_FIELDS = (
+    "document_type",
     "national_id", "serial_number",
     "first_name", "middle_name", "last_name",
-    "date_of_birth", "district_of_birth",
-    "place_of_issue", "date_of_issue",
+    "date_of_birth", "gender", "nationality",
+    "district_of_birth", "place_of_issue", "date_of_issue", "date_of_expiry",
 )
 
 

@@ -515,8 +515,25 @@ def build_router(prefix: str, tag: str) -> APIRouter:
             result = extract_fields_structured(payload, db=db if doc else None,
                                                document=doc)
         except OcrUnavailable as exc:
-            # 503 (not 500) so the UI can show an actionable message.
-            raise HTTPException(503, f"OCR engine unavailable: {exc}")
+            # Never hard-block onboarding: when NO OCR engine can run, return an
+            # empty-but-valid canonical field map (HTTP 200) with a clear note so
+            # the officer can key the fields in manually instead of hitting a wall.
+            from app.services.ocr import OCR_CANONICAL_FIELDS, OCR_FIELD_MAP_VERSION
+            return {
+                "engine": "none",
+                "engine_notes": [
+                    f"Automatic ID reading is unavailable ({exc}). "
+                    "Enter the ID fields manually and continue."
+                ],
+                "files_processed": len(payload),
+                "ocr_version": OCR_FIELD_MAP_VERSION,
+                "fields": {k: None for k in OCR_CANONICAL_FIELDS},
+                "field_confidence": {k: 0.0 for k in OCR_CANONICAL_FIELDS},
+                "confidence": 0.0,
+                "completeness": 0.0,
+                "raw_text": "",
+                "manual_entry_required": True,
+            }
         return result
 
     # ---- eKYC --------------------------------------------------------------
