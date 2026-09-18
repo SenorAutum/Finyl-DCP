@@ -7,6 +7,8 @@ import Login from "./pages/Login";
 import Signup from "./pages/Signup";
 import ChangePassword from "./pages/ChangePassword";
 import Dashboard from "./pages/dashboard/Dashboard";
+import OfficerDashboard from "./pages/dashboard/OfficerDashboard";
+import SuperAdminDashboard from "./pages/dashboard/SuperAdminDashboard";
 import Clients from "./pages/clients/Clients";
 import ClientDetail from "./pages/clients/ClientDetail";
 import Loans from "./pages/lending/Loans";
@@ -119,7 +121,16 @@ function HomeRedirect() {
   const { user, loading, canAccess, can } = useAuth();
   if (loading) return <div className="min-h-screen flex items-center justify-center"><Spinner /></div>;
   if (!user) return <Navigate to="/login" replace />;
-  if (canAccess("dashboard")) return <Guard module="dashboard"><Dashboard /></Guard>;
+  // Super-admin lands on the platform command centre (all tenants), NOT the
+  // per-tenant executive dashboard.
+  if (user.role === "super_admin") return <SuperAdminDashboard />;
+  if (canAccess("dashboard")) {
+    // A relationship/loan officer sees their OWN portfolio (their clients +
+    // onboarding + loan statuses); everyone else keeps the executive view.
+    const officerRoles = ["relationship_officer", "loan_officer"];
+    const Home = officerRoles.includes(user.role) ? OfficerDashboard : Dashboard;
+    return <Guard module="dashboard"><Home /></Guard>;
+  }
   return <Navigate to={homePath(canAccess, can, user.role)} replace />;
 }
 

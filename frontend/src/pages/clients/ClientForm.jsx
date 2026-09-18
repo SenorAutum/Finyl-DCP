@@ -357,10 +357,20 @@ export default function ClientForm({ clientId, onClose, onSaved }) {
                 <div className="mt-4 rounded-lg border border-teal/40 bg-teal/5 p-3">
                   <div className="flex items-center justify-between flex-wrap gap-2">
                     <div className="text-sm font-semibold text-teal">
-                      OCR complete — {Object.keys(ocr.fields || {}).length} field(s) read from {ocr.files_processed || 1} file(s)
+                      OCR complete — {Object.values(ocr.fields || {}).filter((v) => v != null && v !== "").length} field(s) read from {ocr.files_processed || 1} file(s)
+                      {ocr.fields?.document_type && (
+                        <span className="ml-1 font-normal text-gray-500">
+                          ({String(ocr.fields.document_type).replace(/_/g, " ")})
+                        </span>
+                      )}
                     </div>
                     <span className="text-[11px] text-gray-500">Engine: {ocr.engine || "tesseract"}</span>
                   </div>
+                  {ocr.manual_entry_required && (
+                    <div className="mt-1 text-[11px] text-amber-700 font-medium">
+                      Automatic ID reading is unavailable — please enter the ID fields manually below.
+                    </div>
+                  )}
                   {ocr.engine_notes?.length > 0 && (
                     <div className="mt-1 text-[11px] text-amber-600">
                       {ocr.engine_notes.map((n, i) => (
@@ -369,15 +379,20 @@ export default function ClientForm({ clientId, onClose, onSaved }) {
                     </div>
                   )}
                   <div className="mt-2 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-x-4 gap-y-1">
-                    {Object.entries(ocr.fields || {}).map(([k, v]) => (
-                      <div key={k} className="text-[11px]">
-                        <span className="text-gray-500">{k.replace(/_/g, " ")}: </span>
-                        <span className="font-semibold">{String(v)}</span>
-                        {ocr.confidence?.[k] != null && (
-                          <span className="text-gray-400"> ({Math.round(ocr.confidence[k] * 100)}%)</span>
-                        )}
-                      </div>
-                    ))}
+                    {Object.entries(ocr.fields || {})
+                      .filter(([, v]) => v != null && v !== "")
+                      .map(([k, v]) => {
+                        const c = ocr.field_confidence?.[k] ?? ocr.confidence?.[k];
+                        return (
+                          <div key={k} className="text-[11px]">
+                            <span className="text-gray-500">{k.replace(/_/g, " ")}: </span>
+                            <span className="font-semibold">{String(v)}</span>
+                            {typeof c === "number" && c > 0 && (
+                              <span className="text-gray-400"> ({Math.round(c * 100)}%)</span>
+                            )}
+                          </div>
+                        );
+                      })}
                   </div>
                   <details className="mt-2">
                     <summary className="text-[11px] text-gray-500 cursor-pointer">Raw OCR text</summary>
