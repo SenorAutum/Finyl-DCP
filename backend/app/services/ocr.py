@@ -176,7 +176,7 @@ class VisionLlmOcrProvider(OcrProvider):
         base = (settings.LLM_BASE_URL or "").strip()
         if not key or key == "sk-placeholder" or "placeholder" in key.lower():
             return False, "LLM_API_KEY not configured for vision OCR."
-        if not base or "api.openai.com" in base and key == "sk-placeholder":
+        if not base:
             return False, "LLM_BASE_URL not configured for vision OCR."
         return True, ""
 
@@ -218,10 +218,17 @@ class VisionLlmOcrProvider(OcrProvider):
         # known vision-capable model when LLM_VISION_MODEL is unset.
         model = (settings.LLM_VISION_MODEL or "gpt-4o").strip()
         content = [{"type": "text", "text": _VISION_PROMPT}] + self._to_image_parts(files)
+        # OpenRouter requires HTTP-Referer + X-Title; they are harmless on
+        # other OpenAI-compatible endpoints so we always include them.
+        headers = {
+            "Authorization": f"Bearer {settings.LLM_API_KEY}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://finyl-dcp-production.up.railway.app",
+            "X-Title": "Finyl-DCP",
+        }
         resp = httpx.post(
             f"{settings.LLM_BASE_URL.rstrip('/')}/chat/completions",
-            headers={"Authorization": f"Bearer {settings.LLM_API_KEY}",
-                     "Content-Type": "application/json"},
+            headers=headers,
             json={"model": model,
                   "messages": [{"role": "user", "content": content}],
                   "max_tokens": 900, "temperature": 0},
