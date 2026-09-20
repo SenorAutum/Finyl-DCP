@@ -16,6 +16,7 @@ Every endpoint inherits the platform's JWT auth, tenant scoping and the
 `lending` feature-flag gate via `require_module("lending")`.
 """
 import os
+import re
 from datetime import date, datetime
 
 from fastapi import (APIRouter, Depends, File, HTTPException, Query, Response,
@@ -33,9 +34,10 @@ from app.models import (Borrower, ClientDocument, ClientMobileWallet,
                         ClientNextOfKin, CrbCheck, DOC_TYPES, Loan, ImpactSurvey,
                         MpesaStatementAnalysis, NEXT_OF_KIN_RELATIONSHIPS,
                         PaymentTransaction, User, WALLET_OPERATORS)
-from app.models import KycConsent
-from app.schemas import ClientCreate, EkycVerifyRequest, ValidateMpesaRequest, ConsentIn
-from app.services import crb, ekyc, mpesa, storage
+from app.models import KycConsent, ClientConsentLog, CrmLead, OtpToken
+from app.schemas import (ClientCreate, EkycVerifyRequest, ValidateMpesaRequest,
+                         ConsentIn, RequestConsentOtpIn, VerifyConsentOtpIn)
+from app.services import crb, ekyc, mpesa, storage, otp, sms
 from app.services import alt_phone_validation, client_edit
 from app.services.mpesa_statement import StatementError, analyze_statement
 from app.services.ocr import OcrUnavailable, process_id_files, extract_fields_structured
@@ -898,6 +900,100 @@ def build_router(prefix: str, tag: str) -> APIRouter:
                 "consent_version": row.consent_version,
                 "consented_at": row.consented_at.isoformat() if row.consented_at else None,
             },
+        }
+
+    # -------------------------------------------------------------------------
+    # SMS OTP client consent (migration 028).
+    #
+    # The client gives explicit, verifiable consent to data processing over SMS:
+    # the officer requests a code (sent to the CLIENT's phone), the client reads
+    # it back verbally, and the officer verifies it. The OTP is generated for the
+    # OFFICER's session; every successful verification is logged immutably.
+    # -------------------------------------------------------------------------
+    DEFAULT_CONSENT_TEXT = ("Finyl-DCP processing your personal data for a loan "
+                            "application.")
+
+    def _valid_ke_phone(phone: str) -> bool:
+        normalised = sms.normalise_phone(phone)
+        return bool(re.fullmatch(r"254(7|1)\d{8}", normalised))
+
+    @router.post("/request-consent-otp")
+    def request_consent_otp(body: RequestConsentOtpIn,
+                            tenant_id: int = Depends(require_module("lending")),
+                            db: Session = Depends(get_db),
+                            user: User = Depends(get_current_user),
+                            request: Request = None):
+        phone = (body.phone or "").strip()
+        if not _valid_ke_phone(phone):
+            raise HTTPException(422, detail="invalid_phone")
+        ip = request.client.host if (request and request.client) else None
+        code = otp.generate(db, user, purpose="consent", ip=ip)
+        consent_text = (body.consent_text or "").strip() or DEFAULT_CONSENT_TEXT
+        message = (f"Share code {code} with your Finyl officer to consent to: "
+                   f"{consent_text} Do not share with anyone else. Valid 5 mins.")
+        log = sms.send_sms(db, tenant_id, phone, message, trigger_type="consent")
+        sent = bool(log and getattr(log, "status", None) == "sent")
+        write_audit(db, tenant_id=tenant_id, user=user, action="client.consent.otp_sent",
+                    entity_type="consent", entity_id=None,
+                    details={"phone_last4": phone[-4:], "client_id": body.client_id,
+                             "lead_id": body.lead_id, "sent": sent,
+                             "sms_status": getattr(log, "status", None)},
+                    request=request)
+        db.commit()
+        return {"sent": sent, "phone_last4": phone[-4:], "expires_in_seconds": 300}
+
+    @router.post("/verify-consent-otp")
+    def verify_consent_otp(body: VerifyConsentOtpIn,
+                           tenant_id: int = Depends(require_module("lending")),
+                           db: Session = Depends(get_db),
+                           user: User = Depends(get_current_user),
+                           request: Request = None):
+        code = (body.code or "").strip()
+        phone = (body.phone or "").strip()
+        ok, reason = otp.verify(db, user, code, purpose="consent")
+        if not ok:
+            raise HTTPException(422, detail="invalid_or_expired_otp")
+        # The verify() call has just marked the officer's consent token consumed;
+        # grab it for the FK on the audit log row.
+        tok = (db.query(OtpToken)
+               .filter(OtpToken.user_id == user.id, OtpToken.purpose == "consent")
+               .order_by(OtpToken.created_at.desc()).first())
+        ip = request.client.host if (request and request.client) else None
+        client = None
+        if body.client_id:
+            client = _get_client(db, tenant_id, body.client_id)
+        log = ClientConsentLog(
+            tenant_id=tenant_id, client_id=body.client_id, lead_id=body.lead_id,
+            phone=phone, otp_token_id=tok.id if tok else None,
+            officer_id=user.id, consent_text=DEFAULT_CONSENT_TEXT, ip=ip,
+        )
+        db.add(log)
+        db.flush()
+        # Record data-processing consent on the client's KYC consent trail.
+        if client is not None:
+            existing = (db.query(KycConsent)
+                        .filter(KycConsent.tenant_id == tenant_id,
+                                KycConsent.borrower_id == client.id)
+                        .order_by(KycConsent.id.desc()).first())
+            if existing:
+                existing.consent_data_processing = True
+                existing.consent_version = "otp_v1"
+            else:
+                db.add(KycConsent(
+                    tenant_id=tenant_id, borrower_id=client.id,
+                    consent_data_processing=True, consent_version="otp_v1",
+                    ip_address=ip,
+                ))
+        write_audit(db, tenant_id=tenant_id, user=user,
+                    action="client.consent.otp_verified", entity_type="consent",
+                    entity_id=log.id,
+                    details={"phone_last4": phone[-4:], "client_id": body.client_id,
+                             "lead_id": body.lead_id}, request=request)
+        db.commit()
+        db.refresh(log)
+        return {
+            "verified": True, "consent_log_id": log.id,
+            "consented_at": log.consented_at.isoformat() if log.consented_at else None,
         }
 
     return router

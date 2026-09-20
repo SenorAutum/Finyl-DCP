@@ -475,6 +475,22 @@ class ConsentIn(BaseModel):
     consent_version: Optional[str] = None
 
 
+# SMS OTP client-consent workflow (migration 028). The OTP is tied to the
+# officer's session; the SMS is delivered to the client's phone.
+class RequestConsentOtpIn(BaseModel):
+    phone: str
+    client_id: Optional[int] = None
+    lead_id: Optional[int] = None
+    consent_text: Optional[str] = None
+
+
+class VerifyConsentOtpIn(BaseModel):
+    code: str
+    phone: str
+    client_id: Optional[int] = None
+    lead_id: Optional[int] = None
+
+
 
 # ── Phase 2 per-domain schemas (re-exported for `from app.schemas import X`) ──
 from app.schemas.guarantor import (  # noqa: E402,F401

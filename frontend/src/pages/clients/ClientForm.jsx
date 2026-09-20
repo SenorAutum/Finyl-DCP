@@ -12,8 +12,10 @@
 // the already-saved ID documents) to the OCR endpoint and merges the returned
 // National-ID fields into the form.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, upload, blobUrl, fmtKES } from "../../lib/api";
+import { useNavigate } from "react-router-dom";
+import { api, upload, blobUrl, fmtKES, requestConsentOtp, verifyConsentOtp } from "../../lib/api";
 import { Spinner } from "../../components/ui";
+import OtpInput from "../../components/OtpInput";
 import { useAuth } from "../../hooks/useAuth";
 
 export const EMPTY_CLIENT = {
@@ -51,7 +53,15 @@ function Field({ label, children, hint }) {
 
 export default function ClientForm({ clientId, onClose, onSaved }) {
   const { user, can } = useAuth();
+  const nav = useNavigate();
   const fileRef = useRef(null);
+
+  // Onboarding mode. "direct" keeps the full KYC onboarding flow (default,
+  // unchanged behaviour); "lead" captures a lightweight prospect that is saved
+  // to the CRM pipeline instead of the client registry. Only offered on create.
+  const [mode, setMode] = useState("direct");
+  const [lead, setLead] = useState({ name: "", phone: "", email: "", notes: "" });
+  const setLeadField = (k) => (e) => setLead((s) => ({ ...s, [k]: e.target.value }));
   // Primary-identity fields (phone / national_id / date_of_birth) are locked on
   // an existing client unless the officer holds clients.edit_locked. Creation is
   // always allowed so these are only frozen when editing a saved record.
@@ -71,6 +81,15 @@ export default function ClientForm({ clientId, onClose, onSaved }) {
     consent_data_processing: false, consent_credit_check: false, consent_marketing: false,
   });
   const setConsentField = (k) => (e) => setConsent((s) => ({ ...s, [k]: e.target.checked }));
+
+  // SMS OTP consent — the officer sends a one-time code to the client's phone;
+  // the client reads it back and the officer verifies it. Session-only state:
+  // the verified badge persists while the form is open but is not required to
+  // save. `otpc.phone` defaults to the client's phone once known.
+  const [otpc, setOtpc] = useState({
+    open: true, phone: "", code: "", sent: false, sentTo: "",
+    requesting: false, verifying: false, verifiedAt: null, err: "",
+  });
 
   // Documents: queued (not yet uploaded) + saved (already on the server)
   const [queue, setQueue] = useState([]);          // [{file, doc_type}]
@@ -255,9 +274,60 @@ export default function ClientForm({ clientId, onClose, onSaved }) {
   }));
   const dropRow = (key, i) => setForm((s) => ({ ...s, [key]: s[key].filter((_, idx) => idx !== i) }));
 
+  // ---- SMS OTP consent ----------------------------------------------------
+  const otpPhone = otpc.phone || form.phone || "";
+  const requestOtp = async () => {
+    setOtpc((s) => ({ ...s, requesting: true, err: "" }));
+    try {
+      const res = await requestConsentOtp({
+        phone: otpPhone,
+        client_id: clientId || null,
+      });
+      setOtpc((s) => ({
+        ...s, requesting: false, sent: true, code: "",
+        sentTo: `${otpPhone.slice(0, 4)}****${res.phone_last4 || otpPhone.slice(-2)}`,
+        err: res.sent ? "" : "Code generated but the SMS could not be delivered — check the number and gateway.",
+      }));
+    } catch (e) {
+      setOtpc((s) => ({ ...s, requesting: false, err: e.detail || "Could not request OTP." }));
+    }
+  };
+  const verifyOtp = async () => {
+    setOtpc((s) => ({ ...s, verifying: true, err: "" }));
+    try {
+      const res = await verifyConsentOtp({
+        code: otpc.code, phone: otpPhone, client_id: clientId || null,
+      });
+      setOtpc((s) => ({
+        ...s, verifying: false, sent: false, code: "",
+        verifiedAt: res.consented_at || new Date().toISOString(),
+      }));
+    } catch (e) {
+      setOtpc((s) => ({ ...s, verifying: false, err: e.detail === "invalid_or_expired_otp"
+        ? "That code is invalid or has expired — request a new one." : (e.detail || "Verification failed.") }));
+    }
+  };
+
+  // ---- save as CRM lead ---------------------------------------------------
+  const saveLead = async () => {
+    setErr("");
+    if (!lead.name.trim()) { setErr("A lead name is required."); return; }
+    setSaving(true);
+    // crm_leads has no email column — fold it into the free-text notes.
+    const notes = [lead.email.trim() ? `Email: ${lead.email.trim()}` : "", lead.notes.trim()]
+      .filter(Boolean).join("\n");
+    try {
+      await api("/api/v1/crm/leads", { method: "POST", body: {
+        name: lead.name.trim(), phone: lead.phone.trim() || null, notes: notes || null,
+      }});
+      nav("/crm");
+    } catch (e2) { setErr(e2.detail); setSaving(false); }
+  };
+
   // ---- save ---------------------------------------------------------------
   const save = async (e) => {
     e.preventDefault();
+    if (mode === "lead") { await saveLead(); return; }
     setErr("");
     // Data-protection consent is mandatory to onboard a new client.
     if (!clientId && !consent.consent_data_processing) {
@@ -305,7 +375,10 @@ export default function ClientForm({ clientId, onClose, onSaved }) {
     }
   };
 
-  const title = clientId ? `Edit Client — ${form.first_name} ${form.last_name}` : "Create Client";
+  const title = clientId
+    ? `Edit Client — ${form.first_name} ${form.last_name}`
+    : (mode === "lead" ? "Create Lead" : "Create Client");
+  const saveLabel = saving ? "Saving…" : clientId ? "Save changes" : (mode === "lead" ? "Save lead" : "Save client");
 
   return (
     <div className="fixed inset-0 z-50 bg-canvas overflow-y-auto">
@@ -318,7 +391,7 @@ export default function ClientForm({ clientId, onClose, onSaved }) {
         <div className="flex gap-2">
           <button type="button" className="btn-ghost" onClick={onClose}>Cancel</button>
           <button type="submit" form="client-form" className="btn-primary" disabled={saving}>
-            {saving ? "Saving…" : clientId ? "Save changes" : "Save client"}
+            {saveLabel}
           </button>
         </div>
       </div>
@@ -326,6 +399,49 @@ export default function ClientForm({ clientId, onClose, onSaved }) {
       {loading ? <Spinner /> : (
         <form id="client-form" onSubmit={save} className="p-4 sm:p-6 space-y-5 max-w-[1400px] mx-auto">
           {err && <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">{err}</div>}
+
+          {/* ---------------- Onboarding mode toggle ---------------- */}
+          {!clientId && (
+            <div className="card p-5">
+              <h2 className="font-bold text-base mb-1">Onboarding mode</h2>
+              <p className="text-xs text-gray-500 mb-3">
+                Fully onboard the client now, or capture them as a lead to nurture through the CRM pipeline first.
+              </p>
+              <div className="flex flex-wrap gap-3">
+                {[["direct", "Direct Onboard", "Full KYC onboarding into the client registry."],
+                  ["lead", "Start as Lead", "Lightweight capture into the CRM pipeline."]].map(([val, label, desc]) => (
+                  <label key={val}
+                    className={`flex-1 min-w-[240px] cursor-pointer rounded-xl border p-3 transition-colors ${
+                      mode === val ? "border-accent bg-accent/5" : "border-border hover:border-accent/50"}`}>
+                    <div className="flex items-center gap-2">
+                      <input type="radio" name="onboard-mode" className="w-4 h-4 accent-emerald-500"
+                        checked={mode === val} onChange={() => setMode(val)} />
+                      <span className="text-sm font-semibold">{label}</span>
+                    </div>
+                    <div className="text-[11px] text-gray-500 mt-1 ml-6">{desc}</div>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* ---------------- Lead capture (simple) ---------------- */}
+          {mode === "lead" && !clientId && (
+            <div className="card p-5">
+              <h2 className="font-bold text-base mb-4">Lead details</h2>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <Field label="Name *"><input className="input" required value={lead.name} onChange={setLeadField("name")} /></Field>
+                <Field label="Phone"><input className="input" placeholder="2547XXXXXXXX" value={lead.phone} onChange={setLeadField("phone")} /></Field>
+                <Field label="Email"><input type="email" className="input" value={lead.email} onChange={setLeadField("email")} /></Field>
+                <Field label="Notes"><input className="input" value={lead.notes} onChange={setLeadField("notes")} /></Field>
+              </div>
+              <p className="text-[11px] text-gray-400 mt-3">
+                Saved to the CRM pipeline. You can convert the lead into a full client later from the CRM board.
+              </p>
+            </div>
+          )}
+
+          {mode !== "lead" && (<>
 
           {/* ---------------- Documents + Attachments ---------------- */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
@@ -682,10 +798,83 @@ export default function ClientForm({ clientId, onClose, onSaved }) {
             )}
           </div>
 
+          {/* ---------------- Bank Statements (info only) ---------------- */}
+          <div className="card p-5">
+            <h2 className="font-bold text-base mb-1">Bank Statements</h2>
+            <p className="text-sm text-gray-500">
+              Bank statements can be uploaded after saving the client. Use the
+              <span className="font-semibold text-charcoal"> Bank Statements</span> tab on the client profile.
+            </p>
+          </div>
+
+          {/* ---------------- Client Consent (SMS OTP) ---------------- */}
+          <div className="card overflow-hidden">
+            <button type="button" onClick={() => setOtpc((s) => ({ ...s, open: !s.open }))}
+              className="w-full flex items-center justify-between px-5 py-4 text-left">
+              <div>
+                <h2 className="font-bold text-base">Client Consent (SMS OTP)</h2>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Send a one-time code to the client's phone and verify the code they read back. Optional — not required to save.
+                </p>
+              </div>
+              <span className="flex items-center gap-2">
+                {otpc.verifiedAt && (
+                  <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-accent text-white">
+                    ✓ Verified
+                  </span>
+                )}
+                <span className="text-gray-400 text-sm">{otpc.open ? "▲" : "▼"}</span>
+              </span>
+            </button>
+
+            {otpc.open && (
+              <div className="px-5 pb-5 border-t border-border pt-4 space-y-4">
+                {otpc.err && (
+                  <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">{otpc.err}</div>
+                )}
+
+                {otpc.verifiedAt ? (
+                  <div className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-accent/10 border border-accent/40 text-accent text-sm font-semibold">
+                    ✓ Consent verified at {new Date(otpc.verifiedAt).toLocaleString("en-KE")}
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex flex-wrap items-end gap-3">
+                      <div className="flex-1 min-w-[220px]">
+                        <label className="label">Client phone</label>
+                        <input className="input" placeholder="2547XXXXXXXX"
+                          value={otpPhone} onChange={(e) => setOtpc((s) => ({ ...s, phone: e.target.value }))} />
+                      </div>
+                      <button type="button" className="btn-primary" onClick={requestOtp}
+                        disabled={otpc.requesting || !otpPhone}>
+                        {otpc.requesting ? "Sending…" : otpc.sent ? "Resend Consent OTP" : "Request Consent OTP"}
+                      </button>
+                    </div>
+
+                    {otpc.sent && (
+                      <div className="space-y-3">
+                        <div className="text-sm text-gray-600">
+                          OTP sent to <span className="font-semibold">{otpc.sentTo}</span>. Ask the client to read it back, then enter it below.
+                        </div>
+                        <OtpInput value={otpc.code} onChange={(v) => setOtpc((s) => ({ ...s, code: v }))} disabled={otpc.verifying} />
+                        <button type="button" className="btn-primary" onClick={verifyOtp}
+                          disabled={otpc.verifying || otpc.code.length < 6}>
+                          {otpc.verifying ? "Verifying…" : "Verify Consent"}
+                        </button>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+
+          </>)}
+
           <div className="flex justify-end gap-2 pb-8">
             <button type="button" className="btn-ghost" onClick={onClose}>Cancel</button>
             <button className="btn-primary" disabled={saving}>
-              {saving ? "Saving…" : clientId ? "Save changes" : "Save client"}
+              {saveLabel}
             </button>
           </div>
         </form>
