@@ -302,6 +302,56 @@ def run_otp_cleanup():
         db.close()
 
 
+def run_cbk_monthly_gdi_submit():
+    """CBK GDI monthly submission. Fires daily but only acts within the regulatory
+    filing window: the 5th–10th of the month on a weekday (Mon–Fri). For each
+    tenant with `cbk_reporting` enabled that has not yet submitted last month's
+    datasets, it runs the full 5-dataset submission. Never raises."""
+    from datetime import date
+    from app.models import TenantModule, CbkSubmissionLog
+    from app.services import cbk_gdi
+
+    today = date.today()
+    # Only act during the 5th–10th on a weekday.
+    if not (5 <= today.day <= 10 and today.weekday() < 5):
+        return
+
+    # Previous calendar month (first day).
+    if today.month == 1:
+        last_month = date(today.year - 1, 12, 1)
+    else:
+        last_month = date(today.year, today.month - 1, 1)
+
+    db = SessionLocal()
+    try:
+        tenant_ids = [row.tenant_id for row in
+                      db.query(TenantModule)
+                      .filter(TenantModule.module_key == "cbk_reporting",
+                              TenantModule.enabled == True)  # noqa: E712
+                      .all()]
+        ran = 0
+        for tid in tenant_ids:
+            try:
+                exists = (db.query(CbkSubmissionLog)
+                          .filter(CbkSubmissionLog.tenant_id == tid,
+                                  CbkSubmissionLog.reporting_month == last_month)
+                          .first())
+                if exists:
+                    continue
+                cbk_gdi.run_monthly_submission(db, tid, last_month, None)
+                ran += 1
+            except Exception:
+                db.rollback()
+                logger.exception("cbk_gdi_submit: tenant %s failed", tid)
+        if ran:
+            logger.info("cbk_gdi_submit: submitted %d tenants for %s",
+                        ran, last_month.isoformat())
+    except Exception:
+        logger.exception("cbk_gdi_submit: aborted")
+    finally:
+        db.close()
+
+
 def start_scheduler():
     """Start the background scheduler once. Safe to call on app startup; logs a
     warning and no-ops if APScheduler is unavailable or disabled by config."""
@@ -349,13 +399,19 @@ def start_scheduler():
         sched.add_job(run_otp_cleanup, "interval", minutes=30,
                       id="otp_cleanup", max_instances=1, coalesce=True,
                       replace_existing=True)
+        # CBK GDI monthly submission: check daily at 03:00; the job itself only
+        # acts during the 5th–10th weekday filing window for the prior month.
+        sched.add_job(run_cbk_monthly_gdi_submit, "cron", hour=3, minute=0,
+                      id="cbk_gdi_submit", max_instances=1, coalesce=True,
+                      replace_existing=True, timezone=tz)
         sched.start()
         _scheduler = sched
         logger.info("scheduler started: auto_reconcile every %d min "
                     "(resolve payouts stuck > %d min); webhook_retry every 2 min; "
                     "webhook_purge every 60 min (raw retention %dh); "
                     "ptp_reminders 08:00, gps_stipend 22:00, "
-                    "collection_efficiency monthly, otp_cleanup every 30 min (tz=%s)",
+                    "collection_efficiency monthly, otp_cleanup every 30 min, "
+                    "cbk_gdi_submit daily 03:00 (5th–10th weekday window) (tz=%s)",
                     settings.SCHEDULER_INTERVAL_MINUTES,
                     settings.SCHEDULER_STUCK_MINUTES,
                     settings.WEBHOOK_RAW_RETENTION_HOURS, tz)

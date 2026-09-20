@@ -12,8 +12,9 @@ from app.models.rbac import (ApprovalThreshold, ApproverSetting, AuditLog,
                              RolePermissionOverride, CustomRole,
                              SMS_AUTOMATION_DEFAULT_ENABLED, SMS_AUTOMATION_DEFAULT_HOUR)
 from app.models.engagement import (
-    CrmLead, SiteVisit, CallLog, Complaint, ImpactSurvey, AmlFlag,
+    CrmLead, SiteVisit, CallLog, Complaint, ImpactSurvey, AmlFlag, CbkSubmissionLog,
     CRM_STAGES, CALL_OUTCOMES, COMPLAINT_CATEGORIES, COMPLAINT_STATUSES, SLA_DAYS,
+    CBK_SUBMISSION_STATUSES,
 )
 from app.models.integrations import (MpesaStatementAnalysis, CrbCheck,
                                      TenantIntegrationConfig, SmsRateCard,

@@ -185,6 +185,18 @@ class Settings(BaseSettings):
     EKYC_STRATEGY_ID: str = ""
     EKYC_MOCK: bool = False
 
+    # --- CBK GDI Submission ---------------------------------------------------
+    # Central Bank of Kenya Granular Data Interface (GDI) monthly submission.
+    # Credential-gated: while CLIENT_ID/TOKEN_URL are empty the service reports
+    # NOT CONFIGURED and returns a clear error instead of attempting a live call.
+    CBK_GDI_BASE_URL: str = "https://gdi.centralbank.go.ke"
+    CBK_GDI_TOKEN_URL: str = ""  # e.g. https://gdi.centralbank.go.ke/oauth2/v1/token
+    CBK_GDI_CLIENT_ID: str = ""
+    CBK_GDI_CLIENT_SECRET: str = ""
+    CBK_GDI_SCOPE: str = "https://8C80E3C8CFCF45EBB272C5478F767122.ke1.s7071808.oraclecloudatcustomer.com:443urn:opc:resource:consumer::all"
+    CBK_DCP_CODE: str = "0900144"
+    CBK_INSTITUTION_CODE: str = "0900144"
+
     class Config:
         env_file = ".env"
         extra = "ignore"

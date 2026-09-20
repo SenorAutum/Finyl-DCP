@@ -2,8 +2,8 @@
 from datetime import datetime, timedelta
 
 from sqlalchemy import (Boolean, Column, Date, DateTime, Float, ForeignKey,
-                        Integer, Numeric, String, Text)
-from sqlalchemy.dialects.postgresql import JSONB
+                        Integer, Numeric, String, Text, func)
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 
 from app.core.database import Base
@@ -137,3 +137,28 @@ class AmlFlag(Base):
     reviewed = Column(Boolean, default=False)
 
     borrower = relationship("Borrower")
+
+
+CBK_SUBMISSION_STATUSES = ["pending", "submitted", "error", "accepted", "rejected"]
+
+
+class CbkSubmissionLog(Base):
+    """One row per CBK GDI dataset submission attempt (per tenant, month, dataset)."""
+
+    __tablename__ = "cbk_submission_logs"
+
+    id = Column(Integer, primary_key=True)
+    tenant_id = Column(Integer, nullable=False, index=True)
+    reporting_month = Column(Date, nullable=False)
+    dataset_name = Column(String(100), nullable=False)
+    request_id = Column(UUID(as_uuid=True), unique=True)
+    cbk_request_id = Column(String(200))
+    status = Column(String(50), nullable=False, default="pending")
+    rows_submitted = Column(Integer, nullable=False, default=0)
+    response_body = Column(JSONB)
+    error_detail = Column(Text)
+    submitted_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
+    submitted_at = Column(DateTime(timezone=True), server_default=func.now())
+    status_checked_at = Column(DateTime(timezone=True))
+    accepted_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
