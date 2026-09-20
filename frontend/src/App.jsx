@@ -46,6 +46,19 @@ import KycEscalations from "./pages/kyc/KycEscalations";
 import ApiClients from "./pages/access/ApiClients";
 import ClientEdits from "./pages/clients/ClientEdits";
 import ExecutiveDashboard from "./pages/dashboard/ExecutiveDashboard";
+// Phase 4: activity monitoring, GPS/site visits, face validation, security &
+// device config, bank statements, Ratiba, global search, validation prefs, OTP.
+import ActivityMonitor from "./pages/activity/ActivityMonitor";
+import GpsTracker from "./pages/field/GpsTracker";
+import SiteVisits from "./pages/field/SiteVisits";
+import FaceValidation from "./pages/kyc/FaceValidation";
+import SecurityConfig from "./pages/security/SecurityConfig";
+import DeviceManagement from "./pages/security/DeviceManagement";
+import OtpHistory from "./pages/security/OtpHistory";
+import BankStatements from "./pages/collections/BankStatements";
+import Ratiba from "./pages/collections/Ratiba";
+import SearchResults from "./pages/search/SearchResults";
+import ValidationPrefs from "./pages/admin/ValidationPrefs";
 import { Spinner } from "./components/ui";
 
 // Ordered fallbacks: first module the user can access becomes their home page.
@@ -180,6 +193,19 @@ export default function App() {
             <Route path="/client-edits" element={<Guard module="lending"><PermGuard perms={["client_edits.request", "client_edits.approve_primary", "client_edits.approve_secondary"]}><ClientEdits /></PermGuard></Guard>} />
             <Route path="/dashboard/executive" element={<Guard module="dashboard"><ExecutiveDashboard /></Guard>} />
             <Route path="/access/api-clients" element={<AdminGuard><ApiClients /></AdminGuard>} />
+            {/* Phase 4: activity, field GPS/site visits, face validation, security,
+                bank statements, Ratiba, global search, validation prefs, devices, OTP */}
+            <Route path="/activity-monitor" element={<Guard module="lending"><PermGuard perms={["activity.view"]}><ActivityMonitor /></PermGuard></Guard>} />
+            <Route path="/gps-tracking" element={<Guard module="lending"><PermGuard perms={["field_ops.gps_view"]}><GpsTracker /></PermGuard></Guard>} />
+            <Route path="/site-visits" element={<Guard module="lending"><PermGuard perms={["field_ops.tasks_manage"]}><SiteVisits /></PermGuard></Guard>} />
+            <Route path="/face-validation" element={<PermGuard perms={["clients.edit", "clients.create"]}><FaceValidation /></PermGuard>} />
+            <Route path="/bank-statements" element={<Guard module="lending"><PermGuard perms={["collections.ptp_manage"]}><BankStatements /></PermGuard></Guard>} />
+            <Route path="/ratiba" element={<Guard module="lending"><PermGuard perms={["collections.ptp_manage"]}><Ratiba /></PermGuard></Guard>} />
+            <Route path="/search" element={<PermGuard perms={["search.global"]}><SearchResults /></PermGuard>} />
+            <Route path="/security-config" element={<AdminGuard><SecurityConfig /></AdminGuard>} />
+            <Route path="/validation-preferences" element={<AdminGuard><ValidationPrefs /></AdminGuard>} />
+            <Route path="/devices" element={<AdminGuard><DeviceManagement /></AdminGuard>} />
+            <Route path="/otp-history" element={<AdminGuard><OtpHistory /></AdminGuard>} />
             {/* RBAC: approvals, administration & reporting (permission-gated) */}
             <Route path="/approvals" element={<PermGuard perms={["loans.approve", "clients.approve", "disburse.approve", "refund.approve"]}><Approvals /></PermGuard>} />
             <Route path="/access/users" element={<AdminGuard><Users /></AdminGuard>} />
