@@ -449,9 +449,28 @@ def executive_surface(db: Session, tenant_id: int, loans: pd.DataFrame,
     """Executive dashboard payload (plan §Frontend line 449): headline KPIs, officer
     rankings (top by net margin), product performance, and the lead-conversion rate."""
     officers = staff_performance(db, tenant_id, loans, repayments)
+    kpis = portfolio_kpis(loans, repayments)
+
+    # Per-branch performance breakdown for the director/executive view. Falls
+    # back to an empty list when there are no loans or no branch_name column.
+    branch_breakdown: list[dict] = []
+    if len(loans) and "branch_name" in loans.columns:
+        active_statuses = ["active", "disbursed"]
+        for branch_name, grp in loans.groupby(
+                loans["branch_name"].fillna("Unknown")):
+            open_grp = grp[grp["status"].isin(["active", "overdue", "defaulted"])]
+            branch_breakdown.append({
+                "branch_name": branch_name,
+                "active_loans": int(grp["status"].isin(active_statuses).sum()),
+                "outstanding": round(float(open_grp["outstanding_balance"].sum()), 2),
+                "par_30": _par(grp, 30),
+            })
+        branch_breakdown.sort(key=lambda r: r["outstanding"], reverse=True)
+
     return {
-        "kpis": portfolio_kpis(loans, repayments),
+        "kpis": kpis,
         "officer_rankings": officers[:10],
         "product_performance": product_performance(loans, repayments),
         "lead_conversion": lead_conversion(db, tenant_id, f),
+        "branch_breakdown": branch_breakdown,
     }

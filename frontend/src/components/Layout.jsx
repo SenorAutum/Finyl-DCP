@@ -14,15 +14,19 @@ import GlobalSearch from "./GlobalSearch";
 const NAV = [
   { group: "Overview", items: [
     { to: "/", label: "Dashboard", module: "dashboard", icon: "▦" },
+    { to: "/dashboard/director", label: "Director View", icon: "📊", anyPerm: ["dashboard.company"] },
   ]},
   { group: "Transactions", items: [
-    { to: "/clients", label: "Clients", module: "lending", icon: "👥" },
-    { to: "/loans", label: "Loans", module: "lending", icon: "📋" },
+    { to: "/clients", label: "Clients", module: "lending", icon: "👥",
+      anyPerm: ["clients.view_all", "clients.view_portfolio", "clients.create", "clients.edit"] },
+    { to: "/loans", label: "Loans", module: "lending", icon: "📋",
+      anyPerm: ["loans.view_all", "loans.view_portfolio", "loans.create"] },
     { to: "/payments", label: "Payments & SMS", module: "payments", icon: "₿" },
     { to: "/payments/suspense", label: "Suspense Account", module: "payments", icon: "⏳", anyPerm: ["reconcile.execute"] },
   ]},
   { group: "Registry", items: [
-    { to: "/guarantors", label: "Guarantors", module: "lending", icon: "🤝" },
+    { to: "/guarantors", label: "Guarantors", module: "lending", icon: "🤝",
+      anyPerm: ["guarantors.manage", "clients.view_all", "loans.view_all"] },
     { to: "/client-edits", label: "Edit Requests", icon: "✏️",
       anyPerm: ["client_edits.request", "client_edits.approve_secondary", "client_edits.approve_primary"] },
     { to: "/kyc-escalations", label: "KYC Escalations", icon: "🔍",
@@ -54,7 +58,8 @@ const NAV = [
       anyPerm: ["loans.approve", "clients.approve", "disburse.approve", "refund.approve"] },
   ]},
   { group: "Engagement", items: [
-    { to: "/crm", label: "CRM Pipeline", module: "crm", icon: "🧭" },
+    { to: "/crm", label: "CRM Pipeline", module: "crm", icon: "🧭",
+      anyPerm: ["clients.approve", "clients.create"] },
     { to: "/call-center", label: "Call Center", module: "call_center", icon: "☎" },
     { to: "/complaints", label: "Complaints", module: "complaints", icon: "⚠" },
     { to: "/impact", label: "Impact & Investors", module: "impact", icon: "🌱" },

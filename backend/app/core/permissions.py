@@ -209,6 +209,28 @@ ROLE_PERMISSIONS = {
         "loans.approve", "loans.escalate", "loans.adjust", "loans.writeoff",
         "disburse.approve", "refund.approve",
     },
+
+    # Director — senior executive with company-wide read visibility, approval
+    # authority, executive reporting and oversight/compliance access. NOT a
+    # day-to-day operational role (no origination / money-movement execution).
+    "director": {
+        # Org-wide read visibility
+        "clients.view_all", "loans.view_all",
+        # Approval authority
+        "clients.approve",
+        "loans.approve", "loans.adjust", "loans.writeoff", "loans.escalate",
+        "disburse.approve", "refund.approve",
+        # Executive reporting
+        "dashboard.company",
+        "reports.export", "reports.schedule", "reports.template", "reports.flag",
+        "accounting.export",
+        # Oversight & compliance
+        "audit.view", "activity.view",
+        "org.view", "thresholds.view",
+        "kyc.resolve",
+        "collections.efficiency_view",
+        "search.global",
+    },
 }
 
 # --- Backward-compatible legacy roles ---------------------------------------
@@ -229,7 +251,7 @@ ROLE_PERMISSIONS["call_agent"] = {
 COMPANY_SCOPE_ROLES = {
     "super_admin", "tenant_admin", "system_admin",
     "disbursement_officer", "reconciliation_officer", "hq_operations",
-    "hq_credit_committee",
+    "hq_credit_committee", "director",
 }
 
 # Human-friendly labels for the UI.
@@ -244,6 +266,7 @@ ROLE_LABELS = {
     "reconciliation_officer": "Finance / Reconciliation Officer",
     "hq_operations": "HQ Operations",
     "hq_credit_committee": "HQ / Credit Committee",
+    "director": "Director",
     "loan_officer": "Loan Officer (legacy)",
     "call_agent": "Call Agent",
 }
@@ -253,7 +276,7 @@ ROLE_LABELS = {
 ASSIGNABLE_ROLES = [
     "system_admin", "relationship_officer", "branch_manager", "regional_manager",
     "disbursement_officer", "reconciliation_officer", "hq_operations",
-    "hq_credit_committee",
+    "hq_credit_committee", "director",
     "tenant_admin", "loan_officer", "call_agent",
 ]
 
