@@ -21,7 +21,7 @@ from app.core.permissions import has_permission
 from app.core.config import settings
 from app.models import SmsTemplate, Tenant, User, SmsAutomationSetting, SmsOptOut
 from app.schemas import (MessageTemplateIn, MessagePreviewIn, MessageTestIn,
-                         SmsAutomationIn, OptOutIn)
+                         SmsAutomationIn, OptOutIn, SmsComposeIn)
 from app.services import sms
 from app.routers.notifications import get_automation_config, run_tenant_jobs
 
@@ -214,6 +214,55 @@ def send_test(event_key: str, body: MessageTestIn, request: Request,
     db.commit()
     return {"event_key": event_key, "status": log.status, "message": rendered,
             "sms_log_id": log.id, "error": log.error}
+
+
+# ---------------------------------------------------------------------------
+# Bulk compose — dispatch one ad-hoc message to a list of recipients. Each send
+# is persisted individually via sms.send_sms (trigger_type="bulk") so it appears
+# in the SMS log and billing roll-up. Opt-outs are NOT applied here: bulk sends
+# are explicitly initiated by staff and may be transactional in nature.
+# ---------------------------------------------------------------------------
+_MAX_BULK_RECIPIENTS = 1000
+
+
+@router.post("/compose")
+def compose_bulk(body: SmsComposeIn, request: Request,
+                 ctx: MsgCtx = Depends(messaging_ctx), db: Session = Depends(get_db)):
+    message = (body.message or "").strip()
+    if not message:
+        raise HTTPException(400, "Message body cannot be empty")
+    # Normalise + de-duplicate recipients, dropping blanks.
+    seen: set[str] = set()
+    recipients: list[str] = []
+    for raw in (body.recipients or []):
+        norm = sms.normalise_phone(raw or "")
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        recipients.append(norm)
+    if not recipients:
+        raise HTTPException(400, "At least one valid recipient is required")
+    if len(recipients) > _MAX_BULK_RECIPIENTS:
+        raise HTTPException(400, f"Too many recipients (max {_MAX_BULK_RECIPIENTS})")
+
+    results = []
+    sent = failed = 0
+    for phone in recipients:
+        log = sms.send_sms(db, ctx.tenant_id, phone, message, trigger_type="bulk")
+        if log.status == "sent":
+            sent += 1
+        else:
+            failed += 1
+        results.append({"phone": phone, "status": log.status,
+                        "sms_log_id": log.id, "error": log.error})
+
+    write_audit(db, tenant_id=ctx.tenant_id, user=ctx.user, action="messaging.compose_bulk",
+                entity_type="sms_bulk", entity_id=None,
+                details={"recipients": len(recipients), "sent": sent, "failed": failed},
+                request=request)
+    db.commit()
+    return {"tenant_id": ctx.tenant_id, "total": len(recipients),
+            "sent": sent, "failed": failed, "results": results}
 
 
 # ===========================================================================

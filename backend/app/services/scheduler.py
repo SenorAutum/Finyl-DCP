@@ -205,7 +205,7 @@ def run_ptp_reminders():
                 else:
                     msg = (f"Follow-up: your payment promise of KES {ptp.amount} was due "
                            f"on {ptp.ptp_date}. Please settle it as soon as possible.")
-                sms.send_sms(db, ptp.tenant_id, phone, msg, category="ptp_reminder")
+                sms.send_sms(db, ptp.tenant_id, phone, msg, trigger_type="ptp_reminder")
                 log[leg] = datetime.utcnow().isoformat() + "Z"
                 ptp.reminder_sent_at = log
                 db.commit()

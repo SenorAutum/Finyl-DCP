@@ -214,6 +214,12 @@ class SmsAutomationIn(BaseModel):
     send_hour: int = 7
 
 
+class SmsComposeIn(BaseModel):
+    """Ad-hoc bulk SMS: one message to a list of recipients (max 1000)."""
+    recipients: list[str]
+    message: str
+
+
 # ---- CRM -----------------------------------------------------------------------
 class LeadCreate(BaseModel):
     name: str

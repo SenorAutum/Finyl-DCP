@@ -70,6 +70,8 @@ const NAV = [
     { to: "/accounting", label: "Accounting & GL", icon: "📒", anyPerm: ["accounting.export"] },
   ]},
   { group: "Messaging", items: [
+    { to: "/messaging/compose", label: "Compose SMS", icon: "✍", anyPerm: ["messaging.manage"] },
+    { to: "/messaging/sms-log", label: "SMS Log", icon: "📨", anyPerm: ["messaging.manage"] },
     { to: "/messaging/opt-outs", label: "SMS Opt-Outs", icon: "🔕", anyPerm: ["messaging.manage"] },
   ]},
   { group: "Compliance", items: [

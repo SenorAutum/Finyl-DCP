@@ -56,7 +56,7 @@ def deliver(db: Session, user: User, code: str, *, channels=None) -> dict:
     if "sms" in channels and getattr(user, "phone", None):
         try:
             from app.services import sms
-            res = sms.send_sms(db, user.tenant_id, user.phone, msg, category="otp")
+            res = sms.send_sms(db, user.tenant_id, user.phone, msg, trigger_type="otp")
             sent["sms"] = bool(res)
         except Exception:
             sent["sms"] = False

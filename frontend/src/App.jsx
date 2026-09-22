@@ -17,6 +17,8 @@ import Products from "./pages/lending/Products";
 import Payments from "./pages/payments/Payments";
 import Suspense from "./pages/payments/Suspense";
 import OptOuts from "./pages/messaging/OptOuts";
+import SmsLog from "./pages/messaging/SmsLog";
+import ComposeSms from "./pages/messaging/ComposeSms";
 import Accounting from "./pages/accounting/Accounting";
 import Complaints from "./pages/complaints/Complaints";
 import Crm from "./pages/crm/Crm";
@@ -181,6 +183,8 @@ export default function App() {
             <Route path="/payments" element={<Guard module="payments"><Payments /></Guard>} />
             <Route path="/payments/suspense" element={<Guard module="payments"><PermGuard perms={["reconcile.execute"]}><Suspense /></PermGuard></Guard>} />
             <Route path="/messaging/opt-outs" element={<PermGuard perms={["messaging.manage"]}><OptOuts /></PermGuard>} />
+            <Route path="/messaging/compose" element={<PermGuard perms={["messaging.manage"]}><ComposeSms /></PermGuard>} />
+            <Route path="/messaging/sms-log" element={<PermGuard perms={["messaging.manage"]}><SmsLog /></PermGuard>} />
             <Route path="/accounting" element={<PermGuard perms={["accounting.export"]}><Accounting /></PermGuard>} />
             <Route path="/complaints" element={<Guard module="complaints"><Complaints /></Guard>} />
             <Route path="/crm" element={<Guard module="crm"><Crm /></Guard>} />
