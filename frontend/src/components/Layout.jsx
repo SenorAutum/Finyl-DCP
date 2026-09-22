@@ -201,7 +201,9 @@ export default function Layout() {
           </div>
         )}
       </div>
-      <NavItems mini={mini} />
+      {/* Plain function call (not <NavItems/>) so the <nav> DOM node is stable
+          across Layout re-renders and its scroll position is preserved. */}
+      {NavItems({ mini })}
       {/* Collapse toggle — desktop only */}
       <button
         onClick={() => setCollapsed((c) => !c)}
@@ -223,13 +225,13 @@ export default function Layout() {
     <div className="min-h-screen flex">
       {/* Desktop sidebar */}
       <aside className={`hidden lg:block fixed inset-y-0 transition-[width] duration-200 ${collapsed ? "w-[68px]" : "w-60"}`}>
-        <Sidebar mini={collapsed} />
+        {Sidebar({ mini: collapsed })}
       </aside>
       {/* Mobile drawer (always full width, never mini) */}
       {open && (
         <div className="lg:hidden fixed inset-0 z-40">
           <div className="absolute inset-0 bg-black/50" onClick={() => setOpen(false)} />
-          <aside className="absolute inset-y-0 left-0 w-64 animate-slide-up"><Sidebar /></aside>
+          <aside className="absolute inset-y-0 left-0 w-64 animate-slide-up">{Sidebar({})}</aside>
         </div>
       )}
 

@@ -380,7 +380,7 @@ def build_router(prefix: str, tag: str) -> APIRouter:
         # Advance a CRM-converted draft to pending_approval when the RO saves the record.
         # This is the trigger that surfaces the client in the BM's Approvals queue.
         if (getattr(client, "profile_status", None) == "draft"
-                and user.role in ("relationship_officer", "loan_officer")):
+                and has_permission(user.role, "clients.create")):
             client.profile_status = "pending_approval"
         write_audit(db, tenant_id=tenant_id, user=user, action="client.edit",
                     entity_type="client", entity_id=client.id,
