@@ -148,7 +148,7 @@ function ApplyModal({ onClose, onCreated }) {
   const [surveyFor, setSurveyFor] = useState(null); // borrower_id when 428 hit
 
   useEffect(() => {
-    api(`/api/v1/clients?search=${encodeURIComponent(bSearch)}&page_size=50`)
+    api(`/api/v1/clients?search=${encodeURIComponent(bSearch)}&page_size=50&profile_status=approved`)
       .then((d) => setBorrowers(d.items)).catch(() => {});
   }, [bSearch]);
   useEffect(() => {
@@ -186,7 +186,7 @@ function ApplyModal({ onClose, onCreated }) {
         {err && <div className="text-sm text-red-600 bg-red-50 rounded-lg p-2">{err}</div>}
         <div>
           <label className="label">Client *</label>
-          <input className="input mb-1.5" placeholder="Type to filter clients…" value={bSearch} onChange={(e) => setBSearch(e.target.value)} />
+          <input className="input mb-1.5" placeholder="Search approved clients…" value={bSearch} onChange={(e) => setBSearch(e.target.value)} />
           <select className="input" required value={f.borrower_id} onChange={(e) => setF({ ...f, borrower_id: e.target.value })}>
             <option value="">Select client…</option>
             {borrowers.map((b) => <option key={b.id} value={b.id}>{b.full_name} — {b.phone}</option>)}

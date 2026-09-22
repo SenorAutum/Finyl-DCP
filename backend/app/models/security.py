@@ -8,7 +8,7 @@ from sqlalchemy.orm import relationship
 
 from app.core.database import Base
 
-OTP_PURPOSES = ["login", "password_reset", "device_bind"]
+OTP_PURPOSES = ["login", "password_reset", "device_bind", "consent"]
 
 
 class OtpToken(Base):
@@ -23,6 +23,31 @@ class OtpToken(Base):
     consumed = Column(Boolean, nullable=False, default=False)
     attempts = Column(Integer, nullable=False, default=0)
     ip = Column(String(45))
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class ClientConsentLog(Base):
+    """Audit log of SMS-OTP client consent (migration 028).
+
+    The OTP is generated for the OFFICER's session but the SMS is sent to the
+    client's phone; the client reads the code back verbally and the officer
+    verifies it. Each successful verification writes one immutable row here.
+    """
+    __tablename__ = "client_consent_logs"
+
+    id = Column(Integer, primary_key=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"),
+                       nullable=False, index=True)
+    client_id = Column(Integer, ForeignKey("borrowers.id", ondelete="SET NULL"),
+                       index=True)
+    lead_id = Column(Integer, ForeignKey("crm_leads.id", ondelete="SET NULL"),
+                     index=True)
+    phone = Column(String(20), nullable=False)
+    otp_token_id = Column(Integer, ForeignKey("otp_tokens.id", ondelete="SET NULL"))
+    officer_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
+    consent_text = Column(String)
+    ip = Column(String(45))
+    consented_at = Column(DateTime(timezone=True), default=datetime.utcnow)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
 
 

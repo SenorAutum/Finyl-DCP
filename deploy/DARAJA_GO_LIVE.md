@@ -68,6 +68,51 @@ Use it to confirm which environment the service actually came up in.
 
 ---
 
+## 1b. Prove the sandbox link first (recommended)
+
+Before going anywhere near production, confirm Finyl-DCP can actually talk to
+Safaricom in the **sandbox**. This needs only the two sandbox OAuth values.
+
+1. On <https://developer.safaricom.co.ke>, open (or create) an app and copy its
+   **sandbox** `Consumer Key` and `Consumer Secret` (the "Lipa Na M-Pesa
+   Sandbox" product). The sandbox shortcode (`174379`) and test passkey are
+   public and filled in automatically by the diagnostic below.
+2. Run the self-contained diagnostic harness — it exercises the exact
+   `app.services.mpesa` code the API uses, without touching the DB:
+
+   ```bash
+   cd backend
+   DARAJA_CONSUMER_KEY=xxxx DARAJA_CONSUMER_SECRET=yyyy \
+       python3 scripts/test_daraja_sandbox.py
+   ```
+
+   It runs five checks and prints a clear PASS/FAIL for each:
+
+   | # | Check                          | Proves                                   |
+   |---|--------------------------------|------------------------------------------|
+   | 0 | Credentials present             | Env is wired                             |
+   | 1 | Reachability                    | Network path to `sandbox.safaricom.co.ke`|
+   | 2 | OAuth token                     | Consumer key/secret are valid            |
+   | 3 | Token cache reuse               | No redundant token calls per request     |
+   | 4 | `test_connection()`             | The in-app "Test connection" helper works|
+   | 5 | STK push                        | A live Lipa-na-M-Pesa prompt is accepted |
+
+   Exit code `0` = all passed. A PASS on check 5 means the borrower's phone
+   receives the STK prompt; the **final** result then arrives asynchronously on
+   the `CallBackURL`, which requires a publicly reachable callback host
+   (`DARAJA_CALLBACK_BASE_URL`) — see §3.
+3. Optionally target Safaricom's documented sandbox test number explicitly:
+
+   ```bash
+   TEST_MSISDN=254708374149 DARAJA_CONSUMER_KEY=xxxx \
+       DARAJA_CONSUMER_SECRET=yyyy python3 scripts/test_daraja_sandbox.py
+   ```
+
+Once every check passes, the same code path is proven — going to production is
+then purely the credential/host swap described below.
+
+---
+
 ## 2. Obtain production credentials (Safaricom Daraja portal)
 
 Do this on <https://developer.safaricom.co.ke> with the organisation's Daraja
@@ -126,12 +171,23 @@ Notes:
 - The app builds these automatically (`mpesa.callback_url()`), so once
   `DARAJA_CALLBACK_BASE_URL` and `MPESA_CALLBACK_TOKEN` are set, the B2C payload
   and C2B registration already point Safaricom at the right places.
-- Register the **B2C Result URL and Queue Timeout URL** against the B2C
-  shortcode in the M-Pesa Org Portal / your app config.
-- Register the **C2B Validation & Confirmation URLs** via the C2B
-  `registerurl` call (the app's `register_c2b_urls()` does this) or the portal.
-- The STK **CallBackURL** is sent inline on each STK push — no pre-registration,
-  but Safaricom must be able to reach it (public HTTPS).
+- **Only C2B is registered on the portal.** The Daraja portal "URL Management"
+  screen provisions exactly two URLs — the **C2B Validation URL** and **C2B
+  Confirmation URL** — and that is all it should show. Register them there, or
+  via the C2B `registerurl` call (the app's `register_c2b_urls()` does this).
+- **B2C Result/Queue-Timeout URLs are NOT registered anywhere** — they are sent
+  **inline in every B2C request payload** (`ResultURL` / `QueueTimeOutURL`).
+  VERIFIED LIVE 2026-09-21: a production B2C payout delivered its result to an
+  inline URL with no portal registration whatsoever.
+- The STK **CallBackURL** is likewise sent **inline on each STK push** — no
+  pre-registration. Both STK and B2C inline URLs must simply be public HTTPS and
+  reachable by Safaricom.
+- **B2C minimum amount is KES 10.** A payout below the minimum is accepted at the
+  sync step (`ResponseCode 0`) but then **declined asynchronously** on the
+  ResultURL with `ResultCode 2 — "Declined due to limit rule: less than the
+  minimum transaction amount."` STK push has no such floor (KES 1 works). Always
+  confirm settlement from the **async ResultURL callback**, never from the sync
+  acknowledgement alone.
 - Safaricom sends **no auth header** on webhooks; the `MPESA_CALLBACK_TOKEN`
   path segment is the source-auth control. Pair it with the Safaricom IP
   allow-list in `deploy/finyl-dcp.conf` (nginx) for defence-in-depth.

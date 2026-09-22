@@ -1,10 +1,25 @@
 // CRM & Field Sales: 5-stage Kanban pipeline + geo-tagged site-visit logging.
 import { useEffect, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import { api, fmtDate, fmtKES } from "../../lib/api";
 import { Modal, PageHeader, Spinner } from "../../components/ui";
+import { useAuth } from "../../hooks/useAuth";
 
 const STAGE_LABELS = { lead: "Lead", contacted: "Contacted", field_visit: "Field Visit", app_setup: "App Setup", disbursed: "Disbursed" };
 const STAGE_COLORS = { lead: "border-gray-300", contacted: "border-blue-400", field_visit: "border-amber-400", app_setup: "border-teal", disbursed: "border-accent" };
+
+const TEMP_LABELS = { cold: "Cold", warm: "Warm", hot: "Hot" };
+const TEMP_CHIP = {
+  cold: "bg-blue-100 text-blue-700",
+  warm: "bg-amber-100 text-amber-700",
+  hot: "bg-red-100 text-red-700",
+};
+const BM_CHIP = {
+  pending: "bg-gray-200 text-gray-600",
+  approved: "bg-emerald-100 text-emerald-700",
+  rejected: "bg-red-100 text-red-700",
+};
+const BM_LABELS = { pending: "Pending BM", approved: "BM Approved", rejected: "BM Rejected" };
 
 function GeoChip({ lat, lng }) {
   if (lat == null || lng == null) return <span className="text-xs text-gray-400">No GPS fix</span>;
@@ -23,7 +38,10 @@ export default function Crm() {
   const [creating, setCreating] = useState(false);
   const [visitFor, setVisitFor] = useState(null);  // lead when logging a visit
   const [visits, setVisits] = useState(null);      // {lead, list} when viewing visits
+  const [convertFor, setConvertFor] = useState(null); // lead when converting to client
   const [err, setErr] = useState("");
+  const { can } = useAuth();
+  const navigate = useNavigate();
 
   const load = () => api("/api/v1/crm/board").then(setBoard).catch((e) => setErr(e.detail));
   useEffect(() => {
@@ -84,6 +102,33 @@ export default function Crm() {
     setVisits({ lead, list });
   };
 
+  // ---- Lead temperature (cold/warm/hot) ----
+  const setTemperature = async (lead, temperature) => {
+    setErr("");
+    try {
+      await api(`/api/v1/crm/leads/${lead.id}/temperature`, { method: "PATCH", body: { temperature } });
+      load();
+    } catch (e) { setErr(e.detail); }
+  };
+
+  // ---- BM approve / reject ----
+  const bmApprove = async (lead) => {
+    setErr("");
+    try {
+      await api(`/api/v1/crm/leads/${lead.id}/bm-approve`, { method: "POST" });
+      load();
+    } catch (e) { setErr(e.detail); }
+  };
+  const bmReject = async (lead) => {
+    const reason = window.prompt(`Reason for rejecting "${lead.name}"?`);
+    if (reason == null) return;
+    setErr("");
+    try {
+      await api(`/api/v1/crm/leads/${lead.id}/bm-reject`, { method: "POST", body: { reason } });
+      load();
+    } catch (e) { setErr(e.detail); }
+  };
+
   if (!board) return <Spinner />;
 
   return (
@@ -105,7 +150,14 @@ export default function Crm() {
                 const idx = board.stages.indexOf(stage);
                 return (
                   <div key={lead.id} className="card p-3">
-                    <div className="font-semibold text-sm">{lead.name}</div>
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="font-semibold text-sm">{lead.name}</div>
+                      {lead.bm_approval_status && (
+                        <span className={`shrink-0 text-[10px] font-bold px-2 py-0.5 rounded-full ${BM_CHIP[lead.bm_approval_status] || "bg-gray-200 text-gray-600"}`}>
+                          {BM_LABELS[lead.bm_approval_status] || lead.bm_approval_status}
+                        </span>
+                      )}
+                    </div>
                     <div className="text-xs text-gray-400">{lead.phone || "no phone"} · {lead.sector || "—"}</div>
                     {lead.estimated_loan_amount > 0 && (
                       <div className="text-xs font-semibold text-teal mt-1">Est. {fmtKES(lead.estimated_loan_amount)}</div>
@@ -113,6 +165,38 @@ export default function Crm() {
                     <div className="text-[11px] text-gray-400 mt-1">
                       {lead.assigned_staff_name || "Unassigned"} · {lead.visit_count} visit{lead.visit_count === 1 ? "" : "s"}
                     </div>
+                    {lead.bm_approval_status === "rejected" && lead.bm_rejection_reason && (
+                      <div className="text-[11px] text-red-600 mt-1">Reason: {lead.bm_rejection_reason}</div>
+                    )}
+
+                    {/* Temperature chip + picker */}
+                    <div className="flex items-center gap-1.5 mt-2">
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${TEMP_CHIP[lead.stage_detail] || "bg-gray-100 text-gray-500"}`}>
+                        {TEMP_LABELS[lead.stage_detail] || "Set temp"}
+                      </span>
+                      <select className="input !w-auto !py-0.5 !px-1.5 text-[11px]" value={lead.stage_detail || ""}
+                        onChange={(e) => setTemperature(lead, e.target.value)}>
+                        <option value="" disabled>Temp…</option>
+                        {["cold", "warm", "hot"].map((t) => <option key={t} value={t}>{TEMP_LABELS[t]}</option>)}
+                      </select>
+                    </div>
+
+                    {/* BM approve / reject */}
+                    {lead.bm_approval_status === "pending" && can("clients.approve") && (
+                      <div className="flex items-center gap-1 mt-2">
+                        <button className="btn-ghost !py-0.5 !px-2 text-[11px] text-emerald-700" onClick={() => bmApprove(lead)}>BM Approve</button>
+                        <button className="btn-ghost !py-0.5 !px-2 text-[11px] text-red-600" onClick={() => bmReject(lead)}>BM Reject</button>
+                      </div>
+                    )}
+
+                    {/* Convert to client / view converted client */}
+                    {lead.converted_to_client_id ? (
+                      <Link to={`/clients/${lead.converted_to_client_id}`}
+                        className="btn-ghost !py-0.5 !px-2 text-[11px] text-teal mt-2 w-full text-center block">View Client →</Link>
+                    ) : lead.bm_approval_status === "approved" ? (
+                      <button className="btn-primary !py-1 !px-2 text-[11px] mt-2 w-full" onClick={() => setConvertFor(lead)}>→ Convert to Client</button>
+                    ) : null}
+
                     <div className="flex items-center gap-1 mt-2">
                       <button className="btn-ghost !py-0.5 !px-2 text-xs" disabled={idx === 0} onClick={() => move(lead, -1)} title="Move back">‹</button>
                       <button className="btn-ghost !py-0.5 !px-2 text-xs" disabled={idx === board.stages.length - 1} onClick={() => move(lead, 1)} title="Move forward">›</button>
@@ -195,6 +279,12 @@ export default function Crm() {
         </Modal>
       )}
 
+      {convertFor && (
+        <ConvertModal lead={convertFor} onClose={() => setConvertFor(null)}
+          onConverted={() => { setConvertFor(null); load(); }}
+          navigate={navigate} />
+      )}
+
       {visits && (
         <Modal title={`Site Visits — ${visits.lead.name}`} onClose={() => setVisits(null)} wide>
           {visits.list.length === 0 ? <p className="text-sm text-gray-400">No visits logged yet.</p> : (
@@ -214,5 +304,48 @@ export default function Crm() {
         </Modal>
       )}
     </div>
+  );
+}
+
+// Convert a BM-approved lead into a draft client (KYC cascade runs server-side).
+function ConvertModal({ lead, onClose, onConverted, navigate }) {
+  const [nationalId, setNationalId] = useState("");
+  const [dob, setDob] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const convert = async (goToClient) => {
+    if (!nationalId.trim()) { setErr("National ID is required."); return; }
+    setBusy(true); setErr("");
+    try {
+      const res = await api(`/api/v1/crm/leads/${lead.id}/convert-to-onboarding`, {
+        method: "POST",
+        body: { national_id: nationalId.trim(), date_of_birth: dob || null },
+      });
+      if (goToClient) navigate(`/clients/${res.client_id}`);
+      else onConverted();
+    } catch (e) { setErr(e.detail || "Conversion failed."); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <Modal title={`Convert to Client — ${lead.name}`} onClose={onClose}>
+      <div className="space-y-3">
+        {err && <div className="text-sm text-red-600 bg-red-50 rounded-lg p-3">{err}</div>}
+        <div>
+          <label className="label">National ID *</label>
+          <input className="input" required value={nationalId} onChange={(e) => setNationalId(e.target.value)} />
+        </div>
+        <div>
+          <label className="label">Date of Birth</label>
+          <input type="date" className="input" value={dob} onChange={(e) => setDob(e.target.value)} />
+        </div>
+        <div className="flex justify-end gap-2">
+          <button type="button" className="btn-ghost" disabled={busy} onClick={onClose}>Cancel</button>
+          <button type="button" className="btn-ghost" disabled={busy} onClick={() => convert(false)}>Do Later</button>
+          <button type="button" className="btn-primary" disabled={busy} onClick={() => convert(true)}>Onboard Now</button>
+        </div>
+      </div>
+    </Modal>
   );
 }

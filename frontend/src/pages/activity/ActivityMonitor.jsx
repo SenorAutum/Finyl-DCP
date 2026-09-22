@@ -63,7 +63,7 @@ function LogsTab({ staff, staffMap }) {
     if (eventType) qs.set("event_type", eventType);
     if (from) qs.set("date_from", from);
     if (to) qs.set("date_to", to);
-    api(`/api/v1/activity/logs?${qs.toString()}`).then(setData).catch((e) => setErr(e.detail));
+    api(`/api/v1/activity/logs?${qs.toString()}`).then(setData).catch((e) => setErr(typeof e.detail === "string" ? e.detail : JSON.stringify(e.detail) || "Failed to load activity logs"));
   }, [userId, eventType, from, to, page]);
 
   return (
@@ -93,7 +93,7 @@ function LogsTab({ staff, staffMap }) {
                       <td className="td whitespace-nowrap">{fmtTime(r.recorded_at)}</td>
                       <td className="td font-semibold">{staffMap[r.user_id] || `User ${r.user_id}`}</td>
                       <td className="td"><span className="inline-flex px-2 py-0.5 rounded-full text-[11px] font-semibold bg-blue-100 text-blue-700 capitalize">{(r.event_type || "").replace(/_/g, " ")}</span></td>
-                      <td className="td max-w-[320px] truncate" title={r.event_detail || ""}>{r.event_detail || "—"}</td>
+                      <td className="td max-w-[320px] truncate" title={r.event_detail ? (typeof r.event_detail === "object" ? JSON.stringify(r.event_detail) : r.event_detail) : ""}>{r.event_detail ? (typeof r.event_detail === "object" ? JSON.stringify(r.event_detail) : r.event_detail) : "—"}</td>
                       <td className="td tabnums">{r.ip || "—"}</td>
                       <td className="td max-w-[140px] truncate" title={r.device_fingerprint || ""}>{r.device_fingerprint || "—"}</td>
                     </tr>
@@ -126,7 +126,7 @@ function ScreenshotsTab({ staff, staffMap }) {
     if (userId) qs.set("user_id", userId);
     if (from) qs.set("date_from", from);
     if (to) qs.set("date_to", to);
-    api(`/api/v1/activity/screenshots?${qs.toString()}`).then(setData).catch((e) => setErr(e.detail));
+    api(`/api/v1/activity/screenshots?${qs.toString()}`).then(setData).catch((e) => setErr(typeof e.detail === "string" ? e.detail : JSON.stringify(e.detail) || "Failed to load screenshots"));
   }, [userId, from, to, page]);
 
   return (

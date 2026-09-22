@@ -86,6 +86,11 @@ export async function download(path, filename) {
   URL.revokeObjectURL(url);
 }
 
+// Consent OTP — the officer requests a code (delivered to the client's phone),
+// then verifies the code the client reads back. Both are officer-authenticated.
+export const requestConsentOtp = (body) => api("/api/v1/clients/request-consent-otp", { method: "POST", body });
+export const verifyConsentOtp = (body) => api("/api/v1/clients/verify-consent-otp", { method: "POST", body });
+
 export const fmtKES = (n) =>
   "KES " + Number(n || 0).toLocaleString("en-KE", { maximumFractionDigits: 0 });
 export const fmtDate = (d) => (d ? new Date(d).toLocaleDateString("en-KE", { year: "numeric", month: "short", day: "numeric" }) : "—");

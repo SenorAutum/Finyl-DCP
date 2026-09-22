@@ -273,6 +273,11 @@ def apply_for_loan(body: LoanApplication, tenant_id: int = Depends(require_modul
                                          Borrower.tenant_id == tenant_id).first()
     if not borrower:
         raise HTTPException(404, "Borrower not found")
+    if borrower.profile_status != "approved":
+        raise HTTPException(
+            422,
+            f"Client profile is '{borrower.profile_status}'. Only approved clients may apply for a loan."
+        )
     product = db.query(Product).filter(Product.id == body.product_id,
                                        Product.tenant_id == tenant_id, Product.active).first()
     if not product:

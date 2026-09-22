@@ -12,8 +12,9 @@ from app.models.rbac import (ApprovalThreshold, ApproverSetting, AuditLog,
                              RolePermissionOverride, CustomRole,
                              SMS_AUTOMATION_DEFAULT_ENABLED, SMS_AUTOMATION_DEFAULT_HOUR)
 from app.models.engagement import (
-    CrmLead, SiteVisit, CallLog, Complaint, ImpactSurvey, AmlFlag,
+    CrmLead, SiteVisit, CallLog, Complaint, ImpactSurvey, AmlFlag, CbkSubmissionLog,
     CRM_STAGES, CALL_OUTCOMES, COMPLAINT_CATEGORIES, COMPLAINT_STATUSES, SLA_DAYS,
+    CBK_SUBMISSION_STATUSES,
 )
 from app.models.integrations import (MpesaStatementAnalysis, CrbCheck,
                                      TenantIntegrationConfig, SmsRateCard,
@@ -37,7 +38,7 @@ from app.models.field_ops import (StaffGpsLog, StaffDailyTask, LocationAlert,
                                   LOCATION_ALERT_TYPES, DAILY_TASK_STATUSES,
                                   GPS_TASK_TYPES)
 from app.models.security import (OtpToken, UserDevice, TenantSecurityConfig,
-                                 OTP_PURPOSES)
+                                 ClientConsentLog, OTP_PURPOSES)
 from app.models.activity import (ActivityLog, ScreenshotLog, CAPTURE_TRIGGERS)
 from app.models.collections import (MpesaRatibaConsent, BankStatement,
                                     PromiseToPay, CollectionEfficiency,
