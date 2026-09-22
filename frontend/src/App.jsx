@@ -46,6 +46,7 @@ import KycEscalations from "./pages/kyc/KycEscalations";
 import ApiClients from "./pages/access/ApiClients";
 import ClientEdits from "./pages/clients/ClientEdits";
 import ExecutiveDashboard from "./pages/dashboard/ExecutiveDashboard";
+import DirectorDashboard from "./pages/dashboard/DirectorDashboard";
 // Phase 4: activity monitoring, GPS/site visits, face validation, security &
 // device config, bank statements, Ratiba, global search, validation prefs, OTP.
 import ActivityMonitor from "./pages/activity/ActivityMonitor";
@@ -70,6 +71,7 @@ const HOME_ORDER = [
 // Permission-based home fallbacks for RBAC roles with no enabled module dashboard
 // (e.g. disbursement/reconciliation/HQ ops/system-admin land on a valid screen).
 const PERM_HOME = [
+  ["dashboard.company", "/dashboard/director"],
   ["users.view", "/access/users"],
   ["loans.approve", "/approvals"], ["clients.approve", "/approvals"],
   ["disburse.approve", "/approvals"], ["refund.approve", "/approvals"],
@@ -191,7 +193,8 @@ export default function App() {
             <Route path="/field" element={<Guard module="lending"><PermGuard perms={["field_ops.tasks_manage", "field_ops.gps_view"]}><FieldOps /></PermGuard></Guard>} />
             <Route path="/kyc-escalations" element={<Guard module="lending"><PermGuard perms={["kyc.escalate", "kyc.resolve"]}><KycEscalations /></PermGuard></Guard>} />
             <Route path="/client-edits" element={<Guard module="lending"><PermGuard perms={["client_edits.request", "client_edits.approve_primary", "client_edits.approve_secondary"]}><ClientEdits /></PermGuard></Guard>} />
-            <Route path="/dashboard/executive" element={<Guard module="dashboard"><ExecutiveDashboard /></Guard>} />
+            <Route path="/dashboard/executive" element={<Guard module="dashboard"><PermGuard perms={["dashboard.company"]}><ExecutiveDashboard /></PermGuard></Guard>} />
+            <Route path="/dashboard/director" element={<PermGuard perms={["dashboard.company"]}><DirectorDashboard /></PermGuard>} />
             <Route path="/access/api-clients" element={<AdminGuard><ApiClients /></AdminGuard>} />
             {/* Phase 4: activity, field GPS/site visits, face validation, security,
                 bank statements, Ratiba, global search, validation prefs, devices, OTP */}

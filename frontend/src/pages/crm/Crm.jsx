@@ -19,7 +19,7 @@ const BM_CHIP = {
   approved: "bg-emerald-100 text-emerald-700",
   rejected: "bg-red-100 text-red-700",
 };
-const BM_LABELS = { pending: "Pending BM", approved: "BM Approved", rejected: "BM Rejected" };
+const BM_LABELS = { pending: "Approval: Pending", approved: "Approval: Approved", rejected: "Approval: Rejected" };
 
 function GeoChip({ lat, lng }) {
   if (lat == null || lng == null) return <span className="text-xs text-gray-400">No GPS fix</span>;
@@ -184,8 +184,8 @@ export default function Crm() {
                     {/* BM approve / reject */}
                     {lead.bm_approval_status === "pending" && can("clients.approve") && (
                       <div className="flex items-center gap-1 mt-2">
-                        <button className="btn-ghost !py-0.5 !px-2 text-[11px] text-emerald-700" onClick={() => bmApprove(lead)}>BM Approve</button>
-                        <button className="btn-ghost !py-0.5 !px-2 text-[11px] text-red-600" onClick={() => bmReject(lead)}>BM Reject</button>
+                        <button className="btn-ghost !py-0.5 !px-2 text-[11px] text-emerald-700" onClick={() => bmApprove(lead)}>Approve</button>
+                        <button className="btn-ghost !py-0.5 !px-2 text-[11px] text-red-600" onClick={() => bmReject(lead)}>Reject</button>
                       </div>
                     )}
 

@@ -14,15 +14,19 @@ import GlobalSearch from "./GlobalSearch";
 const NAV = [
   { group: "Overview", items: [
     { to: "/", label: "Dashboard", module: "dashboard", icon: "▦" },
+    { to: "/dashboard/director", label: "Director View", icon: "📊", anyPerm: ["dashboard.company"] },
   ]},
   { group: "Transactions", items: [
-    { to: "/clients", label: "Clients", module: "lending", icon: "👥" },
-    { to: "/loans", label: "Loans", module: "lending", icon: "📋" },
+    { to: "/clients", label: "Clients", module: "lending", icon: "👥",
+      anyPerm: ["clients.view_all", "clients.view_portfolio", "clients.create", "clients.edit"] },
+    { to: "/loans", label: "Loans", module: "lending", icon: "📋",
+      anyPerm: ["loans.view_all", "loans.view_portfolio", "loans.create"] },
     { to: "/payments", label: "Payments & SMS", module: "payments", icon: "₿" },
     { to: "/payments/suspense", label: "Suspense Account", module: "payments", icon: "⏳", anyPerm: ["reconcile.execute"] },
   ]},
   { group: "Registry", items: [
-    { to: "/guarantors", label: "Guarantors", module: "lending", icon: "🤝" },
+    { to: "/guarantors", label: "Guarantors", module: "lending", icon: "🤝",
+      anyPerm: ["guarantors.manage", "clients.view_all", "loans.view_all"] },
     { to: "/client-edits", label: "Edit Requests", icon: "✏️",
       anyPerm: ["client_edits.request", "client_edits.approve_secondary", "client_edits.approve_primary"] },
     { to: "/kyc-escalations", label: "KYC Escalations", icon: "🔍",
@@ -54,7 +58,8 @@ const NAV = [
       anyPerm: ["loans.approve", "clients.approve", "disburse.approve", "refund.approve"] },
   ]},
   { group: "Engagement", items: [
-    { to: "/crm", label: "CRM Pipeline", module: "crm", icon: "🧭" },
+    { to: "/crm", label: "CRM Pipeline", module: "crm", icon: "🧭",
+      anyPerm: ["clients.approve", "clients.create"] },
     { to: "/call-center", label: "Call Center", module: "call_center", icon: "☎" },
     { to: "/complaints", label: "Complaints", module: "complaints", icon: "⚠" },
     { to: "/impact", label: "Impact & Investors", module: "impact", icon: "🌱" },
@@ -201,7 +206,9 @@ export default function Layout() {
           </div>
         )}
       </div>
-      <NavItems mini={mini} />
+      {/* Plain function call (not <NavItems/>) so the <nav> DOM node is stable
+          across Layout re-renders and its scroll position is preserved. */}
+      {NavItems({ mini })}
       {/* Collapse toggle — desktop only */}
       <button
         onClick={() => setCollapsed((c) => !c)}
@@ -223,13 +230,13 @@ export default function Layout() {
     <div className="min-h-screen flex">
       {/* Desktop sidebar */}
       <aside className={`hidden lg:block fixed inset-y-0 transition-[width] duration-200 ${collapsed ? "w-[68px]" : "w-60"}`}>
-        <Sidebar mini={collapsed} />
+        {Sidebar({ mini: collapsed })}
       </aside>
       {/* Mobile drawer (always full width, never mini) */}
       {open && (
         <div className="lg:hidden fixed inset-0 z-40">
           <div className="absolute inset-0 bg-black/50" onClick={() => setOpen(false)} />
-          <aside className="absolute inset-y-0 left-0 w-64 animate-slide-up"><Sidebar /></aside>
+          <aside className="absolute inset-y-0 left-0 w-64 animate-slide-up">{Sidebar({})}</aside>
         </div>
       )}
 

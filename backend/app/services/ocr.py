@@ -111,14 +111,26 @@ class TesseractOcrProvider(OcrProvider):
         cfg = "--oem 3 --psm 4"
 
         if is_pdf:
+            # Preferred rasteriser: pdf2image (poppler). Falls back to PyMuPDF
+            # (fitz) when poppler is unavailable/fails, so PDF OCR still works on
+            # hosts without the poppler-utils system package.
+            pages = None
             try:
                 from pdf2image import convert_from_bytes
-            except Exception as exc:
-                raise OcrUnavailable(f"PDF support needs pdf2image + poppler-utils ({exc})")
-            try:
                 pages = convert_from_bytes(data, dpi=300, first_page=1, last_page=4)
             except Exception as exc:
-                raise OcrUnavailable(f"Could not rasterise the PDF — is poppler-utils installed? ({exc})")
+                try:
+                    import fitz  # PyMuPDF
+                    from PIL import Image as _Image
+                    doc = fitz.open(stream=data, filetype="pdf")
+                    pages = []
+                    for i in range(min(4, doc.page_count)):
+                        pix = doc[i].get_pixmap(dpi=300)
+                        pages.append(_Image.frombytes(
+                            "RGB", [pix.width, pix.height], pix.samples))
+                except Exception as exc2:
+                    raise OcrUnavailable(
+                        f"PDF render failed (no poppler or PyMuPDF?) ({exc2})")
             return "\n".join(
                 pytesseract.image_to_string(self._preprocess(p),
                                             lang=settings.OCR_LANGUAGES, config=cfg)
@@ -152,14 +164,24 @@ _VISION_PROMPT = (
     "(3rd-generation Kenyan polycarbonate ID / Maisha Namba, 2023+), 'passport' "
     "(Kenyan or other passport), 'alien_id' (foreign national / alien card), or "
     "'other'. "
+    "Field layout by document version: "
+    "For a 2nd-generation (laminated) Kenyan National ID, the FRONT carries FULL "
+    "NAMES, ID NUMBER, SERIAL NUMBER, DATE OF BIRTH, SEX, DISTRICT OF BIRTH, "
+    "PLACE OF ISSUE and DATE OF ISSUE; the BACK carries DISTRICT, DIVISION, "
+    "LOCATION and SUB-LOCATION. "
+    "A 3rd-generation Maisha Namba card (maisha_card) shows the text 'NAMBARI YA "
+    "MAISHA' and/or 'KADI YA MAISHA' and carries a Machine-Readable Zone (MRZ); "
+    "it does NOT print the district/division/location/sub-location block. "
     "Rules: dates MUST be ISO format YYYY-MM-DD. 'sex' is 'male' or 'female'. "
     "'national_id' is the ID/serial NUMBER (7-9 digits for a Kenyan ID; the "
     "document number for a passport/alien card). 'serial_number' is the longer "
     "document serial when distinct. If the document has a Machine-Readable Zone "
     "(the two or three rows of monospaced text with '<' characters at the bottom), "
-    "read it carefully — it is the most reliable source for names, number, date "
-    "of birth and expiry. Merge front and back (and the MRZ) into one object. If "
-    "a field is not visible use null. Do not invent values."
+    "read it FIRST and give it priority — it is the most reliable source for "
+    "names, number, date of birth and expiry. Merge front and back (and the MRZ) "
+    "into one object. If you are given only ONE image and it is the FRONT of the "
+    "card, set district, division, location and sub_location to null — do NOT "
+    "guess them. If a field is not visible use null. Do not invent values."
 )
 
 
@@ -191,11 +213,25 @@ class VisionLlmOcrProvider(OcrProvider):
         for filename, mime, data in files:
             is_pdf = (mime or "").endswith("pdf") or filename.lower().endswith(".pdf")
             if is_pdf:
+                # Prefer pdf2image (poppler); fall back to PyMuPDF (fitz) so the
+                # vision path still works on hosts without poppler-utils.
+                pages = None
                 try:
                     from pdf2image import convert_from_bytes
                     pages = convert_from_bytes(data, dpi=200, first_page=1, last_page=2)
                 except Exception as exc:
-                    raise OcrUnavailable(f"PDF rasterise failed (poppler-utils?) ({exc})")
+                    try:
+                        import fitz  # PyMuPDF
+                        from PIL import Image as _Image
+                        doc = fitz.open(stream=data, filetype="pdf")
+                        pages = []
+                        for i in range(min(2, doc.page_count)):
+                            pix = doc[i].get_pixmap(dpi=200)
+                            pages.append(_Image.frombytes(
+                                "RGB", [pix.width, pix.height], pix.samples))
+                    except Exception as exc2:
+                        raise OcrUnavailable(
+                            f"PDF render failed (no poppler or PyMuPDF?) ({exc2})")
                 for pg in pages:
                     buf = io.BytesIO()
                     pg.convert("RGB").save(buf, format="JPEG", quality=85)
@@ -231,7 +267,7 @@ class VisionLlmOcrProvider(OcrProvider):
             headers=headers,
             json={"model": model,
                   "messages": [{"role": "user", "content": content}],
-                  "max_tokens": 900, "temperature": 0},
+                  "max_tokens": 1200, "temperature": 0},
             timeout=120,
         )
         resp.raise_for_status()

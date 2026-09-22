@@ -469,6 +469,12 @@ export default function ClientForm({ clientId, onClose, onSaved }) {
                 </span>
               </div>
 
+              {ocrable.length === 1 && (
+                <p className="mt-2 text-xs text-gray-500">
+                  For full extraction, queue both the front and back of the ID.
+                </p>
+              )}
+
               {ocr && (
                 <div className="mt-4 rounded-lg border border-teal/40 bg-teal/5 p-3">
                   <div className="flex items-center justify-between flex-wrap gap-2">
