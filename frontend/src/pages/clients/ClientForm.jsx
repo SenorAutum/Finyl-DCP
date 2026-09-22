@@ -627,11 +627,10 @@ export default function ClientForm({ clientId, onClose, onSaved }) {
               <Field label="Location"><input className="input" value={form.location || ""} onChange={set("location")} /></Field>
               <Field label="Sub Location"><input className="input" value={form.sub_location || ""} onChange={set("sub_location")} /></Field>
 
-              <Field label="KYC Status">
-                <select className="input" value={form.kyc_status} onChange={set("kyc_status")}>
-                  {(ref.kyc_statuses?.length ? ref.kyc_statuses : ["draft", "pending", "validated", "failed", "rejected"])
-                    .map((s) => <option key={s} value={s}>{s}</option>)}
-                </select>
+              <Field label="KYC Status" hint="Set by the system — not manually editable.">
+                <div className="input bg-gray-50 cursor-default flex items-center">
+                  <span className="capitalize font-medium">{form.kyc_status || "draft"}</span>
+                </div>
               </Field>
               <Field label="Current Credit Rating">
                 <select className="input" value={form.current_credit_rating || ""} onChange={set("current_credit_rating")}>
@@ -643,11 +642,12 @@ export default function ClientForm({ clientId, onClose, onSaved }) {
                 <input className="input bg-gray-50" readOnly value={form.onboarded_by || user?.full_name || ""} />
               </Field>
 
-              <Field label="Approved By">
-                <select className="input" value={form.approved_by_user_id || ""} onChange={set("approved_by_user_id")}>
-                  <option value="">— not approved yet —</option>
-                  {(ref.approvers || []).map((a) => <option key={a.id} value={a.id}>{a.name} ({a.role.replace(/_/g, " ")})</option>)}
-                </select>
+              <Field label="Approved By" hint="Set by the Approvals workflow.">
+                <div className="input bg-gray-50 cursor-default flex items-center text-gray-500 text-sm">
+                  {form.approved_by_user_id
+                    ? ((ref.approvers || []).find((a) => a.id === Number(form.approved_by_user_id))?.name || `ID ${form.approved_by_user_id}`)
+                    : "— pending approval —"}
+                </div>
               </Field>
               <Field label="Active">
                 <label className="flex items-center gap-2 h-[38px] text-sm">

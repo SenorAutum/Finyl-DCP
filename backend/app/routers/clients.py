@@ -377,6 +377,11 @@ def build_router(prefix: str, tag: str) -> APIRouter:
                      f"{', '.join(changed_locked)}. Ask a branch manager.")
         _apply_scalars(client, body)
         _sync_nested(db, client, tenant_id, body)
+        # Advance a CRM-converted draft to pending_approval when the RO saves the record.
+        # This is the trigger that surfaces the client in the BM's Approvals queue.
+        if (getattr(client, "profile_status", None) == "draft"
+                and user.role in ("relationship_officer", "loan_officer")):
+            client.profile_status = "pending_approval"
         write_audit(db, tenant_id=tenant_id, user=user, action="client.edit",
                     entity_type="client", entity_id=client.id,
                     details={"locked_override": changed_locked if may_edit_locked else []},
