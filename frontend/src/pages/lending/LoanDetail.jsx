@@ -1,7 +1,7 @@
 // Loan detail: client profile, lifecycle transitions, disbursement (maker-checker
 // via Daraja B2C), officer reassignment, repayment schedule/history, STK-push.
 // Approval itself now lives in the Approvals inbox with threshold + escalation.
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react"; // <-- ADDED useRef
 import { Link, useParams } from "react-router-dom";
 import { api, fmtDate, fmtKES } from "../../lib/api";
 import { Badge, Modal, PageHeader, Spinner } from "../../components/ui";
@@ -22,10 +22,13 @@ export default function LoanDetail() {
   const [loan, setLoan] = useState(null);
   const [err, setErr] = useState("");
   const [msg, setMsg] = useState("");
-  const [stk, setStk] = useState(null); // amount string when modal open
+  const [stk, setStk] = useState(null); 
   const [reassign, setReassign] = useState(false);
   const [staff, setStaff] = useState([]);
   const [busy, setBusy] = useState(false);
+  
+  // <-- NEW: Synchronous memory lock to prevent React state-batching race conditions
+  const disburseLock = useRef(false);
 
   const load = () => api(`/api/v1/lending/loans/${id}`).then(setLoan).catch((e) => setErr(e.detail));
   useEffect(() => { load(); }, [id]);
@@ -42,15 +45,36 @@ export default function LoanDetail() {
   };
 
   const disburse = async () => {
+    // <-- NEW: 1. Synchronous double-click guard. If already true in memory, abort instantly.
+    if (disburseLock.current) return; 
+    
     if (!confirm("Disburse this approved loan via M-Pesa B2C?")) return;
+    
+    // <-- NEW: 2. Engage lock immediately before network request
+    disburseLock.current = true;
     setBusy(true); setErr(""); setMsg("");
+    
     try {
       const r = await api("/api/v1/payments/disburse", { method: "POST", body: { loan_id: Number(id) } });
+      
+      // <-- NEW: 3. Optimistic UI lock. If successful and not parked for maker-checker, 
+      // instantly alter local state to 'disbursing'. This instantly removes the button from the DOM.
+      if (r.status !== "pending_approval") {
+        setLoan((prev) => ({ ...prev, status: "disbursing" }));
+      }
+
       setMsg(r.status === "pending_approval"
         ? `Amount exceeds the maker-checker threshold — parked for a second approver (pending #${r.pending_id}).`
         : "Loan disbursed via M-Pesa B2C and marked active.");
-      load();
-    } catch (e) { setErr(e.detail); } finally { setBusy(false); }
+        
+      await load(); // Reload pulls the definitive ground-truth state from the backend
+    } catch (e) { 
+      setErr(e.detail); 
+    } finally { 
+      setBusy(false); 
+      // <-- NEW: 4. Release lock safely only after everything completes or fails
+      disburseLock.current = false; 
+    }
   };
 
   const doReassign = async (staffId, reason) => {
@@ -72,7 +96,6 @@ export default function LoanDetail() {
   };
 
   const simulateRepayment = async () => {
-    // Demo helper: fire the Daraja C2B confirmation webhook with a mock payment.
     const amount = prompt("Simulate M-Pesa C2B repayment amount (KES):", "5000");
     if (!amount) return;
     setBusy(true); setErr("");
@@ -88,7 +111,6 @@ export default function LoanDetail() {
   if (err && !loan) return <div className="card p-6 text-red-600">{err}</div>;
   if (!loan) return <Spinner />;
 
-  // Lifecycle buttons only for approvers / writeoff authority.
   const canLifecycle = can("loans.approve", "loans.writeoff");
   const actions = canLifecycle ? (NEXT[loan.status] || []).map((a) => (
     <button key={a.to} disabled={busy} className={a.cls} onClick={() => transition(a.to)}>{a.label}</button>
@@ -102,6 +124,7 @@ export default function LoanDetail() {
             <Link to="/approvals" className="btn-ghost">Open in Approvals →</Link>
           )}
           {actions}
+          {/* The button unmounts instantly when loan.status is optimistically changed to 'disbursing' */}
           {loan.status === "approved" && can("disburse.execute") && (
             <button className="btn-primary" disabled={busy} onClick={disburse}>💸 Disburse (B2C)</button>
           )}
