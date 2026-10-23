@@ -10,11 +10,13 @@ from datetime import datetime, timezone
 import jwt as pyjwt
 from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
+from sqlalchemy import false
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.security import decode_token
-from app.core.permissions import has_permission, permissions_for, COMPANY_SCOPE_ROLES
+from app.core.permissions import (has_permission, permissions_for, COMPANY_SCOPE_ROLES,
+                                  OFFICER_SCOPE_ROLES)
 from app.core.obs import log_permission_denied
 from app.models import AuditLog, Branch, Staff, TenantModule, User
 
@@ -150,7 +152,13 @@ def require_permission(*keys: str, mode: str = "all"):
 
 
 class UserScope:
-    """Resolved data-scope for the current user, derived from role + org links."""
+    """Resolved data-scope for the current user, derived from role + org links.
+
+    FAIL-CLOSED: when a scope cannot be resolved (a front-line officer with no
+    staff linkage, a manager with no branch/region, an unknown/custom role) the
+    user sees NOTHING. Comparing against a NULL staff_id must never be allowed
+    to degrade into "match all unassigned rows".
+    """
 
     def __init__(self, user: User, db: Session):
         self.user = user
@@ -160,6 +168,7 @@ class UserScope:
         self.branch_id = user.branch_id
         self.region_id = user.region_id
         self.company_wide = user.role in COMPANY_SCOPE_ROLES
+        self.officer_scoped = user.role in OFFICER_SCOPE_ROLES
         # Regional managers see all branches inside their region.
         self.branch_ids = None
         if self.role == "regional_manager" and self.region_id:
@@ -168,30 +177,43 @@ class UserScope:
         elif self.role in ("branch_manager",) and self.branch_id:
             self.branch_ids = [self.branch_id]
 
+    @property
+    def resolvable(self) -> bool:
+        """True when this user has a usable, non-empty-by-accident scope."""
+        if self.company_wide:
+            return True
+        if self.officer_scoped:
+            return self.staff_id is not None
+        return self.branch_ids is not None
+
     # --- query narrowing ---------------------------------------------------
     def apply_loan(self, query, Loan):
         if self.company_wide:
             return query
-        if self.role in ("relationship_officer", "loan_officer", "call_agent"):
+        if self.officer_scoped:
+            if self.staff_id is None:
+                return query.filter(false())
             return query.filter(Loan.staff_id == self.staff_id)
         if self.branch_ids is not None:
             return query.filter(Loan.branch_id.in_(self.branch_ids))
-        return query.filter(Loan.id == -1)  # no scope resolvable -> nothing
+        return query.filter(false())  # no scope resolvable -> nothing
 
     def apply_client(self, query, Client):
         if self.company_wide:
             return query
-        if self.role in ("relationship_officer", "loan_officer", "call_agent"):
+        if self.officer_scoped:
+            if self.staff_id is None:
+                return query.filter(false())
             return query.filter(Client.officer_staff_id == self.staff_id)
         if self.branch_ids is not None:
             return query.filter(Client.branch_id.in_(self.branch_ids))
-        return query.filter(Client.id == -1)
+        return query.filter(false())
 
     def can_see_loan(self, loan) -> bool:
         if self.company_wide:
             return True
-        if self.role in ("relationship_officer", "loan_officer", "call_agent"):
-            return loan.staff_id == self.staff_id
+        if self.officer_scoped:
+            return self.staff_id is not None and loan.staff_id == self.staff_id
         if self.branch_ids is not None:
             return loan.branch_id in self.branch_ids
         return False
@@ -199,8 +221,8 @@ class UserScope:
     def can_see_client(self, client) -> bool:
         if self.company_wide:
             return True
-        if self.role in ("relationship_officer", "loan_officer", "call_agent"):
-            return client.officer_staff_id == self.staff_id
+        if self.officer_scoped:
+            return self.staff_id is not None and client.officer_staff_id == self.staff_id
         if self.branch_ids is not None:
             return client.branch_id in self.branch_ids
         return False

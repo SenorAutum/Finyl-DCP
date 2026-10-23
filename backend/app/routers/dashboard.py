@@ -124,12 +124,12 @@ def my_portfolio(tenant_id: int = Depends(require_module("dashboard")),
     scope roles (and a super-admin viewing a tenant) see the whole tenant so the
     same screen is useful to a manager reviewing a team.
     """
-    staff_id = None if scope.company_wide else scope.staff_id
-
+    # Fail-closed scoping through the single UserScope service. The previous
+    # code skipped the filter whenever staff_id was falsy, so an officer with no
+    # staff linkage received every client and loan in the tenant.
     # ---- Clients owned by this officer -------------------------------------
-    cq = db.query(Borrower).filter(Borrower.tenant_id == tenant_id)
-    if staff_id:
-        cq = cq.filter(Borrower.officer_staff_id == staff_id)
+    cq = scope.apply_client(
+        db.query(Borrower).filter(Borrower.tenant_id == tenant_id), Borrower)
     clients = cq.order_by(Borrower.created_at.desc()).all()
 
     onboarding = {"onboarded": 0, "pending": 0, "rejected": 0}
@@ -154,9 +154,7 @@ def my_portfolio(tenant_id: int = Depends(require_module("dashboard")),
         })
 
     # ---- Loan book for this officer ----------------------------------------
-    lq = db.query(Loan).filter(Loan.tenant_id == tenant_id)
-    if staff_id:
-        lq = lq.filter(Loan.staff_id == staff_id)
+    lq = scope.apply_loan(db.query(Loan).filter(Loan.tenant_id == tenant_id), Loan)
     loans = lq.all()
 
     loan_status = {"approved": 0, "rejected": 0, "pending": 0,

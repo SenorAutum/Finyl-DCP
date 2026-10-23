@@ -39,6 +39,7 @@ from app.schemas import (ClientCreate, EkycVerifyRequest, ValidateMpesaRequest,
                          ConsentIn, RequestConsentOtpIn, VerifyConsentOtpIn)
 from app.services import crb, ekyc, mpesa, storage, otp, sms
 from app.services import alt_phone_validation, client_edit
+from app.services.onboarding import initial_profile_state
 from app.services.mpesa_statement import StatementError, analyze_statement
 from app.services.ocr import OcrUnavailable, process_id_files, extract_fields_structured
 from app.core import obs
@@ -320,13 +321,14 @@ def build_router(prefix: str, tag: str) -> APIRouter:
             client.age_verified_at = datetime.utcnow()
         if not client.onboarded_by:
             client.onboarded_by = user.full_name
-        # A relationship officer owns the client they create, and their new
-        # profiles start pending branch-manager approval.
-        if user.role in ("relationship_officer", "loan_officer") and user.staff_id:
-            client.officer_staff_id = user.staff_id
-            client.profile_status = "pending_approval"
-        elif not getattr(client, "profile_status", None):
-            client.profile_status = "approved"
+        # Shared maker-checker rules (same helper as the legacy alias): officers
+        # own what they create and start pending; an officer with no staff
+        # linkage is refused instead of being auto-approved; everyone else is
+        # auto-approved only if they could approve it themselves.
+        profile_status, officer_staff_id = initial_profile_state(db, user)
+        client.profile_status = profile_status
+        if officer_staff_id is not None:
+            client.officer_staff_id = officer_staff_id
         db.add(client)
         db.flush()                     # need the id for the nested rows
         _sync_nested(db, client, tenant_id, body)

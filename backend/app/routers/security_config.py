@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.deps import (require_permission, get_current_user, get_tenant_id,
                            write_audit)
+from app.core.ownership import require_user_in_tenant
 from app.models import TenantSecurityConfig, User
 from app.schemas import (SecurityConfigUpdate, OtpRequestIn, OtpVerifyIn,
                          DeviceRegisterIn)
@@ -113,14 +114,22 @@ def otp_verify(body: OtpVerifyIn, user=Depends(get_current_user),
 
 
 # --- Devices ---------------------------------------------------------------
-def _can_manage_user_devices(actor: User, target_user_id: int) -> bool:
-    return actor.id == target_user_id or actor.role in ("super_admin", "system_admin", "tenant_admin")
+def _authorize_device_target(db: Session, actor: User, user_id: int, action: str) -> User:
+    """Resolve the user whose devices are being touched.
+
+    The target MUST be in the actor's tenant (404 otherwise, so other tenants'
+    user ids cannot be probed). Within the tenant a user manages their own
+    devices; tenant administrators may manage anyone's.
+    """
+    target = require_user_in_tenant(db, actor, user_id)
+    if actor.id == target.id or actor.role in ("super_admin", "system_admin", "tenant_admin"):
+        return target
+    raise HTTPException(403, f"Cannot {action} another user's device")
 
 
 @router.get("/users/{user_id}/devices")
 def list_devices(user_id: int, actor=Depends(get_current_user), db: Session = Depends(get_db)):
-    if not _can_manage_user_devices(actor, user_id):
-        raise HTTPException(403, "Cannot view another user's devices")
+    _authorize_device_target(db, actor, user_id, "view")
     rows = device_binding.list_devices(db, user_id)
     return {"items": [{"id": d.id, "device_name": d.device_name, "platform": d.platform,
                        "active": d.active, "registered_at": d.registered_at,
@@ -130,8 +139,7 @@ def list_devices(user_id: int, actor=Depends(get_current_user), db: Session = De
 @router.post("/users/{user_id}/devices")
 def register_device(user_id: int, body: DeviceRegisterIn, actor=Depends(get_current_user),
                     db: Session = Depends(get_db), request: Request = None):
-    if not _can_manage_user_devices(actor, user_id):
-        raise HTTPException(403, "Cannot register a device for another user")
+    _authorize_device_target(db, actor, user_id, "register")
     ip = request.headers.get("x-forwarded-for") if request else None
     d = device_binding.register(db, user_id=user_id, fingerprint=body.device_fingerprint,
                                 name=body.device_name, platform=body.platform, ip=ip)
@@ -141,8 +149,7 @@ def register_device(user_id: int, body: DeviceRegisterIn, actor=Depends(get_curr
 @router.delete("/users/{user_id}/devices/{device_id}")
 def revoke_device(user_id: int, device_id: int, actor=Depends(get_current_user),
                   db: Session = Depends(get_db)):
-    if not _can_manage_user_devices(actor, user_id):
-        raise HTTPException(403, "Cannot revoke another user's device")
+    _authorize_device_target(db, actor, user_id, "revoke")
     if not device_binding.revoke(db, user_id=user_id, device_id=device_id):
         raise HTTPException(404, "Device not found")
     return {"status": "revoked"}

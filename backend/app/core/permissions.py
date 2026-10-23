@@ -51,6 +51,7 @@ PERMISSIONS = {
     "loans.reassign": "Reassign clients / loans between officers",
     "loans.escalate": "Escalate loans above own threshold",
     "loans.writeoff": "Approve / recommend write-offs & restructuring",
+    "loans.transition": "Manually move a loan between post-disbursement states (overdue / defaulted / paid-when-zero-balance)",
     # Money movement (maker-checker)
     "disburse.execute": "Disburse approved loans (Daraja B2C)",
     "disburse.approve": "Approve a pending disbursement (checker)",
@@ -139,7 +140,7 @@ ROLE_PERMISSIONS = {
         "clients.view_all", "clients.edit", "clients.edit_locked", "clients.approve",
         "docs.upload", "docs.verify",
         "loans.view_all", "loans.approve", "loans.adjust", "loans.reassign",
-        "loans.escalate", "loans.writeoff",
+        "loans.escalate", "loans.transition", "loans.writeoff",
         "disburse.approve", "refund.approve",
         "collections.stk_push",
         "org.view", "thresholds.view",
@@ -158,7 +159,7 @@ ROLE_PERMISSIONS = {
     "regional_manager": {
         "clients.view_all",
         "loans.view_all", "loans.approve", "loans.escalate", "loans.reassign",
-        "loans.writeoff", "loans.adjust",
+        "loans.transition", "loans.writeoff", "loans.adjust",
         "disburse.approve", "refund.approve",
         "collections.stk_push",
         "org.view", "thresholds.view",
@@ -206,7 +207,7 @@ ROLE_PERMISSIONS = {
     "hq_credit_committee": {
         "clients.view_all", "loans.view_all", "dashboard.company",
         "clients.approve",
-        "loans.approve", "loans.escalate", "loans.adjust", "loans.writeoff",
+        "loans.approve", "loans.escalate", "loans.adjust", "loans.transition", "loans.writeoff",
         "disburse.approve", "refund.approve",
     },
 
@@ -218,7 +219,7 @@ ROLE_PERMISSIONS = {
         "clients.view_all", "loans.view_all",
         # Approval authority
         "clients.approve",
-        "loans.approve", "loans.adjust", "loans.writeoff", "loans.escalate",
+        "loans.approve", "loans.adjust", "loans.transition", "loans.writeoff", "loans.escalate",
         "disburse.approve", "refund.approve",
         # Executive reporting
         "dashboard.company",
@@ -246,6 +247,9 @@ ROLE_PERMISSIONS["loan_officer"] = set(ROLE_PERMISSIONS["relationship_officer"])
 ROLE_PERMISSIONS["call_agent"] = {
     "clients.view_portfolio", "loans.view_portfolio", "dashboard.portfolio",
 }
+
+# Front-line roles whose data scope is pinned to their own staff record.
+OFFICER_SCOPE_ROLES = {"relationship_officer", "loan_officer", "call_agent"}
 
 # Roles that see company-wide data (no branch/region/portfolio narrowing).
 COMPANY_SCOPE_ROLES = {

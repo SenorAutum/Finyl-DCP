@@ -6,7 +6,8 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.core.database import get_db
 from app.core.deps import require_module
-from app.models import Complaint, COMPLAINT_CATEGORIES, COMPLAINT_STATUSES
+from app.core.ownership import get_owned_optional
+from app.models import (Borrower, Complaint, COMPLAINT_CATEGORIES, COMPLAINT_STATUSES, Staff)
 from app.schemas import ComplaintCreate, ComplaintUpdate
 from app.services import analytics, sms
 
@@ -54,6 +55,10 @@ def list_complaints(tenant_id: int = Depends(require_module("complaints")),
 @router.post("")
 def create_complaint(body: ComplaintCreate, tenant_id: int = Depends(require_module("complaints")),
                      db: Session = Depends(get_db)):
+    # Every referenced id must belong to THIS tenant. Otherwise a complaint could
+    # point at another tenant's client and the response would echo their PII.
+    get_owned_optional(db, Borrower, body.borrower_id, tenant_id, label="Client")
+    get_owned_optional(db, Staff, body.assigned_staff_id, tenant_id, label="Staff")
     now = datetime.utcnow()
     seq = db.query(Complaint).filter(Complaint.tenant_id == tenant_id).count() + 1
     c = Complaint(
@@ -79,6 +84,7 @@ def update_complaint(complaint_id: int, body: ComplaintUpdate,
     if body.status and body.status not in COMPLAINT_STATUSES:
         raise HTTPException(400, "Invalid status")
     if body.assigned_staff_id is not None:
+        get_owned_optional(db, Staff, body.assigned_staff_id, tenant_id, label="Staff")
         c.assigned_staff_id = body.assigned_staff_id
     if body.remedial_action is not None:
         c.remedial_action = body.remedial_action
