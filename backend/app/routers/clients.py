@@ -113,7 +113,8 @@ def _doc_dict(d: ClientDocument) -> dict:
 
 def _client_dict(b: Borrower, loan_count: int | None = None, nested: bool = False) -> dict:
     out = {
-        "id": b.id, "full_name": b.full_name, "first_name": b.first_name,
+        "id": b.id, "customer_number": getattr(b, "customer_number", None),
+        "full_name": b.full_name, "first_name": b.first_name,
         "middle_name": b.middle_name, "last_name": b.last_name,
         "serial_number": b.serial_number,
         "national_id": b.national_id, "phone": b.phone, "gender": b.gender,
@@ -266,6 +267,7 @@ def build_router(prefix: str, tag: str) -> APIRouter:
             # (exact match) instead, alongside the plaintext name/phone search.
             q = q.filter(or_(Borrower.first_name.ilike(like), Borrower.last_name.ilike(like),
                              Borrower.phone.ilike(like),
+                             Borrower.customer_number == search.strip(),
                              Borrower.national_id_hash == pii_hash(search.strip())))
         if kyc_status:
             q = q.filter(Borrower.kyc_status == kyc_status)

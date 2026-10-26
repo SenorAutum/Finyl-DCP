@@ -97,6 +97,10 @@ class Borrower(Base):
     alt_phone_validated_at = Column(DateTime(timezone=True))
     edit_locked = Column(Boolean, nullable=False, default=False)
     edit_locked_reason = Column(String(200))
+    # WP2: the reference the borrower types as the paybill "Account Number".
+    # 7 digits incl. a Luhn check digit, unique per tenant (migration 030),
+    # assigned automatically on insert (see _assign_customer_number below).
+    customer_number = Column(String(12))
 
     loans = relationship("Loan", back_populates="borrower")
     wallets = relationship("ClientMobileWallet", back_populates="client",
@@ -124,6 +128,28 @@ def _sync_national_id_hash(mapper, connection, target):  # noqa: ARG001
     target.national_id_hash = pii_hash(getattr(target, "national_id", None))
 
 
+# WP2: every borrower gets a customer number the moment it is first saved, on
+# every creation path (clients router, legacy lending router, seeds, imports),
+# so no call site has to remember to issue one.
+@event.listens_for(Borrower, "before_insert")
+def _assign_customer_number(mapper, connection, target):  # noqa: ARG001
+    if getattr(target, "customer_number", None):
+        return
+    from sqlalchemy import select
+    from app.core import customer_number as cn
+
+    table = Borrower.__table__
+
+    def _exists(cand):
+        row = connection.execute(
+            select(table.c.id).where(table.c.tenant_id == target.tenant_id,
+                                     table.c.customer_number == cand).limit(1)
+        ).first()
+        return row is not None
+
+    target.customer_number = cn.generate_unique(_exists)
+
+
 class Loan(Base):
     __tablename__ = "loans"
 
@@ -142,6 +168,10 @@ class Loan(Base):
     disbursement_date = Column(Date)
     due_date = Column(Date)
     outstanding_balance = Column(Numeric(12, 2), default=0)
+    # CBK LN 191/2026 reg. 56(4): interest for the unused part of the term,
+    # written off when the loan is repaid in full before its due date (mig. 031).
+    interest_rebate = Column(Numeric(12, 2), default=0)
+    early_settled_at = Column(DateTime)
     active_lock = Column(Boolean, nullable=False, default=False)  # Phase 2 (migration 021)
     loan_cycle_number = Column(Integer, default=1)   # borrower's Nth loan — drives impact survey gate
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -176,6 +206,8 @@ class Repayment(Base):
     amount = Column(Numeric(12, 2), nullable=False)
     principal_component = Column(Numeric(12, 2), default=0)
     interest_component = Column(Numeric(12, 2), default=0)
+    # WP2: portion of the payment applied to penalties / fees / charges.
+    fee_component = Column(Numeric(12, 2), default=0)
     payment_date = Column(DateTime, nullable=False, index=True)
     method = Column(String(20), default="mpesa_c2b")  # mpesa_c2b | stk_push | cash
     mpesa_ref = Column(String(30))

@@ -10,7 +10,7 @@ export default function Approvals() {
   const tabs = [];
   if (can("loans.approve")) tabs.push(["loans", "Loan Approvals"]);
   if (can("clients.approve")) tabs.push(["clients", "Client Profiles"]);
-  if (can("disburse.approve") || can("refund.approve")) tabs.push(["actions", "Maker-Checker"]);
+  if (can("disburse.approve") || can("refund.approve") || can("reconcile.approve")) tabs.push(["actions", "Maker-Checker"]);
   const [tab, setTab] = useState(tabs[0]?.[0] || "loans");
 
   return (
@@ -189,6 +189,8 @@ function ClientApprovals() {
   );
 }
 
+const CHANNEL_LABELS = { mpesa_paybill: "M-Pesa paybill", mpesa_till: "M-Pesa till", bank: "Bank", cash: "Cash", other: "Other" };
+
 function PendingActions() {
   const [rows, reload] = useList("/api/v1/approvals/pending-actions");
   const [msg, setMsg] = useState("");
@@ -205,17 +207,26 @@ function PendingActions() {
         <table className="w-full text-sm">
           <thead><tr className="text-left border-b border-border bg-canvas">
             <th className="th">Type</th><th className="th">Loan</th><th className="th">Amount</th>
+            <th className="th">Evidence</th>
             <th className="th">Initiated by</th><th className="th text-right">Action</th>
           </tr></thead>
           <tbody>
             {rows.map((p) => (
               <tr key={p.id} className="border-b border-border/60">
-                <td className="td capitalize">{p.action_type}</td>
-                <td className="td">#{p.loan_id || "—"}</td>
+                <td className="td capitalize">{p.action_type.replace(/_/g, " ")}</td>
+                <td className="td">#{p.loan_id || "—"}{p.account_number && <div className="text-[11px] text-gray-400">{p.account_number}</div>}</td>
                 <td className="td font-semibold">{fmtKES(p.amount)}</td>
+                <td className="td text-xs">
+                  {p.channel && <div>{CHANNEL_LABELS[p.channel] || p.channel}</div>}
+                  {p.reference && <div className="font-mono">{p.reference}</div>}
+                  {p.paid_at && <div className="text-gray-400">paid {new Date(p.paid_at).toLocaleString("en-KE", { dateStyle: "medium", timeStyle: "short" })}</div>}
+                  {p.suspense_id && <div className="text-gray-400">suspense #{p.suspense_id}</div>}
+                  {p.action_type === "suspense_refund" && p.phone && <div>to {p.phone}{p.phone_overridden && <span className="text-red-600 font-semibold"> (not the paying number)</span>}</div>}
+                  {(p.note || p.reason) && <div className="text-gray-500 italic max-w-xs">{p.note || p.reason}</div>}
+                </td>
                 <td className="td text-xs">{p.maker_email}</td>
                 <td className="td text-right space-x-1">
-                  {p.is_own ? <span className="text-xs text-gray-400 italic">your request</span> : (
+                  {p.is_own ? <span className="text-xs text-gray-400 italic">your request</span> : p.can_approve === false ? <span className="text-xs text-gray-400 italic">other approver</span> : (
                     <>
                       <button className="btn-primary !py-1 !px-2 text-xs" onClick={() => act(p.id, "approve")}>Approve</button>
                       <button className="btn-ghost !py-1 !px-2 text-xs text-red-600" onClick={() => act(p.id, "reject")}>Reject</button>

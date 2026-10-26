@@ -221,6 +221,11 @@ def resolve_tenant_for_webhook(db, endpoint: str, body: dict) -> tuple[int | Non
                     return txn.tenant_id, shortcode
 
         elif endpoint == ENDPOINT_C2B_CALLBACK:
+            # WP2: each DCP has its own paybill — the shortcode is authoritative.
+            if shortcode:
+                tid = shortcode_to_tenant(db, shortcode)
+                if tid is not None:
+                    return tid, shortcode
             bill = body.get("BillRefNumber")
             if bill:
                 loan = db.query(Loan).filter(Loan.account_number == bill).first()

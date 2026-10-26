@@ -30,7 +30,14 @@ export default function LoanDetail() {
   // <-- NEW: Synchronous memory lock to prevent React state-batching race conditions
   const disburseLock = useRef(false);
 
-  const load = () => api(`/api/v1/lending/loans/${id}`).then(setLoan).catch((e) => setErr(e.detail));
+  const [payoff, setPayoff] = useState(null);
+  const load = () => api(`/api/v1/lending/loans/${id}`).then((l) => {
+    setLoan(l);
+    // CBK LN 191/2026 reg. 56(4): what clears the loan today (unearned interest dropped).
+    if (["active", "overdue", "defaulted"].includes(l.status)) {
+      api(`/api/v1/lending/loans/${id}/payoff`).then(setPayoff).catch(() => setPayoff(null));
+    } else setPayoff(null);
+  }).catch((e) => setErr(e.detail));
   useEffect(() => { load(); }, [id]);
   useEffect(() => { if (can("loans.reassign")) api("/api/v1/lending/org").then((o) => setStaff(o.staff || [])).catch(() => {}); }, [can]);
 
@@ -153,6 +160,7 @@ export default function LoanDetail() {
             ["Outstanding", fmtKES(loan.outstanding_balance)], ["Loan cycle", `#${loan.loan_cycle_number}`],
             ["Applied", fmtDate(loan.application_date)], ["Disbursed", fmtDate(loan.disbursement_date)],
             ["Due date", fmtDate(loan.due_date)], ["Officer", loan.staff_name || "—"],
+            ...(loan.interest_rebate > 0 ? [["Interest written off (early repayment)", fmtKES(loan.interest_rebate)]] : []),
           ].map(([k, v]) => (
             <div key={k} className="flex justify-between text-sm">
               <span className="text-gray-400">{k}</span><span className="font-semibold">{v}</span>
@@ -189,6 +197,36 @@ export default function LoanDetail() {
           )}
         </div>
       </div>
+
+      {payoff && (
+        <div className="card p-5 mt-4">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h3 className="font-bold">Pay off today</h3>
+            <span className="text-2xl font-bold">{fmtKES(payoff.payoff_amount)}</span>
+          </div>
+          {payoff.early ? (
+            <>
+              <p className="text-sm text-gray-500 mt-1">
+                Repaid in full before the due date, the client pays interest only for the{" "}
+                {payoff.method === "completed_periods"
+                  ? `${payoff.periods_completed} of ${payoff.periods_in_term} completed periods`
+                  : `${payoff.days_used} of ${payoff.days_in_term} days`} the loan has been held
+                (CBK LN 191/2026, reg. 56(4)).
+              </p>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-3 text-sm">
+                {[["Principal", payoff.principal_owed], ["Fees & penalties", payoff.fees_owed],
+                  ["Interest earned to date", payoff.interest_owed], ["Interest written off", payoff.rebate]]
+                  .map(([k, v]) => (
+                    <div key={k}><div className="text-gray-400 text-xs">{k}</div><div className="font-semibold">{fmtKES(v)}</div></div>
+                  ))}
+              </div>
+              <p className="text-xs text-gray-400 mt-2">A payment of at least this amount closes the loan automatically; anything above it goes to the suspense account for refund.</p>
+            </>
+          ) : (
+            <p className="text-sm text-gray-500 mt-1">The due date has passed, so the full outstanding balance is payable.</p>
+          )}
+        </div>
+      )}
 
       <div className="card mt-4 overflow-hidden">
         <h3 className="font-bold px-5 py-3.5 border-b border-border">Repayment History ({loan.repayments.length})</h3>

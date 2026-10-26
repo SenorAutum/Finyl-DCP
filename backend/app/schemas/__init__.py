@@ -1,9 +1,9 @@
 """Pydantic request schemas. Responses are serialized in routers as plain dicts
 to keep the payload shapes obvious and greppable next to each endpoint."""
-from datetime import date
+from datetime import date, datetime
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 # ---- Auth ------------------------------------------------------------------
@@ -178,11 +178,26 @@ class StkPushRequest(BaseModel):
 
 
 class C2BCallback(BaseModel):
-    """Simplified Daraja C2B confirmation payload."""
+    """Daraja C2B confirmation payload (the fields we use).
+
+    WP2: BillRefNumber and MSISDN are optional — a payer can leave the account
+    number blank and Safaricom may mask the phone number; such money must still
+    be recorded (to suspense), never rejected as unparseable."""
     TransID: Optional[str] = None
     TransAmount: float
-    MSISDN: str
-    BillRefNumber: str  # loan account number
+    MSISDN: Optional[str] = None
+    BillRefNumber: Optional[str] = ""  # loan account number or customer number
+    BusinessShortCode: Optional[str] = None  # the DCP's paybill number
+    TransTime: Optional[str] = None          # YYYYMMDDHHMMSS (EAT)
+    TransactionType: Optional[str] = None
+    FirstName: Optional[str] = None
+    MiddleName: Optional[str] = None
+    LastName: Optional[str] = None
+
+    @field_validator("BusinessShortCode", "BillRefNumber", "MSISDN", mode="before")
+    @classmethod
+    def _to_str(cls, v):
+        return None if v is None else str(v)
 
 
 class SendSmsRequest(BaseModel):
@@ -459,6 +474,28 @@ class SuspenseAllocateIn(BaseModel):
 
 class SuspenseRefundIn(BaseModel):
     note: Optional[str] = None
+    # WP2: only when the paying number is masked/wrong — requires a note and is
+    # shown to the approving checker.
+    refund_phone: Optional[str] = None
+
+
+class ManualPaymentIn(BaseModel):
+    """WP2 — money received outside the automatic paybill flow."""
+    channel: str                         # mpesa_paybill | mpesa_till | bank | cash | other
+    amount: float
+    reference: Optional[str] = None      # M-Pesa code / bank reference (required unless cash)
+    paid_at: datetime                    # when the customer paid
+    loan_id: Optional[int] = None        # either the loan ...
+    customer_number: Optional[str] = None  # ... or the customer's number
+    payer_name: Optional[str] = None
+    payer_phone: Optional[str] = None
+    note: str                            # evidence: statement line, receipt no., etc.
+
+
+class PaymentSettingsIn(BaseModel):
+    allocation_order: Optional[str] = None  # proportional | interest_fees_principal | principal_fees_interest
+    basis: Optional[str] = None             # e.g. "LN 191/2026, regulation 56(2)"
+    early_settlement_method: Optional[str] = None  # daily | completed_periods
 
 
 # Feature 5 — SMS opt-out register entry.

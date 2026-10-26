@@ -22,8 +22,25 @@ def _repayments(db, loan_id):
     return db.query(Repayment).filter(Repayment.loan_id == loan_id).all()
 
 
+def _allow_direct_manual(db, tenant_id, limit=1_000_000):
+    """WP2: manual money needs a second approver unless the DCP has set a
+    `manual_payment` threshold. These tests exercise the arithmetic of a direct
+    application, so they configure a high threshold (the approval path is
+    covered in test_payments_wp2.py)."""
+    from app.models import ApprovalThreshold
+    db.add(ApprovalThreshold(tenant_id=tenant_id, scope_type="role", scope_key="all",
+                             threshold_type="manual_payment", amount=limit))
+    db.commit()
+
+
 def test_reconcile_splits_and_reduces_balance(seed):
     db = seed.db
+    _allow_direct_manual(db, seed.tenant.id)
+    # This test pins the pre-2026 proportional split (still selectable per DCP);
+    # the regulation-56(2) default is covered in test_payments_wp2.py.
+    from app.services import repayments as rp
+    rp.set_payment_settings(db, seed.tenant.id, seed.recon.id, allocation_order="proportional")
+    db.commit()
     loan = seed.make_loan(status="active", principal="10000.00",
                           interest_rate="10.0", outstanding_balance="11000.00")
 
@@ -45,6 +62,7 @@ def test_reconcile_splits_and_reduces_balance(seed):
 
 def test_duplicate_receipt_not_double_credited(seed):
     db = seed.db
+    _allow_direct_manual(db, seed.tenant.id)
     loan = seed.make_loan(status="active", principal="10000.00",
                           interest_rate="10.0", outstanding_balance="11000.00")
 
@@ -67,6 +85,7 @@ def test_duplicate_receipt_not_double_credited(seed):
 
 def test_full_repayment_marks_loan_paid(seed):
     db = seed.db
+    _allow_direct_manual(db, seed.tenant.id)
     loan = seed.make_loan(status="active", principal="10000.00",
                           interest_rate="10.0", outstanding_balance="11000.00")
     out = reconcile_payment(
@@ -99,6 +118,7 @@ def test_record_suspense_idempotent_on_ref(seed):
 
 def test_allocate_suspense_applies_once(seed):
     db = seed.db
+    _allow_direct_manual(db, seed.tenant.id)
     loan = seed.make_loan(status="active", principal="10000.00",
                           interest_rate="10.0", outstanding_balance="11000.00")
     entry = _record_suspense(db, tenant_id=seed.tenant.id, reason="overpayment",

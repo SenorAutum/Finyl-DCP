@@ -249,6 +249,8 @@ def _loan_dict(l: Loan) -> dict:
         "approved_by_user_id": getattr(l, "approved_by_user_id", None),
         "decision_note": getattr(l, "decision_note", None),
         "active_lock": bool(getattr(l, "active_lock", False)),
+        "interest_rebate": float(getattr(l, "interest_rebate", 0) or 0),
+        "early_settled_at": getattr(l, "early_settled_at", None),
     }
 
 
@@ -268,6 +270,26 @@ def list_loans(tenant_id: int = Depends(require_module("lending")), db: Session 
     total = q.count()
     rows = q.order_by(Loan.id.desc()).offset((page - 1) * page_size).limit(page_size).all()
     return {"total": total, "page": page, "items": [_loan_dict(l) for l in rows]}
+
+
+@router.get("/loans/{loan_id}/payoff")
+def loan_payoff(loan_id: int, on: date | None = None,
+                tenant_id: int = Depends(require_module("lending")),
+                db: Session = Depends(get_db), scope: UserScope = Depends(get_scope)):
+    """What the borrower must pay to clear the loan today (or on `on`).
+
+    Before the due date only interest earned so far is payable (CBK LN 191/2026
+    reg. 56(4)); the rest of the term's interest is shown as `rebate` and is
+    written off automatically when a payment of at least `payoff_amount` arrives."""
+    from app.services import repayments as rp
+    l = (db.query(Loan).options(joinedload(Loan.product))
+         .filter(Loan.id == loan_id, Loan.tenant_id == tenant_id).first())
+    if not l:
+        raise HTTPException(404, "Loan not found")
+    if not scope.can_see_loan(l):
+        raise HTTPException(403, "Loan is outside your data scope")
+    return {"loan_id": l.id, "account_number": l.account_number, "status": l.status,
+            "due_date": l.due_date, **rp.payoff_quote(db, l, on)}
 
 
 @router.get("/loans/{loan_id}")

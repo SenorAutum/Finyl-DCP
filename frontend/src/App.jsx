@@ -74,7 +74,7 @@ const PERM_HOME = [
   ["dashboard.company", "/dashboard/director"],
   ["users.view", "/access/users"],
   ["loans.approve", "/approvals"], ["clients.approve", "/approvals"],
-  ["disburse.approve", "/approvals"], ["refund.approve", "/approvals"],
+  ["disburse.approve", "/approvals"], ["refund.approve", "/approvals"], ["reconcile.approve", "/approvals"],
   ["reports.export", "/reporting"],
   ["loans.view_portfolio", "/loans"], ["clients.view_portfolio", "/clients"],
 ];
@@ -210,7 +210,7 @@ export default function App() {
             <Route path="/devices" element={<AdminGuard><DeviceManagement /></AdminGuard>} />
             <Route path="/otp-history" element={<AdminGuard><OtpHistory /></AdminGuard>} />
             {/* RBAC: approvals, administration & reporting (permission-gated) */}
-            <Route path="/approvals" element={<PermGuard perms={["loans.approve", "clients.approve", "disburse.approve", "refund.approve"]}><Approvals /></PermGuard>} />
+            <Route path="/approvals" element={<PermGuard perms={["loans.approve", "clients.approve", "disburse.approve", "refund.approve", "reconcile.approve"]}><Approvals /></PermGuard>} />
             <Route path="/access/users" element={<AdminGuard><Users /></AdminGuard>} />
             <Route path="/access/roles" element={<AdminGuard><RolesPermissions /></AdminGuard>} />
             <Route path="/access/org" element={<AdminGuard><BranchesRegions /></AdminGuard>} />
