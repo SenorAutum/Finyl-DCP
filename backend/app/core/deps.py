@@ -314,21 +314,44 @@ def get_api_client(x_api_key: str | None = Header(default=None),
     return client
 
 
+def _json_safe(value):
+    """Audit details go into a JSON column: coerce Decimals, dates and other
+    non-JSON values to strings so they cannot make the audit insert fail."""
+    import json
+    try:
+        return json.loads(json.dumps(value or {}, default=str))
+    except Exception:  # noqa: BLE001
+        return {"_unserialisable": repr(value)[:500]}
+
+
 def write_audit(db: Session, *, tenant_id, user, action, entity_type=None,
                 entity_id=None, details=None, request: Request | None = None):
-    """Append an audit-trail entry. Never raises — auditing must not break flows."""
+    """Append an audit-trail entry. Never raises — auditing must not break flows.
+
+    The entry is written inside a SAVEPOINT. Previously a failed audit insert
+    called db.rollback(), which silently discarded the CALLER's pending work
+    (e.g. a repayment) while the handler went on to commit nothing and still
+    return success. Now a failure only undoes the audit row itself and is
+    logged; the caller's own changes are flushed first, so a genuine error in
+    them still surfaces to the caller instead of being swallowed here."""
+    import logging
+    db.flush()  # the caller's pending changes: errors here are the caller's
+    ip = None
     try:
-        ip = None
         if request is not None:
             ip = request.headers.get("x-forwarded-for") or (request.client.host if request.client else None)
-        db.add(AuditLog(
-            tenant_id=tenant_id,
-            user_id=getattr(user, "id", None),
-            user_email=getattr(user, "email", None),
-            action=action, entity_type=entity_type,
-            entity_id=str(entity_id) if entity_id is not None else None,
-            details=details or {}, ip=ip,
-        ))
-        db.flush()
-    except Exception:
-        db.rollback()
+    except Exception:  # noqa: BLE001
+        ip = None
+    try:
+        with db.begin_nested():
+            db.add(AuditLog(
+                tenant_id=tenant_id,
+                user_id=getattr(user, "id", None),
+                user_email=getattr(user, "email", None),
+                action=action, entity_type=entity_type,
+                entity_id=str(entity_id) if entity_id is not None else None,
+                details=_json_safe(details), ip=ip,
+            ))
+    except Exception:  # noqa: BLE001
+        logging.getLogger("finyl.audit").exception(
+            "audit_write_failed action=%s entity=%s/%s", action, entity_type, entity_id)

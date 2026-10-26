@@ -12,7 +12,7 @@ const kes2 = (n) =>
   n == null ? "—" : `KES ${Number(n).toLocaleString("en-KE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const fmtDT = (d) => (d ? new Date(d).toLocaleString("en-KE", { dateStyle: "medium", timeStyle: "short" }) : "—");
 
-const STATUSES = ["", "open", "pending_approval", "allocated", "refunded"];
+const STATUSES = ["", "open", "pending_approval", "reversal_pending", "allocated", "refunded", "reversed"];
 const CHANNELS = [
   ["mpesa_paybill", "M-Pesa paybill"],
   ["mpesa_till", "M-Pesa till"],
@@ -26,6 +26,7 @@ const REASONS = {
   ambiguous_customer: "customer has several open loans",
   overpayment: "overpayment",
   closed_loan: "loan not open",
+  interest_refund_due: "interest refund due (early repayment)",
 };
 
 const pendingMsg = (r, done) =>
@@ -168,6 +169,19 @@ export default function Suspense() {
     finally { setBusy(null); }
   };
 
+  const reverse = async (row) => {
+    if (!confirm(`Ask Safaricom to reverse ${kes2(row.amount)} (${row.mpesa_ref}) back to the payer? A second person must approve it first.`)) return;
+    const note = prompt("Why is this payment being reversed? (shown to the approver)");
+    if (!note) return;
+    setBusy(row.id); setMsg("");
+    try {
+      const r = await api(`/api/v1/payments/suspense/${row.id}/reverse`, { method: "POST", body: { note } });
+      setMsg(pendingMsg(r, "Reversal requested."));
+      load();
+    } catch (e) { setMsg(e.detail || "Reversal request failed."); }
+    finally { setBusy(null); }
+  };
+
   return (
     <div>
       <PageHeader title="Suspense Account" crumbs={["Transactions", "Payments", "Suspense"]}
@@ -220,10 +234,16 @@ export default function Suspense() {
                       {s.status === "open" ? (
                         <>
                           <button className="btn-primary !py-1 !px-2 text-xs" disabled={busy === s.id} onClick={() => allocate(s)}>Allocate</button>
+                          {s.can_reverse && (
+                            <button className="btn-ghost !py-1 !px-2 text-xs text-red-600" disabled={busy === s.id} onClick={() => reverse(s)}
+                              title="Safaricom returns the whole payment to the payer — no phone number needed">Reverse</button>
+                          )}
                           <button className="btn-ghost !py-1 !px-2 text-xs text-red-600" disabled={busy === s.id} onClick={() => refund(s)}>Refund</button>
                         </>
                       ) : s.status === "pending_approval" ? (
                         <span className="text-xs text-amber-700 italic">awaiting approval</span>
+                      ) : s.status === "reversal_pending" ? (
+                        <span className="text-xs text-amber-700 italic">waiting for Safaricom</span>
                       ) : (
                         <span className="text-xs text-gray-400 italic">resolved</span>
                       )}

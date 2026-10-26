@@ -102,19 +102,6 @@ export default function LoanDetail() {
     } catch (e2) { setErr(e2.detail); } finally { setBusy(false); }
   };
 
-  const simulateRepayment = async () => {
-    const amount = prompt("Simulate M-Pesa C2B repayment amount (KES):", "5000");
-    if (!amount) return;
-    setBusy(true); setErr("");
-    try {
-      await api("/api/v1/payments/mpesa-c2b-callback", { method: "POST", body: {
-        TransAmount: Number(amount), MSISDN: loan.borrower_phone, BillRefNumber: loan.account_number,
-      }});
-      setMsg("C2B repayment recorded — balance updated, receipt SMS sent.");
-      load();
-    } catch (e2) { setErr(e2.detail); } finally { setBusy(false); }
-  };
-
   if (err && !loan) return <div className="card p-6 text-red-600">{err}</div>;
   if (!loan) return <Spinner />;
 
@@ -141,7 +128,6 @@ export default function LoanDetail() {
           {["active", "overdue"].includes(loan.status) && canAccess("payments") && (
             <>
               <button className="btn-primary" disabled={busy} onClick={() => setStk(String(Math.min(loan.outstanding_balance, 5000)))}>📲 STK Push</button>
-              <button className="btn-ghost" disabled={busy} onClick={simulateRepayment}>Simulate C2B repayment</button>
             </>
           )}
         </>} />
@@ -171,7 +157,8 @@ export default function LoanDetail() {
         <div className="card p-5 space-y-2.5">
           <h3 className="font-bold">Client</h3>
           {[
-            ["Name", loan.borrower.full_name], ["National ID", loan.borrower.national_id],
+            ["Name", loan.borrower.full_name], ["Customer no.", loan.borrower.customer_number || "—"],
+            ["National ID", loan.borrower.national_id],
             ["Phone", loan.borrower.phone], ["Sector", loan.borrower.business_sector || "—"],
             ["KYC", <Badge key="k" value={loan.borrower.kyc_status} />],
             ["Credit score", loan.borrower.credit_score ?? "—"],

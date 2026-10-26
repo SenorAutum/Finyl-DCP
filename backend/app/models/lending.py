@@ -2,7 +2,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import (Boolean, Column, Date, DateTime, Float, ForeignKey,
+from sqlalchemy import (Boolean, Column, Date, DateTime, Float, ForeignKey, Index,
                         Integer, Numeric, String, Text, JSON, UniqueConstraint,
                         event)
 from sqlalchemy.orm import relationship
@@ -152,6 +152,10 @@ def _assign_customer_number(mapper, connection, target):  # noqa: ARG001
 
 class Loan(Base):
     __tablename__ = "loans"
+
+    # WP4 (migration 032): a DCP never has two loans with the same account number.
+    __table_args__ = (Index("uq_loans_tenant_account_number", "tenant_id", "account_number",
+                            unique=True),)
 
     id = Column(Integer, primary_key=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)

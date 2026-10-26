@@ -419,6 +419,75 @@ def b2c_disburse(phone: str, amount: float, remarks: str,
     }}
 
 
+# --------------------------------------------------------------------------- #
+# WP4 — Transaction Reversal (C2B only)
+#   POST /mpesa/reversal/v1/request, CommandID TransactionReversal. Reverses a
+#   customer's paybill payment back to the paying number using only its M-Pesa
+#   receipt — works even when Safaricom masked the payer's phone number.
+#   Requires the API user to hold the "Org Reversals Initiator" role. The answer
+#   is asynchronous: the outcome arrives later on the reversal-result webhook.
+# --------------------------------------------------------------------------- #
+def _simulate_reversal_accept(transaction_id: str, amount: float, remarks: str,
+                              creds: DarajaCreds) -> dict:
+    conv, orig = _new_conversation_ids()
+    request = {"Initiator": creds.initiator_name, "CommandID": "TransactionReversal",
+               "TransactionID": transaction_id, "Amount": int(round(float(amount))),
+               "ReceiverParty": creds.shortcode, "RecieverIdentifierType": "11",
+               "Remarks": (remarks or "Payment reversal")[:100]}
+    response = {"ConversationID": conv, "OriginatorConversationID": orig,
+                "ResponseCode": "0",
+                "ResponseDescription": "Accept the service request successfully.",
+                "_simulated": True}
+    return {"request": request, "response": response, "_simulated": True}
+
+
+def simulate_reversal_result(conversation_id: str, originator_id: str | None,
+                             original_transaction_id: str, amount: float,
+                             success: bool = True) -> dict:
+    """Daraja-shaped reversal Result body (mock/demo only, never when configured)."""
+    result = {"ResultType": 0, "ResultCode": 0 if success else "R000002",
+              "ResultDesc": ("The service request is processed successfully." if success
+                             else "The OriginalTransactionID is invalid."),
+              "OriginatorConversationID": originator_id or "",
+              "ConversationID": conversation_id, "TransactionID": _mpesa_ref()}
+    if success:
+        result["ResultParameters"] = {"ResultParameter": [
+            {"Key": "Amount", "Value": float(amount)},
+            {"Key": "OriginalTransactionID", "Value": original_transaction_id},
+            {"Key": "Charge", "Value": 0.0}]}
+    return {"Result": result}
+
+
+def reversal_request(transaction_id: str, amount: float, remarks: str,
+                     creds: DarajaCreds | None = None) -> dict:
+    """Ask Safaricom to reverse a C2B payment. Credential-gated exactly like B2C:
+    in production a missing credential refuses the request; unconfigured
+    sandbox/demo returns a simulated asynchronous acknowledgement."""
+    creds = creds or _settings_creds()
+    guard_production_b2c(creds)  # same initiator + security credential requirement
+    if not creds.configured:
+        return _simulate_reversal_accept(transaction_id, amount, remarks, creds)
+    token = get_access_token(creds=creds)
+    payload = {
+        "Initiator": creds.initiator_name,
+        "SecurityCredential": creds.security_credential,
+        "CommandID": "TransactionReversal",
+        "TransactionID": transaction_id,
+        "Amount": int(round(float(amount))),
+        "ReceiverParty": creds.shortcode,
+        "RecieverIdentifierType": "11",   # (sic) Daraja's spelling; 11 = organisation
+        "ResultURL": callback_url("reversal-result"),
+        "QueueTimeOutURL": callback_url("reversal-timeout"),
+        "Remarks": (remarks or "Payment reversal")[:100],
+        "Occasion": "WrongPayment",
+    }
+    resp = httpx.post(f"{creds.base_url}/mpesa/reversal/v1/request",
+                      headers={"Authorization": f"Bearer {token}"}, json=payload, timeout=45)
+    resp.raise_for_status()
+    safe_req = {k: v for k, v in payload.items() if k != "SecurityCredential"}
+    return {"request": safe_req, "response": resp.json()}
+
+
 def _simulate_stk_accept(phone: str, amount: float, account_ref: str,
                          creds: DarajaCreds) -> dict:
     """MOCK path (credential-gated): mirror Daraja's STK-push acknowledgement.

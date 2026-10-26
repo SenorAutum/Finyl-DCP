@@ -203,6 +203,7 @@ export default function ClientDetail() {
       <div className="card p-5 mb-5">
         <h2 className="font-bold text-base mb-4">Client ID Details</h2>
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+          <Row label="Customer number (paybill account)" value={c.customer_number} />
           <Row label="Serial Number" value={c.serial_number} />
           <Row label="National ID" value={c.national_id} />
           <Row label="Mobile Number" value={c.phone} />

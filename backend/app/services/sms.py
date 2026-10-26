@@ -365,7 +365,8 @@ EVENT_LABELS = {
     "payment_receipt": "Payment receipt",
 }
 
-# Built-in fallbacks — identical wording to migration 007's seed rows.
+# Built-in fallbacks — migration 007's seed wording, updated by migration 033
+# to tell borrowers the paybill number and their customer number.
 DEFAULT_TEMPLATES = {
     "loan_qualified": (
         "Dear {{first_name}}, good news! Your loan {{account_number}} of KES "
@@ -373,11 +374,12 @@ DEFAULT_TEMPLATES = {
         "{{dcp_name}}."),
     "loan_disbursed": (
         "Dear {{first_name}}, your loan {{account_number}} of KES {{amount}} has "
-        "been disbursed to your M-Pesa. Repay by {{due_date}}. {{dcp_name}}."),
+        "been disbursed to your M-Pesa. Repay by {{due_date}} via Paybill {{paybill}}, "
+        "Account {{customer_number}}. {{dcp_name}}."),
     "repayment_reminder": (
         "Hi {{first_name}}, a friendly reminder: loan {{account_number}} balance "
         "KES {{balance}} is due in {{days_left}} day(s) on {{due_date}}. Pay via "
-        "M-Pesa Paybill. {{dcp_name}}."),
+        "M-Pesa Paybill {{paybill}}, Account {{customer_number}}. {{dcp_name}}."),
     "overdue_alert": (
         "Dear {{first_name}}, loan {{account_number}} is OVERDUE. Outstanding KES "
         "{{balance}}. Penalties may apply. Kindly settle to protect your credit "

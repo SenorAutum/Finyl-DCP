@@ -37,6 +37,8 @@ ENDPOINT_B2C_RESULT = "b2c-result"
 ENDPOINT_B2C_TIMEOUT = "b2c-timeout"
 ENDPOINT_STK_CALLBACK = "stk-callback"
 ENDPOINT_C2B_CALLBACK = "c2b-callback"
+ENDPOINT_REVERSAL_RESULT = "reversal-result"
+ENDPOINT_REVERSAL_TIMEOUT = "reversal-timeout"
 
 
 # --------------------------------------------------------------------------- #
@@ -191,18 +193,20 @@ def resolve_tenant_for_webhook(db, endpoint: str, body: dict) -> tuple[int | Non
     from app.models import PaymentTransaction, Loan
 
     try:
-        if endpoint in (ENDPOINT_B2C_RESULT, ENDPOINT_B2C_TIMEOUT):
+        if endpoint in (ENDPOINT_B2C_RESULT, ENDPOINT_B2C_TIMEOUT,
+                        ENDPOINT_REVERSAL_RESULT, ENDPOINT_REVERSAL_TIMEOUT):
+            txn_type = "b2c" if endpoint in (ENDPOINT_B2C_RESULT, ENDPOINT_B2C_TIMEOUT) else "reversal"
             result = body.get("Result", {}) or {}
             conv = result.get("ConversationID")
             orig = result.get("OriginatorConversationID")
             txn = None
             if conv:
                 txn = (db.query(PaymentTransaction)
-                       .filter(PaymentTransaction.type == "b2c",
+                       .filter(PaymentTransaction.type == txn_type,
                                PaymentTransaction.mpesa_ref == str(conv)).first())
             if txn is None and orig:
                 for c in (db.query(PaymentTransaction)
-                          .filter(PaymentTransaction.type == "b2c",
+                          .filter(PaymentTransaction.type == txn_type,
                                   PaymentTransaction.status.in_(("processing", "timed_out"))).all()):
                     if (c.raw_payload or {}).get("result", {}).get("OriginatorConversationID") == orig:
                         txn = c
