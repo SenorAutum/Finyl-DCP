@@ -355,12 +355,22 @@ def apply_for_loan(body: LoanApplication, tenant_id: int = Depends(require_modul
         if not has_survey:
             raise HTTPException(428, "IMPACT_SURVEY_REQUIRED")  # 428 Precondition Required
 
-    # Serialise account-number generation per tenant (count()+1 is racy).
+    # Serialise account-number generation per tenant, and never reuse a number:
+    # count()+1 alone repeats a number once any loan row is removed, and loan
+    # account numbers are what borrowers type at the paybill. Migration 032 adds
+    # a unique index on (tenant_id, account_number) as the database backstop.
     db.query(Tenant).filter(Tenant.id == tenant_id).with_for_update().first()
     seq = db.query(Loan).filter(Loan.tenant_id == tenant_id).count() + 1
+    while True:
+        account_number = f"FL/FY{date.today().year}/{tenant_id}/{seq}"
+        taken = (db.query(Loan.id).filter(Loan.tenant_id == tenant_id,
+                                          Loan.account_number == account_number).first())
+        if taken is None:
+            break
+        seq += 1
     loan = Loan(
         tenant_id=tenant_id,
-        account_number=f"FL/FY{date.today().year}/{tenant_id}/{seq}",
+        account_number=account_number,
         borrower_id=borrower.id, product_id=product.id,
         staff_id=staff_id, branch_id=borrower.branch_id,
         principal=body.principal, interest_rate=product.interest_rate,

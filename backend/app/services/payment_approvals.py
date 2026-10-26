@@ -12,6 +12,9 @@ Action types added to pending_approvals.action_type:
   manual_payment     -> approver needs reconcile.approve
   suspense_allocate  -> approver needs reconcile.approve
   suspense_refund    -> approver needs refund.approve (refunds are ALWAYS parked)
+  suspense_reversal  -> approver needs refund.approve (ALWAYS parked) — WP4:
+                        Safaricom reverses the original paybill payment back
+                        to the payer, no phone number needed
 """
 from __future__ import annotations
 
@@ -21,19 +24,21 @@ from fastapi import HTTPException
 
 from app.core import customer_number as cn
 from app.core.money import money
-from app.models import Borrower, Loan, PendingApproval, SuspenseEntry
+from app.core.obs import log_money_event
+from app.models import Borrower, Loan, PaymentTransaction, PendingApproval, SuspenseEntry
 from app.services import mpesa
 from app.services import repayments as rp
 
 MANUAL_THRESHOLD = "manual_payment"
 MANUAL_CHANNELS = {"mpesa_paybill", "mpesa_till", "bank", "cash", "other"}
-MANUAL_ACTIONS = ("manual_payment", "suspense_allocate", "suspense_refund")
+MANUAL_ACTIONS = ("manual_payment", "suspense_allocate", "suspense_refund", "suspense_reversal")
 
 # action_type -> (permission the checker needs, per-DCP approver type)
 ACTION_RULES = {
     "disbursement": ("disburse.approve", "disbursement"),
     "refund": ("refund.approve", "refund"),
     "suspense_refund": ("refund.approve", "refund"),
+    "suspense_reversal": ("refund.approve", "refund"),
     "manual_payment": ("reconcile.approve", "manual_payment"),
     "suspense_allocate": ("reconcile.approve", "manual_payment"),
 }
@@ -169,6 +174,133 @@ def park_suspense_refund(db, *, tenant_id, user, entry, refund_phone, note) -> P
     return p
 
 
+_INTERNAL_REF_PREFIXES = ("MAN-", "CASH-", "C2B-", "SUS-")
+
+
+def reversal_eligibility(entry: SuspenseEntry) -> tuple[bool, str | None]:
+    """A Safaricom reversal returns a WHOLE paybill payment to the payer, so it
+    only fits a receipt that is entirely in suspense. An overpayment excess is
+    only part of a payment that was otherwise applied to a loan — reversing the
+    whole transaction would undo the loan repayment too — so those are refunded
+    by B2C instead."""
+    ref = (entry.mpesa_ref or "").upper()
+    if entry.status != "open":
+        return False, f"entry is {entry.status}"
+    if entry.source != "c2b":
+        return False, "only paybill (C2B) receipts can be reversed"
+    if entry.reason in ("overpayment", "interest_refund_due"):
+        return False, "part of a payment that was applied — refund the excess instead"
+    if not ref or ref.startswith(_INTERNAL_REF_PREFIXES) or ref.endswith(("-OVR", "-INT")):
+        return False, "no original M-Pesa receipt to reverse"
+    return True, None
+
+
+def park_suspense_reversal(db, *, tenant_id, user, entry, note) -> PendingApproval:
+    ok, why = reversal_eligibility(entry)
+    if not ok:
+        raise HTTPException(422, f"This receipt cannot be reversed: {why}")
+    if not (note or "").strip():
+        raise HTTPException(422, "A note explaining why the payment is being reversed is required")
+    p = PendingApproval(tenant_id=tenant_id, action_type="suspense_reversal",
+                        loan_id=entry.matched_loan_id, amount=money(entry.amount),
+                        phone=entry.phone, reason=note.strip()[:200],
+                        status="pending_approval", maker_user_id=user.id,
+                        maker_at=datetime.utcnow(),
+                        details={"suspense_id": entry.id, "reference": entry.mpesa_ref,
+                                 "payer_name": entry.payer_name, "bill_ref": entry.bill_ref,
+                                 "note": note.strip()})
+    entry.status = "pending_approval"
+    db.add(p)
+    db.flush()
+    return p
+
+
+def _execute_reversal(db, tenant_id, p, checker) -> dict:
+    import httpx
+    entry = _locked_entry(db, tenant_id, p)
+    creds = mpesa.resolve_creds(db, tenant_id)
+    remarks = f"Wrong payment {entry.mpesa_ref}"
+    try:
+        out = mpesa.reversal_request(entry.mpesa_ref, float(entry.amount), remarks, creds=creds)
+    except mpesa.DarajaNotConfigured:
+        raise HTTPException(422, "M-Pesa (Daraja) credentials are not configured")
+    except httpx.HTTPError:
+        raise HTTPException(502, "Safaricom did not accept the reversal request. Try again later.")
+    ack = out.get("response") or {}
+    if str(ack.get("ResponseCode")) != "0":
+        raise HTTPException(502, "Safaricom refused the reversal request: "
+                                 f"{ack.get('ResponseDescription') or 'no reason given'}")
+    txn = PaymentTransaction(
+        tenant_id=tenant_id, type="reversal", loan_id=entry.matched_loan_id,
+        amount=money(entry.amount), phone=entry.phone,
+        mpesa_ref=ack.get("ConversationID"), status="processing",
+        raw_payload={"suspense_id": entry.id, "original_transaction_id": entry.mpesa_ref,
+                     "pending_id": p.id, "request": out.get("request"),
+                     "response": ack, "result": {
+                         "OriginatorConversationID": ack.get("OriginatorConversationID")}})
+    db.add(txn)
+    entry.status = "reversal_pending"
+    db.flush()
+    log_money_event("reversal_requested", tenant_id=tenant_id, user_id=checker.id,
+                    amount=money(entry.amount), ref=entry.mpesa_ref,
+                    detail=f"suspense_id={entry.id} conversation={ack.get('ConversationID')}")
+    if out.get("_simulated"):
+        # Demo / sandbox without credentials: settle through the same code path
+        # the real Safaricom result callback uses.
+        body = mpesa.simulate_reversal_result(ack.get("ConversationID"),
+                                              ack.get("OriginatorConversationID"),
+                                              entry.mpesa_ref, float(entry.amount))
+        apply_reversal_result(db, tenant_id, txn, body["Result"])
+    return {"status": entry.status, "suspense_id": entry.id, "transaction_id": txn.id,
+            "conversation_id": ack.get("ConversationID"),
+            "simulated": bool(out.get("_simulated"))}
+
+
+def apply_reversal_result(db, tenant_id, txn: PaymentTransaction, result: dict) -> dict:
+    """Apply Safaricom's reversal outcome. Idempotent: a repeated callback for an
+    already-settled reversal changes nothing."""
+    if txn.status not in ("processing", "timed_out"):
+        return {"applied": False, "reason": f"already {txn.status}"}
+    payload = dict(txn.raw_payload or {})
+    payload["result_callback"] = result
+    txn.raw_payload = payload
+    entry = (db.query(SuspenseEntry)
+             .filter(SuspenseEntry.id == payload.get("suspense_id"),
+                     SuspenseEntry.tenant_id == tenant_id).with_for_update().first())
+    code = str(result.get("ResultCode"))
+    note = dict(entry.raw_payload or {}) if entry is not None else {}
+    if code in ("0", "R000001"):
+        # R000001 = "already reversed" (e.g. done on the M-Pesa portal): the
+        # money has gone back either way, so the receipt is closed.
+        txn.status = "success"
+        if entry is not None:
+            entry.status = "reversed"
+            entry.resolved_at = datetime.utcnow()
+            note["reversal"] = {"result_code": code, "receipt": result.get("TransactionID"),
+                                "desc": result.get("ResultDesc")}
+    else:
+        txn.status = "failed"
+        if entry is not None:
+            entry.status = "open"   # back to the queue: refund by B2C instead
+            note["reversal_failed"] = {"result_code": code, "desc": result.get("ResultDesc")}
+    if entry is not None:
+        entry.raw_payload = note
+    log_money_event("reversal_result", tenant_id=tenant_id, amount=money(txn.amount or 0),
+                    ref=payload.get("original_transaction_id"),
+                    detail=f"code={code} status={txn.status}")
+    return {"applied": True, "status": txn.status}
+
+
+def mark_reversal_timeout(db, txn: PaymentTransaction, body: dict) -> None:
+    """Safaricom queued the request past its timeout: outcome unknown. The entry
+    stays `reversal_pending` (never re-opened, to avoid paying twice) until a
+    result arrives or someone checks the transaction on the M-Pesa portal."""
+    if txn.status != "processing":
+        return
+    txn.status = "timed_out"
+    txn.raw_payload = {**(txn.raw_payload or {}), "timeout_callback": body}
+
+
 # --------------------------------------------------------------------------- #
 # Execution (immediate, or by the checker on approval)
 # --------------------------------------------------------------------------- #
@@ -258,12 +390,14 @@ def execute_approved(db, tenant_id: int, p: PendingApproval, checker) -> dict:
                              "note": (p.details or {}).get("note")}
         entry.raw_payload = payload
         return {"status": "refunded", "suspense_id": entry.id, **result}
+    if p.action_type == "suspense_reversal":
+        return _execute_reversal(db, tenant_id, p, checker)
     raise HTTPException(400, f"Unsupported action type {p.action_type}")
 
 
 def on_rejected(db, tenant_id: int, p: PendingApproval) -> None:
     """A rejected suspense action releases the entry back to `open`."""
-    if p.action_type in ("suspense_allocate", "suspense_refund"):
+    if p.action_type in ("suspense_allocate", "suspense_refund", "suspense_reversal"):
         sid = (p.details or {}).get("suspense_id")
         entry = (db.query(SuspenseEntry)
                  .filter(SuspenseEntry.id == sid, SuspenseEntry.tenant_id == tenant_id)

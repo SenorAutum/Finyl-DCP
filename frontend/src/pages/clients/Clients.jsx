@@ -32,7 +32,7 @@ export default function Clients() {
 
       <div className="card overflow-hidden">
         <div className="p-3 border-b border-border flex flex-wrap gap-2">
-          <input className="input max-w-sm" placeholder="Search name, National ID or phone..."
+          <input className="input max-w-sm" placeholder="Search name, customer no., National ID or phone..."
             value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} />
           <select className="input max-w-[180px]" value={kyc} onChange={(e) => { setKyc(e.target.value); setPage(1); }}>
             <option value="">All KYC statuses</option>
@@ -44,7 +44,7 @@ export default function Clients() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead><tr>
-                <th className="th">Name</th><th className="th">National ID</th><th className="th">Mobile</th>
+                <th className="th">Name</th><th className="th">Customer No.</th><th className="th">National ID</th><th className="th">Mobile</th>
                 <th className="th">M-Pesa</th><th className="th">Sector</th><th className="th">Baseline Sales</th>
                 <th className="th">KYC</th><th className="th">Profile</th><th className="th">eKYC</th><th className="th">Score</th><th className="th"></th>
               </tr></thead>
@@ -52,6 +52,7 @@ export default function Clients() {
                 {data.items.map((c) => (
                   <tr key={c.id} className="hover:bg-canvas/60 cursor-pointer" onClick={() => nav(`/clients/${c.id}`)}>
                     <td className="td font-semibold">{c.full_name}</td>
+                    <td className="td font-mono text-xs">{c.customer_number || "—"}</td>
                     <td className="td">{c.national_id}</td>
                     <td className="td">{c.phone || "—"}</td>
                     <td className="td">

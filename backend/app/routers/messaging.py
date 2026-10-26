@@ -84,6 +84,9 @@ def _sample_context(db: Session, tenant_id: int) -> dict:
         "days_left": "3",
         "dcp_name": sms.dcp_name(db, tenant_id),
         "loan_ref": "QGR7XK2ABC",
+        # WP4: paybill + customer number tokens, so previews show the real paybill.
+        "customer_number": "4927318",
+        "paybill": sms._paybill(db, tenant_id) or "600111",
     }
 
 

@@ -678,6 +678,46 @@ def _process_c2b_callback(db, body) -> tuple[dict, int | None]:
             "outstanding_balance": float(loan.outstanding_balance or 0)}, tenant_id
 
 
+def _find_reversal_txn(db, conversation_id, originator_id=None):
+    txn = None
+    if conversation_id:
+        txn = (db.query(PaymentTransaction)
+               .filter(PaymentTransaction.type == "reversal",
+                       PaymentTransaction.mpesa_ref == str(conversation_id)).first())
+    if txn is None and originator_id:
+        for c in (db.query(PaymentTransaction)
+                  .filter(PaymentTransaction.type == "reversal",
+                          PaymentTransaction.status.in_(("processing", "timed_out"))).all()):
+            if (c.raw_payload or {}).get("result", {}).get("OriginatorConversationID") == originator_id:
+                txn = c
+                break
+    return txn
+
+
+def _process_reversal_result(db, body) -> tuple[dict, int | None]:
+    result = body.get("Result", {}) if isinstance(body, dict) else {}
+    txn = _find_reversal_txn(db, result.get("ConversationID"),
+                             result.get("OriginatorConversationID"))
+    if txn is None:
+        raise ws.WebhookUnresolved(f"no reversal for conv={result.get('ConversationID')}")
+    txn = (db.query(PaymentTransaction).filter(PaymentTransaction.id == txn.id)
+           .with_for_update().first())
+    pay_appr.apply_reversal_result(db, txn.tenant_id, txn, result)
+    db.commit()
+    return {"ResultCode": 0, "ResultDesc": "Result received"}, txn.tenant_id
+
+
+def _process_reversal_timeout(db, body) -> tuple[dict, int | None]:
+    result = body.get("Result", {}) if isinstance(body, dict) else {}
+    txn = _find_reversal_txn(db, result.get("ConversationID"),
+                             result.get("OriginatorConversationID"))
+    if txn is None:
+        raise ws.WebhookUnresolved(f"no reversal for conv={result.get('ConversationID')}")
+    pay_appr.mark_reversal_timeout(db, txn, body)
+    db.commit()
+    return {"ResultCode": 0, "ResultDesc": "Timeout received"}, txn.tenant_id
+
+
 # Retry dispatch: endpoint label -> processor. Used by the scheduler worker to
 # reprocess durable `failed` events idempotently.
 _PROCESSORS = {
@@ -685,6 +725,8 @@ _PROCESSORS = {
     ws.ENDPOINT_B2C_TIMEOUT: _process_b2c_timeout,
     ws.ENDPOINT_STK_CALLBACK: _process_stk_callback,
     ws.ENDPOINT_C2B_CALLBACK: _process_c2b_callback,
+    ws.ENDPOINT_REVERSAL_RESULT: _process_reversal_result,
+    ws.ENDPOINT_REVERSAL_TIMEOUT: _process_reversal_timeout,
 }
 
 
@@ -762,6 +804,26 @@ async def c2b_callback(token: str, request: Request, db: Session = Depends(get_d
                                {"ResultCode": 0, "ResultDesc": "Confirmation received successfully"})
 
 
+@router.post("/mpesa/{token}/reversal-result")
+async def reversal_result_callback(token: str, request: Request, db: Session = Depends(get_db)):
+    """Daraja Reversal ResultURL — outcome of a wrong-payment reversal (WP4)."""
+    _check_callback_token(token)
+    ws.check_ip_allowlist(request, ws.ENDPOINT_REVERSAL_RESULT)
+    body = await _read_payload(request)
+    return _ingest_and_process(db, ws.ENDPOINT_REVERSAL_RESULT, body, _process_reversal_result,
+                               {"ResultCode": 0, "ResultDesc": "Result received"})
+
+
+@router.post("/mpesa/{token}/reversal-timeout")
+async def reversal_timeout_callback(token: str, request: Request, db: Session = Depends(get_db)):
+    """Daraja Reversal QueueTimeOutURL — outcome unknown; entry stays pending."""
+    _check_callback_token(token)
+    ws.check_ip_allowlist(request, ws.ENDPOINT_REVERSAL_TIMEOUT)
+    body = await _read_payload(request)
+    return _ingest_and_process(db, ws.ENDPOINT_REVERSAL_TIMEOUT, body, _process_reversal_timeout,
+                               {"ResultCode": 0, "ResultDesc": "Timeout received"})
+
+
 @router.get("/transactions")
 def list_transactions(tenant_id: int = Depends(require_module("payments")),
                       db: Session = Depends(get_db),
@@ -790,6 +852,7 @@ def _suspense_dict(s: SuspenseEntry) -> dict:
         "matched_loan_id": s.matched_loan_id,
         "suggested_loan_id": s.suggested_loan_id,
         "bill_ref": s.bill_ref, "payer_name": s.payer_name, "paid_at": s.paid_at,
+        "can_reverse": pay_appr.reversal_eligibility(s)[0],
         "created_at": s.created_at, "resolved_at": s.resolved_at,
         "resolved_by_user_id": s.resolved_by_user_id,
     }
@@ -899,3 +962,33 @@ def refund_suspense(entry_id: int, body: SuspenseRefundIn, request: Request,
             "suspense_id": entry.id, "amount": float(entry.amount or 0),
             "phone": pending.phone,
             "message": "Refund awaiting a second approver."}
+
+
+@router.post("/suspense/{entry_id}/reverse")
+def reverse_suspense(entry_id: int, body: SuspenseRefundIn, request: Request,
+                     tenant_id: int = Depends(require_module("payments")),
+                     db: Session = Depends(get_db),
+                     user: User = Depends(require_permission("reconcile.execute"))):
+    """Request that Safaricom reverse a wrong paybill payment back to the payer.
+
+    WP4: unlike a B2C refund this needs no phone number (it works when
+    Safaricom masked the payer's number) and returns the money exactly as it
+    came. Only a receipt that is wholly in suspense can be reversed; it ALWAYS
+    needs a second approver (refund.approve), and the outcome arrives from
+    Safaricom on the reversal-result callback."""
+    entry = (db.query(SuspenseEntry)
+             .filter(SuspenseEntry.id == entry_id,
+                     SuspenseEntry.tenant_id == tenant_id).with_for_update().first())
+    if not entry:
+        raise HTTPException(404, "Suspense entry not found")
+    if entry.status != "open":
+        return {"status": "already_resolved", "suspense_status": entry.status}
+    pending = pay_appr.park_suspense_reversal(db, tenant_id=tenant_id, user=user, entry=entry,
+                                              note=body.note)
+    write_audit(db, tenant_id=tenant_id, user=user, action="suspense.reversal.request",
+                entity_type="suspense_entry", entity_id=entry.id,
+                details={"amount": float(entry.amount or 0), "mpesa_ref": entry.mpesa_ref,
+                         "note": body.note, "pending_id": pending.id}, request=request)
+    db.commit()
+    return {"status": "pending_approval", "pending_id": pending.id, "suspense_id": entry.id,
+            "message": "Reversal awaiting a second approver."}

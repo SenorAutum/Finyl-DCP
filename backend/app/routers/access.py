@@ -515,46 +515,135 @@ def audit_trail(tenant_id: int = Depends(get_tenant_id),
 
 
 # ---------------------------------------------------------------------------
-# Bulk payment file / batch upload (mock parser)
+# Bulk payment file / batch upload  (WP4: no longer a mock)
 # ---------------------------------------------------------------------------
+PAYMENT_UPLOAD_MAX_ROWS = 2000
+
+
+def _parse_upload_date(value: str):
+    """Optional `date` column: YYYY-MM-DD or 'YYYY-MM-DD HH:MM[:SS]' in Kenyan time,
+    returned as naive UTC like every other timestamp. None when blank."""
+    from datetime import timedelta
+    v = (value or "").strip()
+    if not v:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d", "%d/%m/%Y %H:%M:%S",
+                "%d/%m/%Y %H:%M", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(v, fmt) - timedelta(hours=3)
+        except ValueError:
+            continue
+    raise ValueError(f"unrecognised date '{v}' (use YYYY-MM-DD or YYYY-MM-DD HH:MM)")
+
+
 @router.post("/payment-upload")
 async def payment_upload(request: Request, file: UploadFile = File(...),
                          tenant_id: int = Depends(get_tenant_id),
                          actor: User = Depends(require_permission("payments.upload")),
                          db: Session = Depends(get_db)):
-    """Parse a CSV of repayments and bulk-create Repayment + C2B transaction rows.
+    """Bulk-record payments from a CSV (e.g. a paybill or bank statement export).
 
-    Expected columns (case-insensitive): account_number, amount, mpesa_ref[, date].
-    This is a MOCK reconciliation parser — it matches each row to a loan by
-    account_number within the tenant and records the repayment.
-    """
-    raw = (await file.read()).decode("utf-8", errors="ignore")
+    Columns (case-insensitive): `account_number` OR `customer_number`, `amount`,
+    `mpesa_ref` (or `reference`), optional `date`, optional `channel`
+    (mpesa_paybill | mpesa_till | bank | cash | other; default mpesa_paybill).
+
+    WP4 — every row now follows the same rules as a manual payment:
+      * matched only within this DCP (loan account number or customer number);
+      * the reference must not already be recorded (repayment, suspense, or a
+        manual entry awaiting approval) and may appear only once in the file;
+      * amounts are exact decimals and must be positive;
+      * above the DCP's `manual_payment` threshold (always, when none is set)
+        each row waits for a second approver instead of changing a balance.
+    Rows that cannot be matched are reported back, not guessed or parked."""
+    from decimal import Decimal, InvalidOperation
+    from app.core.money import money
+    from app.services import payment_approvals as pay_appr
+    from app.services import repayments as rp
+    from app.services.payment_matching import match_reference
+
+    raw = (await file.read()).decode("utf-8-sig", errors="ignore")
     reader = csv.DictReader(io.StringIO(raw))
-    matched, unmatched, errors = 0, 0, []
-    for i, row in enumerate(reader, start=1):
-        r = {(k or "").strip().lower(): (v or "").strip() for k, v in row.items()}
-        acct, amount = r.get("account_number"), r.get("amount")
-        if not acct or not amount:
-            errors.append(f"row {i}: missing account_number/amount"); continue
-        loan = db.query(Loan).filter(Loan.tenant_id == tenant_id, Loan.account_number == acct).first()
-        if not loan:
-            unmatched += 1; continue
+    parked, applied, unmatched, duplicates, errors = [], [], [], [], []
+    seen_refs = set()
+    reasons = {"unmatched": "account / customer number not found",
+               "no_open_loan": "customer has no open loan",
+               "ambiguous_customer": "customer has several open loans — use the loan account number"}
+    for count, row in enumerate(reader, start=1):
+        line = count + 1  # row 1 is the header
+        if count > PAYMENT_UPLOAD_MAX_ROWS:
+            errors.append(f"file has more than {PAYMENT_UPLOAD_MAX_ROWS} rows; the rest were not read")
+            break
+        r = {(k or "").strip().lower(): (v or "").strip() for k, v in row.items() if k}
+        acct = r.get("account_number") or r.get("customer_number")
+        ref = pay_appr.clean_reference(r.get("mpesa_ref") or r.get("reference"))
+        if not acct or not r.get("amount") or not ref:
+            errors.append(f"row {line}: account/customer number, amount and mpesa_ref are required")
+            continue
         try:
-            amt = float(amount)
-        except ValueError:
-            errors.append(f"row {i}: bad amount '{amount}'"); continue
-        db.add(Repayment(tenant_id=tenant_id, loan_id=loan.id, amount=amt,
-                         payment_date=datetime.utcnow(), method="batch_upload",
-                         mpesa_ref=r.get("mpesa_ref")))
-        loan.outstanding_balance = max(0, float(loan.outstanding_balance or 0) - amt)
-        matched += 1
+            amount = money(Decimal(r["amount"].replace(",", "")))
+        except (InvalidOperation, ValueError):
+            errors.append(f"row {line}: bad amount '{r['amount']}'")
+            continue
+        if amount <= 0:
+            errors.append(f"row {line}: amount must be positive")
+            continue
+        try:
+            paid_at = _parse_upload_date(r.get("date"))
+        except ValueError as exc:
+            errors.append(f"row {line}: {exc}")
+            continue
+        if paid_at is not None and paid_at > datetime.utcnow():
+            errors.append(f"row {line}: date is in the future")
+            continue
+        channel = (r.get("channel") or "mpesa_paybill").lower()
+        if channel not in pay_appr.MANUAL_CHANNELS:
+            errors.append(f"row {line}: unknown channel '{channel}'")
+            continue
+        if ref in seen_refs:
+            duplicates.append({"row": line, "reference": ref, "reason": "repeated in this file"})
+            continue
+        seen_refs.add(ref)
+        try:
+            pay_appr.ensure_reference_free(db, tenant_id, ref)
+        except HTTPException as exc:
+            duplicates.append({"row": line, "reference": ref, "reason": exc.detail})
+            continue
+        match = match_reference(db, tenant_id, acct)
+        if match.loan is None:
+            unmatched.append({"row": line, "account": acct, "amount": float(amount),
+                              "reference": ref, "reason": reasons.get(match.reason, match.reason)})
+            continue
+        loan = match.loan
+        if loan.status not in rp.COLLECTIBLE_STATUSES:
+            unmatched.append({"row": line, "account": acct, "amount": float(amount),
+                              "reference": ref, "reason": f"loan is {loan.status}"})
+            continue
+        details = {"channel": channel, "reference": ref,
+                   "paid_at": (paid_at or datetime.utcnow()).isoformat(),
+                   "note": f"CSV upload {file.filename}, row {line}",
+                   "source_endpoint": "payment_upload"}
+        if rbac.requires_maker_checker(db, tenant_id, pay_appr.MANUAL_THRESHOLD, float(amount)):
+            p = pay_appr.park_manual_payment(db, tenant_id=tenant_id, user=actor, loan=loan,
+                                             amount=amount, details=details,
+                                             reason=details["note"][:200])
+            parked.append({"row": line, "reference": ref, "loan_id": loan.id, "pending_id": p.id})
+        else:
+            res = pay_appr.apply_manual(db, tenant_id=tenant_id, loan_id=loan.id, amount=amount,
+                                        details=details, actor_user_id=actor.id)
+            applied.append({"row": line, "reference": ref, "loan_id": loan.id,
+                            "applied": res["applied"]})
     write_audit(db, tenant_id=tenant_id, user=actor, action="payments.batch_upload",
-                entity_type="payment_batch", entity_id=file.filename,
-                details={"matched": matched, "unmatched": unmatched, "errors": len(errors)},
+                entity_type="payment_batch", entity_id=(file.filename or "")[:40],
+                details={"parked": len(parked), "applied": len(applied),
+                         "unmatched": len(unmatched), "duplicates": len(duplicates),
+                         "errors": len(errors)},
                 request=request)
     db.commit()
-    return {"filename": file.filename, "matched": matched, "unmatched": unmatched,
-            "errors": errors[:20]}
+    return {"filename": file.filename,
+            "pending_approval": len(parked), "applied": len(applied),
+            "matched": len(parked) + len(applied),
+            "unmatched": len(unmatched), "unmatched_rows": unmatched[:200],
+            "duplicates": duplicates[:200], "errors": errors[:50]}
 
 
 # ---------------------------------------------------------------------------
