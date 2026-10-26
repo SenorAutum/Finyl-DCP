@@ -13,7 +13,8 @@ from decimal import Decimal
 from sqlalchemy.orm import Session
 
 from app.core.crypto import pii_hash
-from app.models import BankStatement
+from app.core.ownership import get_owned
+from app.models import BankStatement, Borrower
 
 # Common Kenyan digital-lender footprints for detected_lenders.
 _LENDER_HINTS = ["tala", "branch", "zenka", "okash", "mshwari", "kcb-mpesa",
@@ -87,6 +88,9 @@ def analyse(transactions: list[dict]) -> dict:
 def ingest(db: Session, *, tenant_id: int, client_id: int, bank_name: str,
            transactions: list[dict], account_number: str | None = None,
            source_filename: str | None = None, created_by: int | None = None) -> BankStatement:
+    # Enforced HERE (not in each router) so every caller - user routes, API-key
+    # ingestion and future jobs - is covered: the client must be in `tenant_id`.
+    get_owned(db, Borrower, client_id, tenant_id, label="Client")
     a = analyse(transactions or [])
     row = BankStatement(
         tenant_id=tenant_id, client_id=client_id, bank_name=bank_name,

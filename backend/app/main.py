@@ -10,6 +10,8 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.core.ownership import OwnershipError
+
 from app.core.config import settings
 from app.core.database import Base, SessionLocal, engine, ensure_schema
 from app.core.obs import configure_logging
@@ -118,6 +120,14 @@ async def enforce_password_reset(request: Request, call_next):
 # gives an immutable, tamper-evident trail of who changed what (CBK mandate).
 # It runs AFTER the handler so the real response status is captured, and never
 # blocks or fails the underlying request.
+@app.exception_handler(OwnershipError)
+async def _ownership_error_handler(request: Request, exc: OwnershipError):
+    """A reference to a record outside the caller's tenant looks exactly like a
+    missing record, so other tenants' identifiers cannot be enumerated."""
+    return JSONResponse(status_code=status.HTTP_404_NOT_FOUND,
+                        content={"detail": f"{exc.label} not found"})
+
+
 _ACTIVITY_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 _ACTIVITY_SKIP_PREFIXES = ("/api/v1/activity",)  # avoid logging the log ingest itself
 

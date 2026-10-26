@@ -26,16 +26,19 @@ from sqlalchemy.orm import Session, joinedload
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.deps import require_module, require_permission, write_audit
-from app.core.money import split_interest_principal, reduce_balance, money
+from app.core.money import money
 from app.core.obs import log_money_event
 from app.models import Loan, PaymentTransaction, PendingApproval, Repayment, User, SuspenseEntry
 from app.schemas import (C2BCallback, StkPushRequest, DisburseRequest,
-                         RefundRequest, ReconcileRequest,
-                         SuspenseAllocateIn, SuspenseRefundIn)
-from app.services import mpesa, sms
+                         RefundRequest, ReconcileRequest, ManualPaymentIn,
+                         PaymentSettingsIn, SuspenseAllocateIn, SuspenseRefundIn)
+from app.services import mpesa
+from app.services import payment_approvals as pay_appr
 from app.services import rbac as rbac_svc
+from app.services import repayments as rp
 from app.services import webhook_security as ws
-from app.services.disbursement import (execute_disbursement, execute_refund,
+from app.services.payment_matching import match_reference
+from app.services.disbursement import (execute_disbursement,
                                        apply_b2c_result, mark_b2c_timeout)
 
 router = APIRouter(prefix="/api/v1/payments", tags=["payments"])
@@ -44,24 +47,26 @@ logger = logging.getLogger("finyl.payments")
 
 
 def _record_suspense(db: Session, *, tenant_id: int, reason: str, amount, ref,
-                     phone=None, loan_id=None, source="c2b", raw_payload=None):
+                     phone=None, loan_id=None, source="c2b", raw_payload=None, **extra):
     """Additively record a suspense entry, idempotent on (tenant_id, mpesa_ref).
 
-    Returns the entry (existing or new). Does NOT commit — the caller owns the
-    transaction so the suspense row is written atomically with the payment record.
-    """
-    if ref:
-        existing = (db.query(SuspenseEntry)
-                    .filter(SuspenseEntry.tenant_id == tenant_id,
-                            SuspenseEntry.mpesa_ref == str(ref)).first())
-        if existing is not None:
-            return existing
-    entry = SuspenseEntry(tenant_id=tenant_id, source=source,
-                          mpesa_ref=(str(ref) if ref else None), phone=phone,
-                          amount=money(amount), reason=reason, status="open",
-                          matched_loan_id=loan_id, raw_payload=raw_payload or {})
-    db.add(entry)
-    return entry
+    Thin wrapper kept for existing callers/tests; the logic lives in
+    services/repayments.record_suspense. Does NOT commit."""
+    return rp.record_suspense(db, tenant_id=tenant_id, reason=reason, amount=amount,
+                              ref=ref, phone=phone, loan_id=loan_id, source=source,
+                              raw_payload=raw_payload, **extra)
+
+
+def _parse_mpesa_time(value) -> datetime | None:
+    """Daraja TransTime / TransactionDate is 'YYYYMMDDHHMMSS' in Kenyan time
+    (EAT, UTC+3). Stored as naive UTC like every other timestamp here."""
+    if value in (None, ""):
+        return None
+    try:
+        from datetime import timedelta
+        return datetime.strptime(str(value).strip()[:14], "%Y%m%d%H%M%S") - timedelta(hours=3)
+    except (TypeError, ValueError):
+        return None
 
 
 # --------------------------------------------------------------------------- #
@@ -177,54 +182,164 @@ def reconcile_payment(body: ReconcileRequest,
                       db: Session = Depends(get_db),
                       user: User = Depends(require_permission("reconcile.execute")),
                       request: Request = None):
-    """Manually reconcile a received payment against a loan.
+    """Manually reconcile a received payment against a loan (legacy endpoint).
 
-    MPESA-03 idempotency: if a repayment with the same mpesa_ref already exists for
-    this tenant, this is a no-op (prevents double-posting a manual reconciliation)."""
-    # Concurrency: lock the loan row so concurrent repayment callbacks serialize
-    # (no double-credit). FOR UPDATE can't be applied with the outer-joined
-    # joinedload; borrower is not needed here so we lock the loan row alone.
-    loan = (db.query(Loan)
-            .filter(Loan.id == body.loan_id, Loan.tenant_id == tenant_id)
-            .with_for_update().first())
-    if not loan:
-        raise HTTPException(404, "Loan not found")
-    amount = float(body.amount)
+    WP2: now goes through the same rules as POST /payments/manual — a second
+    approver is required above the DCP's `manual_payment` threshold (and for
+    every amount when no threshold is configured: fail closed, as for
+    disbursements). Idempotent on mpesa_ref."""
+    amount = money(body.amount)
     if amount <= 0:
         raise HTTPException(400, "Amount must be positive")
+    loan = (db.query(Loan)
+            .filter(Loan.id == body.loan_id, Loan.tenant_id == tenant_id).first())
+    if not loan:
+        raise HTTPException(404, "Loan not found")
 
-    if body.mpesa_ref:
+    ref = pay_appr.clean_reference(body.mpesa_ref)
+    if ref:
         existing = (db.query(Repayment)
                     .filter(Repayment.tenant_id == tenant_id,
-                            Repayment.mpesa_ref == body.mpesa_ref).first())
+                            Repayment.mpesa_ref == ref).first())
         if existing:
-            return {"status": "duplicate_ignored", "mpesa_ref": body.mpesa_ref,
+            return {"status": "duplicate_ignored", "mpesa_ref": ref,
                     "repayment_id": existing.id,
                     "outstanding_balance": float(loan.outstanding_balance or 0),
                     "loan_status": loan.status}
+    pay_appr.ensure_reference_free(db, tenant_id, ref)
+    if loan.status not in rp.COLLECTIBLE_STATUSES:
+        raise HTTPException(400, f"Loan is not collectible (status={loan.status}); "
+                                 "record the money via the suspense account instead")
 
-    # MPESA-07: Decimal money math for the interest/principal split + balance.
-    interest, principal = split_interest_principal(amount, loan.interest_rate)
-    rep = Repayment(
-        tenant_id=tenant_id, loan_id=loan.id, amount=money(amount),
-        interest_component=interest,
-        principal_component=principal,
-        payment_date=datetime.utcnow(), method="reconciliation",
-        mpesa_ref=body.mpesa_ref,
-    )
-    db.add(rep)
-    loan.outstanding_balance = reduce_balance(loan.outstanding_balance or 0, amount)
-    if loan.outstanding_balance <= 0 and loan.status in ("active", "overdue"):
-        loan.status = "paid"
+    details = {"channel": "mpesa_paybill", "reference": ref,
+               "paid_at": datetime.utcnow().isoformat(), "source_endpoint": "reconcile"}
+    if rbac_svc.requires_maker_checker(db, tenant_id, pay_appr.MANUAL_THRESHOLD, float(amount)):
+        pending = pay_appr.park_manual_payment(db, tenant_id=tenant_id, user=user, loan=loan,
+                                               amount=amount, details=details, reason=None)
+        write_audit(db, tenant_id=tenant_id, user=user, action="reconcile.request",
+                    entity_type="loan", entity_id=loan.id,
+                    details={"amount": float(amount), "mpesa_ref": ref,
+                             "pending_id": pending.id}, request=request)
+        db.commit()
+        return {"status": "pending_approval", "pending_id": pending.id,
+                "message": "Manual payment recorded — awaiting a second approver."}
+
+    loan = db.query(Loan).filter(Loan.id == loan.id).with_for_update().first()
+    res = rp.apply_payment(db, tenant_id=tenant_id, loan=loan, amount=amount, ref=ref,
+                           method="reconciliation", source="manual", actor_user_id=user.id)
     write_audit(db, tenant_id=tenant_id, user=user, action="reconcile.execute",
                 entity_type="loan", entity_id=loan.id,
-                details={"amount": amount, "mpesa_ref": body.mpesa_ref}, request=request)
-    log_money_event("reconcile", tenant_id=tenant_id, user_id=user.id, loan_id=loan.id,
-                    amount=money(amount), ref=body.mpesa_ref,
-                    detail=f"outstanding={loan.outstanding_balance}")
+                details={"amount": float(amount), "mpesa_ref": res.ref,
+                         "applied": float(res.applied), "excess": float(res.excess)},
+                request=request)
     db.commit()
     return {"status": "reconciled", "outstanding_balance": float(loan.outstanding_balance),
-            "loan_status": loan.status}
+            "loan_status": loan.status, "applied": float(res.applied),
+            "excess": float(res.excess), "suspense_id": res.suspense_id}
+
+
+# --------------------------------------------------------------------------- #
+# WP2 — Manual payment entry (paybill / till / bank / cash) with maker-checker
+# --------------------------------------------------------------------------- #
+@router.post("/manual")
+def record_manual_payment(body: ManualPaymentIn, request: Request,
+                          tenant_id: int = Depends(require_module("payments")),
+                          db: Session = Depends(get_db),
+                          user: User = Depends(require_permission("reconcile.execute"))):
+    """Record money received outside the automatic paybill flow — a payment the
+    callback missed, a till or bank deposit, or cash at a branch.
+
+    The staff member supplies the transaction reference (M-Pesa code / bank
+    reference) as evidence. The same reference can never be recorded twice.
+    Above the DCP's `manual_payment` threshold (or always, if none is set) the
+    entry waits for a second person to approve it before any balance changes."""
+    channel = (body.channel or "").strip().lower()
+    if channel not in pay_appr.MANUAL_CHANNELS:
+        raise HTTPException(422, f"channel must be one of {sorted(pay_appr.MANUAL_CHANNELS)}")
+    amount = money(body.amount)
+    if amount <= 0:
+        raise HTTPException(422, "Amount must be positive")
+    ref = pay_appr.clean_reference(body.reference)
+    if not ref and channel != "cash":
+        raise HTTPException(422, "A transaction reference (M-Pesa code or bank reference) "
+                                 "is required for this channel")
+    paid_at = pay_appr.check_paid_at(body.paid_at)
+    note = (body.note or "").strip()
+    if not note:
+        raise HTTPException(422, "A note describing the evidence (e.g. statement line, "
+                                 "receipt number, customer SMS) is required")
+
+    loan = pay_appr.resolve_manual_loan(db, tenant_id, body.loan_id, body.customer_number)
+    if loan.status not in rp.COLLECTIBLE_STATUSES:
+        raise HTTPException(400, f"Loan is not collectible (status={loan.status})")
+    pay_appr.ensure_reference_free(db, tenant_id, ref)
+    if not ref:
+        ref = rp.internal_ref("CASH")
+
+    details = {"channel": channel, "reference": ref, "paid_at": paid_at.isoformat(),
+               "payer_name": (body.payer_name or "").strip() or None,
+               "payer_phone": (body.payer_phone or "").strip() or None,
+               "note": note[:500], "source_endpoint": "manual"}
+    if rbac_svc.requires_maker_checker(db, tenant_id, pay_appr.MANUAL_THRESHOLD, float(amount)):
+        pending = pay_appr.park_manual_payment(db, tenant_id=tenant_id, user=user, loan=loan,
+                                               amount=amount, details=details, reason=note[:200])
+        write_audit(db, tenant_id=tenant_id, user=user, action="manual_payment.request",
+                    entity_type="loan", entity_id=loan.id,
+                    details={"amount": float(amount), **details, "pending_id": pending.id},
+                    request=request)
+        db.commit()
+        return {"status": "pending_approval", "pending_id": pending.id, "loan_id": loan.id,
+                "reference": ref,
+                "message": "Manual payment recorded — awaiting a second approver."}
+
+    result = pay_appr.apply_manual(db, tenant_id=tenant_id, loan_id=loan.id, amount=amount,
+                                   details=details, actor_user_id=user.id)
+    write_audit(db, tenant_id=tenant_id, user=user, action="manual_payment.execute",
+                entity_type="loan", entity_id=loan.id,
+                details={"amount": float(amount), **details, "result": result},
+                request=request)
+    db.commit()
+    return result
+
+
+@router.get("/settings")
+def get_payment_settings(tenant_id: int = Depends(require_module("payments")),
+                         db: Session = Depends(get_db),
+                         user: User = Depends(require_permission(
+                             "thresholds.view", "reconcile.execute", mode="any"))):
+    """This DCP's payment settings: paybill number and how a payment is split
+    between interest, fees/charges and principal."""
+    out = rp.get_payment_settings(db, tenant_id)
+    out["paybill"] = mpesa.resolve_creds(db, tenant_id).shortcode or None
+    out["allocation_order_options"] = rp.ALLOCATION_ORDER_LABELS
+    out["early_settlement_options"] = rp.EARLY_SETTLEMENT_METHODS
+    return out
+
+
+@router.put("/settings")
+def update_payment_settings(body: PaymentSettingsIn, request: Request,
+                            tenant_id: int = Depends(require_module("payments")),
+                            db: Session = Depends(get_db),
+                            user: User = Depends(require_permission("thresholds.manage"))):
+    """Set the allocation order and/or how earned interest is counted on early
+    full repayment. `basis` records WHY the allocation order was chosen (e.g.
+    'LN 191/2026 reg. 56(2)') so an auditor can see what it was based on."""
+    before = rp.get_payment_settings(db, tenant_id)
+    try:
+        after = rp.set_payment_settings(db, tenant_id, user.id,
+                                        allocation_order=body.allocation_order, basis=body.basis,
+                                        early_settlement_method=body.early_settlement_method)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+    write_audit(db, tenant_id=tenant_id, user=user, action="config.payments.update",
+                entity_type="integration_config",
+                details={"allocation_order": {"from": before["allocation_order"],
+                                              "to": after["allocation_order"]},
+                         "early_settlement_method": {"from": before["early_settlement_method"],
+                                                     "to": after["early_settlement_method"]},
+                         "basis": body.basis}, request=request)
+    db.commit()
+    return get_payment_settings(tenant_id=tenant_id, db=db, user=user)
 
 
 # --------------------------------------------------------------------------- #
@@ -446,125 +561,121 @@ def _process_stk_callback(db, body) -> tuple[dict, int | None]:
     meta = {i.get("Name"): i.get("Value")
             for i in (cb.get("CallbackMetadata", {}) or {}).get("Item", []) or []}
     receipt = meta.get("MpesaReceiptNumber") or mpesa._mpesa_ref()
-    amount = float(meta.get("Amount") or txn.amount or 0)
+    amount = money(meta.get("Amount") or txn.amount or 0)
+    paid_at = _parse_mpesa_time(meta.get("TransactionDate"))
 
-    # Idempotency: if this receipt already produced a repayment, no-op.
-    existing = (db.query(Repayment)
-                .filter(Repayment.tenant_id == tenant_id, Repayment.mpesa_ref == str(receipt))
-                .first())
     txn.status = "success"
     txn.mpesa_ref = str(receipt)
     txn.raw_payload = {**(txn.raw_payload or {}), "result_callback": body}
-    # Concurrency: lock the loan row so concurrent repayment callbacks serialize
-    # (no double-credit). borrower lazy-loads on access below.
+    # Concurrency: lock the loan row so concurrent repayment callbacks serialize.
     loan = db.query(Loan).filter(
         Loan.id == txn.loan_id, Loan.tenant_id == tenant_id).with_for_update().first()
-    if existing is None and loan is not None:
-        # MPESA-07: Decimal money math.
-        interest, principal = split_interest_principal(amount, loan.interest_rate)
-        db.add(Repayment(tenant_id=tenant_id, loan_id=loan.id, amount=money(amount),
-                         interest_component=interest,
-                         principal_component=principal,
-                         payment_date=datetime.utcnow(), method="stk_push",
-                         mpesa_ref=str(receipt)))
-        loan.outstanding_balance = reduce_balance(loan.outstanding_balance or 0, amount)
-        if loan.outstanding_balance <= 0 and loan.status in ("active", "overdue"):
-            loan.status = "paid"
-        log_money_event("stk_callback", tenant_id=tenant_id, loan_id=loan.id,
-                        amount=money(amount), ref=str(receipt),
-                        detail=f"outstanding={loan.outstanding_balance}")
-        try:
-            sms.sms_payment_receipt(db, tenant_id, loan.borrower, loan, amount, str(receipt))
-        except Exception:
-            pass
+    if loan is not None and amount > 0:
+        # WP2: same rules as every other channel (idempotent on the receipt,
+        # allocation order, overpayment -> suspense, defaulted loans collectible).
+        rp.apply_payment(db, tenant_id=tenant_id, loan=loan, amount=amount, ref=str(receipt),
+                         method="stk_push", paid_at=paid_at,
+                         phone=str(meta.get("PhoneNumber") or "") or None, source="stk")
     db.commit()
     return {"ResultCode": 0, "ResultDesc": "Result received"}, tenant_id
 
 
+def _c2b_payer_name(cb: C2BCallback) -> str | None:
+    parts = [cb.FirstName, cb.MiddleName, cb.LastName]
+    name = " ".join(p.strip() for p in parts if p and str(p).strip())
+    return name or None
+
+
 def _process_c2b_callback(db, body) -> tuple[dict, int | None]:
+    """Paybill confirmation (WP2).
+
+      1. The paybill number (BusinessShortCode) decides the DCP. Each DCP has
+         its own paybill; money paid into DCP A's paybill can only ever be
+         applied to DCP A's loans, whatever account number the payer typed.
+      2. Inside that DCP, BillRefNumber is matched to a loan account number or a
+         customer number (services/payment_matching).
+      3. Matched -> applied via the shared routine. Not matched -> parked in
+         that DCP's suspense account for a person to allocate or refund (it is
+         no longer dead-lettered: the DCP is known, so it is a review item).
+      4. An unknown paybill number is NOT guessed: it is dead-lettered + alerted.
+    Payloads without a BusinessShortCode (older tests / non-Daraja senders) keep
+    the pre-WP2 behaviour of matching the loan account number directly."""
     try:
         cb = C2BCallback(**body)
     except Exception:
-        # Malformed — acknowledge (avoid retries) but record nothing.
-        return {"ResultCode": 0, "ResultDesc": "Ignored (unparseable)"}, None
+        # Malformed — acknowledge (avoid retries) but keep the event for review.
+        raise ws.WebhookUnresolved("unparseable C2B confirmation payload")
 
-    # Derive tenant + loan from the account number in BillRefNumber.
-    # Concurrency: lock the loan row so concurrent repayment callbacks serialize
-    # (no double-credit). borrower lazy-loads on access below.
-    loan = (db.query(Loan)
-            .filter(Loan.account_number == cb.BillRefNumber)
-            .with_for_update().first())
-    if not loan:
-        # Cannot route the money to a loan/tenant — surface it (DLQ + alert)
-        # rather than silently dropping funds (MPESA multi-paybill resolution).
-        raise ws.WebhookUnresolved(f"no loan for account {cb.BillRefNumber}")
-    tenant_id = loan.tenant_id
-    ref = cb.TransID or mpesa._mpesa_ref()
-    amount = float(cb.TransAmount)
+    ref = cb.TransID or None
+    amount = money(cb.TransAmount)
+    paid_at = _parse_mpesa_time(cb.TransTime)
+    payer_name = _c2b_payer_name(cb)
+    shortcode = (str(cb.BusinessShortCode).strip() if cb.BusinessShortCode not in (None, "")
+                 else None)
+
+    if shortcode:
+        tenant_id = ws.shortcode_to_tenant(db, shortcode)
+        if tenant_id is None:
+            raise ws.WebhookUnresolved(f"paybill {shortcode} is not registered to any DCP")
+    else:
+        legacy = (db.query(Loan).filter(Loan.account_number == cb.BillRefNumber)
+                  .order_by(Loan.id.desc()).first()) if cb.BillRefNumber else None
+        if legacy is None:
+            raise ws.WebhookUnresolved(f"no loan for account {cb.BillRefNumber}")
+        tenant_id = legacy.tenant_id
 
     # Idempotency on TransID (MPESA-03): duplicate delivery is a no-op.
-    existing = (db.query(Repayment)
-                .filter(Repayment.tenant_id == tenant_id, Repayment.mpesa_ref == str(ref))
-                .first())
-    if existing is not None:
-        return {"ResultCode": 0, "ResultDesc": "Duplicate ignored",
-                "loan_status": loan.status}, tenant_id
+    if rp.reference_already_used(db, tenant_id, ref):
+        return {"ResultCode": 0, "ResultDesc": "Duplicate ignored"}, tenant_id
 
-    # Loan not in a collectible state — record the transaction for review only.
-    if loan.status not in ("active", "overdue"):
-        db.add(PaymentTransaction(tenant_id=tenant_id, type="c2b", loan_id=loan.id,
+    match = match_reference(db, tenant_id, cb.BillRefNumber, phone=cb.MSISDN)
+    if match.loan is None:
+        entry = rp.record_suspense(
+            db, tenant_id=tenant_id, reason=match.reason or "unmatched", amount=amount,
+            ref=ref or rp.internal_ref("C2B"), phone=cb.MSISDN,
+            suggested_loan_id=match.suggested_loan_id, source="c2b",
+            bill_ref=cb.BillRefNumber, payer_name=payer_name, paid_at=paid_at,
+            raw_payload={"shortcode": shortcode, "account_entered": cb.BillRefNumber,
+                         "borrower_id": match.borrower_id})
+        db.add(PaymentTransaction(tenant_id=tenant_id, type="c2b", loan_id=None,
                                   amount=amount, phone=cb.MSISDN, mpesa_ref=ref,
                                   status="success",
                                   raw_payload={**body, "review": True,
-                                               "review_reason": f"loan_status_{loan.status}"}))
-        # Additive: park the funds in suspense (tenant known, loan not collectible).
-        _record_suspense(db, tenant_id=tenant_id, reason="closed_loan", amount=amount,
-                         ref=ref, phone=cb.MSISDN, loan_id=loan.id, source="c2b",
-                         raw_payload={"review_reason": f"loan_status_{loan.status}",
-                                      "account_number": cb.BillRefNumber})
+                                               "review_reason": match.reason or "unmatched"}))
+        db.flush()
+        log_money_event("c2b_unmatched", tenant_id=tenant_id, amount=amount,
+                        phone=cb.MSISDN, ref=str(ref),
+                        detail=f"bill_ref={cb.BillRefNumber!r} reason={match.reason} "
+                               f"suspense_id={entry.id}")
         db.commit()
-        return {"ResultCode": 0, "ResultDesc": "Recorded for review (loan not collectible)"}, tenant_id
+        return {"ResultCode": 0, "ResultDesc": "Confirmation received successfully",
+                "matched": False, "suspense_id": entry.id}, tenant_id
 
-    outstanding = float(loan.outstanding_balance or 0)
-    overpayment = amount > outstanding
-    # MPESA-07: Decimal money math.
-    interest, principal = split_interest_principal(amount, loan.interest_rate)
-    db.add(Repayment(tenant_id=tenant_id, loan_id=loan.id, amount=money(amount),
-                     interest_component=interest,
-                     principal_component=principal,
-                     payment_date=datetime.utcnow(), method="mpesa_c2b", mpesa_ref=ref))
-    txn_payload = {**body}
-    if overpayment:
-        # MPESA-04: record but flag for manual review; do NOT auto-mark paid.
-        txn_payload.update({"review": True, "review_reason": "overpayment",
-                            "outstanding_at_receipt": outstanding})
-        loan.outstanding_balance = 0
-        # Additive: park the excess (amount over outstanding) in suspense.
-        excess = round(amount - outstanding, 2)
-        if excess > 0:
-            _record_suspense(db, tenant_id=tenant_id, reason="overpayment", amount=excess,
-                             ref=ref, phone=cb.MSISDN, loan_id=loan.id, source="c2b",
-                             raw_payload={"outstanding_at_receipt": outstanding,
-                                          "amount_received": amount,
-                                          "account_number": cb.BillRefNumber})
-    else:
-        loan.outstanding_balance = reduce_balance(outstanding, amount)
-        if loan.outstanding_balance <= 0 and loan.status in ("active", "overdue"):
-            loan.status = "paid"
-    log_money_event("c2b_callback", tenant_id=tenant_id, loan_id=loan.id,
-                    amount=money(amount), phone=cb.MSISDN, ref=str(ref),
-                    detail=f"overpayment={overpayment} outstanding={loan.outstanding_balance}")
+    # Concurrency: lock the loan row so concurrent repayment callbacks serialize.
+    loan = (db.query(Loan).filter(Loan.id == match.loan.id, Loan.tenant_id == tenant_id)
+            .with_for_update().first())
+    res = rp.apply_payment(db, tenant_id=tenant_id, loan=loan, amount=amount, ref=ref,
+                           method="mpesa_c2b", paid_at=paid_at, phone=cb.MSISDN,
+                           source="c2b", bill_ref=cb.BillRefNumber, payer_name=payer_name)
+    if res.status == "duplicate_ignored":
+        db.rollback()
+        return {"ResultCode": 0, "ResultDesc": "Duplicate ignored",
+                "loan_status": loan.status}, tenant_id
+    flagged = res.status == "suspense" or res.excess > 0
+    txn_payload = {**body, "matched_by": match.how}
+    if flagged:
+        txn_payload.update({"review": True,
+                            "review_reason": ("overpayment" if res.status == "applied"
+                                              else f"loan_status_{loan.status}")})
     db.add(PaymentTransaction(tenant_id=tenant_id, type="c2b", loan_id=loan.id, amount=amount,
-                              phone=cb.MSISDN, mpesa_ref=ref, status="success",
+                              phone=cb.MSISDN, mpesa_ref=res.ref, status="success",
                               raw_payload=txn_payload))
-    try:
-        sms.sms_payment_receipt(db, tenant_id, loan.borrower, loan, amount, ref)
-    except Exception:
-        pass
     db.commit()
     return {"ResultCode": 0, "ResultDesc": "Confirmation received successfully",
-            "loan_status": loan.status, "flagged_for_review": overpayment,
-            "outstanding_balance": float(loan.outstanding_balance)}, tenant_id
+            "matched": True, "matched_by": match.how,
+            "loan_status": loan.status, "flagged_for_review": flagged,
+            "applied": float(res.applied), "excess": float(res.excess),
+            "outstanding_balance": float(loan.outstanding_balance or 0)}, tenant_id
 
 
 # Retry dispatch: endpoint label -> processor. Used by the scheduler worker to
@@ -677,6 +788,8 @@ def _suspense_dict(s: SuspenseEntry) -> dict:
         "id": s.id, "source": s.source, "mpesa_ref": s.mpesa_ref, "phone": s.phone,
         "amount": float(s.amount or 0), "reason": s.reason, "status": s.status,
         "matched_loan_id": s.matched_loan_id,
+        "suggested_loan_id": s.suggested_loan_id,
+        "bill_ref": s.bill_ref, "payer_name": s.payer_name, "paid_at": s.paid_at,
         "created_at": s.created_at, "resolved_at": s.resolved_at,
         "resolved_by_user_id": s.resolved_by_user_id,
     }
@@ -707,10 +820,13 @@ def allocate_suspense(entry_id: int, body: SuspenseAllocateIn, request: Request,
                       tenant_id: int = Depends(require_module("payments")),
                       db: Session = Depends(get_db),
                       user: User = Depends(require_permission("reconcile.execute"))):
-    """Apply an open suspense entry to a loan as a repayment.
+    """Apply an open suspense entry to a loan.
 
-    Reuses the same Decimal money helpers as /reconcile (interest/principal split,
-    balance reduction). Idempotent: an already-resolved entry is a no-op."""
+    WP2: same maker-checker rule as manual payments — above the DCP's
+    `manual_payment` threshold (or always, when none is set) the allocation
+    waits for a second approver and the entry is held as `pending_approval`
+    so it cannot be allocated or refunded twice meanwhile. Idempotent: an
+    already-resolved entry is a no-op."""
     entry = (db.query(SuspenseEntry)
              .filter(SuspenseEntry.id == entry_id,
                      SuspenseEntry.tenant_id == tenant_id).with_for_update().first())
@@ -719,56 +835,37 @@ def allocate_suspense(entry_id: int, body: SuspenseAllocateIn, request: Request,
     if entry.status != "open":
         return {"status": "already_resolved", "suspense_status": entry.status,
                 "matched_loan_id": entry.matched_loan_id}
-
-    loan = (db.query(Loan)
-            .filter(Loan.id == body.loan_id, Loan.tenant_id == tenant_id)
-            .with_for_update().first())
-    if not loan:
-        raise HTTPException(404, "Loan not found")
-    if loan.status not in ("active", "overdue"):
-        raise HTTPException(400, f"Loan is not collectible (status={loan.status})")
-
-    amount = float(entry.amount or 0)
-    if amount <= 0:
+    if money(entry.amount or 0) <= 0:
         raise HTTPException(400, "Suspense entry has no positive amount")
 
-    # Reuse an existing mpesa_ref if free; otherwise derive a suspense-scoped ref
-    # so the repayment idempotency guarantee still holds.
-    rep_ref = entry.mpesa_ref
-    if rep_ref:
-        dup = (db.query(Repayment)
-               .filter(Repayment.tenant_id == tenant_id,
-                       Repayment.mpesa_ref == rep_ref).first())
-        if dup is not None:
-            rep_ref = f"SUS-{entry.id}-{rep_ref}"
-    else:
-        rep_ref = f"SUS-{entry.id}"
+    loan = (db.query(Loan)
+            .filter(Loan.id == body.loan_id, Loan.tenant_id == tenant_id).first())
+    if not loan:
+        raise HTTPException(404, "Loan not found")
+    if loan.status not in rp.COLLECTIBLE_STATUSES:
+        raise HTTPException(400, f"Loan is not collectible (status={loan.status})")
 
-    interest, principal = split_interest_principal(amount, loan.interest_rate)
-    rep = Repayment(tenant_id=tenant_id, loan_id=loan.id, amount=money(amount),
-                    interest_component=interest, principal_component=principal,
-                    payment_date=datetime.utcnow(), method="suspense_allocation",
-                    mpesa_ref=rep_ref)
-    db.add(rep)
-    loan.outstanding_balance = reduce_balance(loan.outstanding_balance or 0, amount)
-    if loan.outstanding_balance <= 0 and loan.status in ("active", "overdue"):
-        loan.status = "paid"
+    amount = money(entry.amount)
+    if rbac_svc.requires_maker_checker(db, tenant_id, pay_appr.MANUAL_THRESHOLD, float(amount)):
+        pending = pay_appr.park_suspense_allocation(db, tenant_id=tenant_id, user=user,
+                                                    entry=entry, loan=loan)
+        write_audit(db, tenant_id=tenant_id, user=user, action="suspense.allocate.request",
+                    entity_type="suspense_entry", entity_id=entry.id,
+                    details={"loan_id": loan.id, "amount": float(amount),
+                             "pending_id": pending.id}, request=request)
+        db.commit()
+        return {"status": "pending_approval", "pending_id": pending.id,
+                "suspense_id": entry.id, "loan_id": loan.id,
+                "message": "Allocation awaiting a second approver."}
 
-    entry.status = "allocated"
-    entry.matched_loan_id = loan.id
-    entry.resolved_at = datetime.utcnow()
-    entry.resolved_by_user_id = user.id
-
+    result = pay_appr.allocate_entry(db, tenant_id=tenant_id, entry=entry, loan_id=loan.id,
+                                     resolver_user_id=user.id)
     write_audit(db, tenant_id=tenant_id, user=user, action="suspense.allocate",
                 entity_type="suspense_entry", entity_id=entry.id,
-                details={"loan_id": loan.id, "amount": amount}, request=request)
-    log_money_event("suspense_allocate", tenant_id=tenant_id, user_id=user.id,
-                    loan_id=loan.id, amount=money(amount), ref=rep_ref,
-                    detail=f"suspense_id={entry.id} outstanding={loan.outstanding_balance}")
+                details={"loan_id": loan.id, "amount": float(amount), "result": result},
+                request=request)
     db.commit()
-    return {"status": "allocated", "suspense_id": entry.id, "loan_id": loan.id,
-            "outstanding_balance": float(loan.outstanding_balance),
-            "loan_status": loan.status}
+    return result
 
 
 @router.post("/suspense/{entry_id}/refund")
@@ -776,8 +873,13 @@ def refund_suspense(entry_id: int, body: SuspenseRefundIn, request: Request,
                     tenant_id: int = Depends(require_module("payments")),
                     db: Session = Depends(get_db),
                     user: User = Depends(require_permission("reconcile.execute"))):
-    """Mark an open suspense entry as refunded to the payer. Records the intent
-    and audits it; the actual payout follows the standard refund/B2C flow."""
+    """Request a refund of an open suspense entry to the payer.
+
+    WP2: refunds ALWAYS need a second approver (as for loan refunds, MPESA-05).
+    On approval the money is actually sent back via M-Pesa B2C (previously this
+    endpoint only marked the entry refunded and nothing was paid out). The
+    destination is the paying number; a different number may be supplied only
+    with a note, and the checker sees both before approving."""
     entry = (db.query(SuspenseEntry)
              .filter(SuspenseEntry.id == entry_id,
                      SuspenseEntry.tenant_id == tenant_id).with_for_update().first())
@@ -785,22 +887,15 @@ def refund_suspense(entry_id: int, body: SuspenseRefundIn, request: Request,
         raise HTTPException(404, "Suspense entry not found")
     if entry.status != "open":
         return {"status": "already_resolved", "suspense_status": entry.status}
-
-    entry.status = "refunded"
-    entry.resolved_at = datetime.utcnow()
-    entry.resolved_by_user_id = user.id
-    payload = dict(entry.raw_payload or {})
-    if body.note:
-        payload["refund_note"] = body.note
-    entry.raw_payload = payload
-
-    write_audit(db, tenant_id=tenant_id, user=user, action="suspense.refund",
+    pending = pay_appr.park_suspense_refund(db, tenant_id=tenant_id, user=user, entry=entry,
+                                            refund_phone=body.refund_phone, note=body.note)
+    write_audit(db, tenant_id=tenant_id, user=user, action="suspense.refund.request",
                 entity_type="suspense_entry", entity_id=entry.id,
-                details={"amount": float(entry.amount or 0), "note": body.note},
+                details={"amount": float(entry.amount or 0), "note": body.note,
+                         "phone": pending.phone, "pending_id": pending.id},
                 request=request)
-    log_money_event("suspense_refund", tenant_id=tenant_id, user_id=user.id,
-                    amount=money(entry.amount or 0), ref=entry.mpesa_ref,
-                    detail=f"suspense_id={entry.id}")
     db.commit()
-    return {"status": "refunded", "suspense_id": entry.id,
-            "amount": float(entry.amount or 0)}
+    return {"status": "pending_approval", "pending_id": pending.id,
+            "suspense_id": entry.id, "amount": float(entry.amount or 0),
+            "phone": pending.phone,
+            "message": "Refund awaiting a second approver."}

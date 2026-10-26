@@ -14,6 +14,7 @@ from app.core.deps import (get_tenant_id, require_permission, get_scope, UserSco
 from app.models import Loan, Borrower, User, Staff, PendingApproval
 from app.schemas import LoanDecision, ClientProfileDecision, ApprovalDecision
 from app.services import rbac, sms
+from app.services import payment_approvals as pay_appr
 from app.services.disbursement import execute_disbursement, execute_refund
 
 router = APIRouter(prefix="/api/v1/approvals", tags=["approvals"])
@@ -168,10 +169,14 @@ def decide_client(client_id: int, body: ClientProfileDecision, request: Request,
 # ---------------------------------------------------------------------------
 # Maker-checker money movement
 # ---------------------------------------------------------------------------
+_MONEY_APPROVE_PERMS = ("disburse.approve", "refund.approve", "reconcile.approve")
+
+
 @router.get("/pending-actions")
 def pending_actions(tenant_id: int = Depends(get_tenant_id),
-                    user: User = Depends(require_permission("disburse.approve", "refund.approve", mode="any")),
+                    user: User = Depends(require_permission(*_MONEY_APPROVE_PERMS, mode="any")),
                     db: Session = Depends(get_db)):
+    from app.core.permissions import has_permission
     rows = (db.query(PendingApproval)
             .filter(PendingApproval.tenant_id == tenant_id,
                     PendingApproval.status == "pending_approval")
@@ -179,39 +184,57 @@ def pending_actions(tenant_id: int = Depends(get_tenant_id),
     out = []
     for p in rows:
         maker = db.get(User, p.maker_user_id)
+        need = pay_appr.ACTION_RULES.get(p.action_type, ("refund.approve", "refund"))[0]
+        d = p.details or {}
         out.append({"id": p.id, "action_type": p.action_type, "loan_id": p.loan_id,
                     "amount": float(p.amount), "phone": p.phone, "reason": p.reason,
                     "maker_email": maker.email if maker else None,
                     "maker_user_id": p.maker_user_id,
                     "maker_at": p.maker_at.isoformat() if p.maker_at else None,
-                    "is_own": p.maker_user_id == user.id})
+                    "is_own": p.maker_user_id == user.id,
+                    "can_approve": (p.maker_user_id != user.id
+                                    and has_permission(user.role, need)),
+                    # WP2: the evidence the checker needs for manual money.
+                    "reference": d.get("reference"), "channel": d.get("channel"),
+                    "paid_at": d.get("paid_at"), "payer_name": d.get("payer_name"),
+                    "account_number": d.get("account_number"),
+                    "suspense_id": d.get("suspense_id"), "note": d.get("note"),
+                    "phone_overridden": d.get("phone_overridden")})
     return out
 
 
 @router.post("/pending-actions/{pid}")
 def decide_pending_action(pid: int, body: ApprovalDecision, request: Request,
                           tenant_id: int = Depends(get_tenant_id),
-                          user: User = Depends(require_permission("disburse.approve", "refund.approve", mode="any")),
+                          user: User = Depends(require_permission(*_MONEY_APPROVE_PERMS, mode="any")),
                           db: Session = Depends(get_db)):
-    p = db.query(PendingApproval).filter(PendingApproval.id == pid, PendingApproval.tenant_id == tenant_id).first()
+    # Row lock: two checkers clicking Approve at once must not both execute.
+    p = (db.query(PendingApproval)
+         .filter(PendingApproval.id == pid, PendingApproval.tenant_id == tenant_id)
+         .with_for_update().first())
     if not p or p.status != "pending_approval":
         raise HTTPException(404, "Pending action not found")
+    if body.action not in ("approve", "reject"):
+        raise HTTPException(422, "action must be 'approve' or 'reject'")
     # maker-checker: the initiator cannot approve their own action
     if p.maker_user_id == user.id:
         raise HTTPException(403, "The initiating user cannot approve their own action (maker-checker)")
+    rule = pay_appr.ACTION_RULES.get(p.action_type)
+    if rule is None:
+        raise HTTPException(400, f"Unsupported action type {p.action_type}")
+    need, appr_type = rule
     # permission must match the action type
     from app.core.permissions import has_permission
-    need = "disburse.approve" if p.action_type == "disbursement" else "refund.approve"
     if not has_permission(user.role, need):
         raise HTTPException(403, f"Missing required permission: {need}")
     # Per-DCP approver gate for the money-movement action type.
-    appr_type = "disbursement" if p.action_type == "disbursement" else "refund"
     if user.role != "super_admin" and not rbac.approver_enabled(db, tenant_id, appr_type, user.role):
         raise HTTPException(
             403, f"Your role is not configured as an approver for {appr_type} approvals at this DCP")
 
     if body.action == "reject":
         p.status = "rejected"; p.checker_user_id = user.id; p.checker_at = datetime.utcnow()
+        pay_appr.on_rejected(db, tenant_id, p)
         write_audit(db, tenant_id=tenant_id, user=user, action=f"{p.action_type}.reject",
                     entity_type="pending_approval", entity_id=p.id, request=request)
         db.commit()
@@ -224,8 +247,10 @@ def decide_pending_action(pid: int, body: ApprovalDecision, request: Request,
         if not loan:
             raise HTTPException(404, "Loan not found")
         result = execute_disbursement(db, tenant_id, loan, user.id)
-    else:
+    elif p.action_type == "refund":
         result = execute_refund(db, tenant_id, float(p.amount), p.phone, p.loan_id, user.id, p.reason)
+    else:
+        result = pay_appr.execute_approved(db, tenant_id, p, user)
     p.status = "approved"; p.checker_user_id = user.id; p.checker_at = datetime.utcnow()
     p.details = {**(p.details or {}), "result": result}
     write_audit(db, tenant_id=tenant_id, user=user, action=f"{p.action_type}.approve",

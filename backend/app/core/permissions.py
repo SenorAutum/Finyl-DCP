@@ -51,12 +51,14 @@ PERMISSIONS = {
     "loans.reassign": "Reassign clients / loans between officers",
     "loans.escalate": "Escalate loans above own threshold",
     "loans.writeoff": "Approve / recommend write-offs & restructuring",
+    "loans.transition": "Manually move a loan between post-disbursement states (overdue / defaulted / paid-when-zero-balance)",
     # Money movement (maker-checker)
     "disburse.execute": "Disburse approved loans (Daraja B2C)",
     "disburse.approve": "Approve a pending disbursement (checker)",
     "refund.execute": "Process refunds",
     "refund.approve": "Approve a pending refund (checker)",
     "reconcile.execute": "Reconcile incoming repayments to loan accounts",
+    "reconcile.approve": "Approve a manual payment or suspense allocation (checker)",
     "collections.stk_push": "Trigger an STK-push collections prompt to a borrower",
     # Dashboards / reporting
     "dashboard.company": "View company-wide dashboards (all branches/regions)",
@@ -139,8 +141,8 @@ ROLE_PERMISSIONS = {
         "clients.view_all", "clients.edit", "clients.edit_locked", "clients.approve",
         "docs.upload", "docs.verify",
         "loans.view_all", "loans.approve", "loans.adjust", "loans.reassign",
-        "loans.escalate", "loans.writeoff",
-        "disburse.approve", "refund.approve",
+        "loans.escalate", "loans.transition", "loans.writeoff",
+        "disburse.approve", "refund.approve", "reconcile.approve",
         "collections.stk_push",
         "org.view", "thresholds.view",
         "dashboard.branch",
@@ -158,8 +160,8 @@ ROLE_PERMISSIONS = {
     "regional_manager": {
         "clients.view_all",
         "loans.view_all", "loans.approve", "loans.escalate", "loans.reassign",
-        "loans.writeoff", "loans.adjust",
-        "disburse.approve", "refund.approve",
+        "loans.transition", "loans.writeoff", "loans.adjust",
+        "disburse.approve", "refund.approve", "reconcile.approve",
         "collections.stk_push",
         "org.view", "thresholds.view",
         "dashboard.region",
@@ -181,7 +183,7 @@ ROLE_PERMISSIONS = {
     # Finance / Reconciliation Officer — company read + reconcile + refunds.
     "reconciliation_officer": {
         "clients.view_all", "loans.view_all", "dashboard.company",
-        "reconcile.execute", "refund.execute", "refund.approve",
+        "reconcile.execute", "refund.execute", "refund.approve", "reconcile.approve",
         "collections.stk_push",
         "payments.upload",
         "accounting.export",
@@ -206,8 +208,8 @@ ROLE_PERMISSIONS = {
     "hq_credit_committee": {
         "clients.view_all", "loans.view_all", "dashboard.company",
         "clients.approve",
-        "loans.approve", "loans.escalate", "loans.adjust", "loans.writeoff",
-        "disburse.approve", "refund.approve",
+        "loans.approve", "loans.escalate", "loans.adjust", "loans.transition", "loans.writeoff",
+        "disburse.approve", "refund.approve", "reconcile.approve",
     },
 
     # Director — senior executive with company-wide read visibility, approval
@@ -218,8 +220,8 @@ ROLE_PERMISSIONS = {
         "clients.view_all", "loans.view_all",
         # Approval authority
         "clients.approve",
-        "loans.approve", "loans.adjust", "loans.writeoff", "loans.escalate",
-        "disburse.approve", "refund.approve",
+        "loans.approve", "loans.adjust", "loans.transition", "loans.writeoff", "loans.escalate",
+        "disburse.approve", "refund.approve", "reconcile.approve",
         # Executive reporting
         "dashboard.company",
         "reports.export", "reports.schedule", "reports.template", "reports.flag",
@@ -246,6 +248,9 @@ ROLE_PERMISSIONS["loan_officer"] = set(ROLE_PERMISSIONS["relationship_officer"])
 ROLE_PERMISSIONS["call_agent"] = {
     "clients.view_portfolio", "loans.view_portfolio", "dashboard.portfolio",
 }
+
+# Front-line roles whose data scope is pinned to their own staff record.
+OFFICER_SCOPE_ROLES = {"relationship_officer", "loan_officer", "call_agent"}
 
 # Roles that see company-wide data (no branch/region/portfolio narrowing).
 COMPANY_SCOPE_ROLES = {
@@ -301,13 +306,15 @@ APPROVAL_TYPE_PERMISSION = {
     "client": "clients.approve",
     "disbursement": "disburse.approve",
     "refund": "refund.approve",
+    "manual_payment": "reconcile.approve",
 }
-APPROVAL_TYPES = ["loan", "client", "disbursement", "refund"]
+APPROVAL_TYPES = ["loan", "client", "disbursement", "refund", "manual_payment"]
 APPROVAL_TYPE_LABELS = {
     "loan": "Loan approvals",
     "client": "Client-profile approvals",
     "disbursement": "Disbursement (maker-checker)",
     "refund": "Refund (maker-checker)",
+    "manual_payment": "Manual payment / suspense allocation (maker-checker)",
 }
 
 # Legacy roles are never surfaced in the approver-configuration UI.

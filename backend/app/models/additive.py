@@ -52,13 +52,21 @@ class SuspenseEntry(Base):
 
     id = Column(Integer, primary_key=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
-    source = Column(String(10), nullable=False, default="c2b")     # c2b | manual
+    source = Column(String(10), nullable=False, default="c2b")     # c2b | stk | manual
     mpesa_ref = Column(String(40))
     phone = Column(String(20))
     amount = Column(Numeric(12, 2), nullable=False)
-    reason = Column(String(20), nullable=False)                    # unmatched | overpayment | closed_loan
-    status = Column(String(12), nullable=False, default="open")    # open | allocated | refunded
+    reason = Column(String(30), nullable=False)                    # unmatched | overpayment | closed_loan | ambiguous_customer
+    # open | pending_approval | allocated | refunded
+    status = Column(String(20), nullable=False, default="open")
     matched_loan_id = Column(Integer, ForeignKey("loans.id"))
+    # WP2 (migration 030): what the payer typed, who paid, when they paid, and
+    # the loan the system THINKS it belongs to (a hint for the reviewer only —
+    # never applied without a person confirming).
+    bill_ref = Column(String(60))
+    payer_name = Column(String(120))
+    paid_at = Column(DateTime)
+    suggested_loan_id = Column(Integer, ForeignKey("loans.id"))
     raw_payload = Column(JSON, default=dict)
     created_at = Column(DateTime, default=datetime.utcnow)
     resolved_at = Column(DateTime)

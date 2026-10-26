@@ -15,12 +15,16 @@ from app.core.database import get_db
 from app.core.deps import (get_current_user, require_module, require_permission,
                            require_role, get_scope, UserScope, write_audit)
 from app.models import (Borrower, Branch, ImpactSurvey, Loan, LoanActiveLockLog,
-                        PaymentTransaction, Product, Region, Repayment, Staff, User)
+                        PaymentTransaction, Product, Region, Repayment, Staff, Tenant, User)
 from app.schemas import (BorrowerCreate, LoanApplication, LoanStatusUpdate, ProductCreate,
                          ReassignRequest, QuoteRequest)
 from app.core.money import D, money
 from app.core import obs
-from app.routers.clients import _client_dict as _borrower_dict, LOCKED_FIELDS
+from app.routers.clients import (_client_dict as _borrower_dict, LOCKED_FIELDS,
+                                 MIN_ONBOARDING_AGE, _age_years)
+from app.core.ownership import get_owned_optional, require_client, resolve_loan_officer
+from app.services.authz import user_can
+from app.services.onboarding import initial_profile_state
 from app.services import mpesa, sms, client_edit
 from datetime import datetime, timezone
 from fastapi import Request
@@ -96,10 +100,35 @@ def list_borrowers(tenant_id: int = Depends(require_module("lending")),
 
 @router.post("/borrowers")
 def create_borrower(body: BorrowerCreate, tenant_id: int = Depends(require_module("lending")),
-                    db: Session = Depends(get_db)):
+                    db: Session = Depends(get_db),
+                    user: User = Depends(require_permission("clients.create")),
+                    request: Request = None):
+    """Legacy alias of POST /clients. It MUST enforce the same rules as the
+    canonical route (permission, age gate, maker-checker status, ownership)."""
+    age = _age_years(body.date_of_birth)
+    if age is not None and age < MIN_ONBOARDING_AGE:
+        obs.log_cbk_event(obs.CBK_AGE_REJECTED, tenant_id=tenant_id, user_id=user.id,
+                          entity_type="client", outcome="rejected", detail=f"age={age}")
+        raise HTTPException(422, f"Applicant must be at least {MIN_ONBOARDING_AGE} "
+                                 f"years old (computed age: {age}).")
+    # Referenced org records must belong to this tenant (not just "exist").
+    get_owned_optional(db, Region, body.region_id, tenant_id, label="Region")
+    get_owned_optional(db, Branch, body.branch_id, tenant_id, label="Branch")
+
+    profile_status, officer_staff_id = initial_profile_state(db, user)
     # INPUT-02: never mass-assign trust/lifecycle fields from client input.
-    b = Borrower(tenant_id=tenant_id, **body.model_dump(exclude={"kyc_status"}))
+    b = Borrower(tenant_id=tenant_id, **body.model_dump(exclude={"kyc_status"}),
+                 profile_status=profile_status, officer_staff_id=officer_staff_id,
+                 onboarded_by=user.full_name)
+    if age is not None:
+        b.date_of_birth_verified = True
+        b.age_verified_at = datetime.utcnow()
     db.add(b)
+    db.flush()
+    write_audit(db, tenant_id=tenant_id, user=user, action="client.create",
+                entity_type="client", entity_id=b.id,
+                details={"profile_status": profile_status, "via": "legacy_borrowers"},
+                request=request)
     db.commit()
     return _borrower_dict(b)
 
@@ -107,18 +136,24 @@ def create_borrower(body: BorrowerCreate, tenant_id: int = Depends(require_modul
 @router.put("/borrowers/{borrower_id}")
 def update_borrower(borrower_id: int, body: BorrowerCreate,
                     tenant_id: int = Depends(require_module("lending")),
-                    db: Session = Depends(get_db)):
-    b = db.query(Borrower).filter(Borrower.id == borrower_id, Borrower.tenant_id == tenant_id).first()
-    if not b:
-        raise HTTPException(404, "Borrower not found")
+                    db: Session = Depends(get_db),
+                    user: User = Depends(require_permission("clients.edit")),
+                    scope: UserScope = Depends(get_scope)):
+    b = require_client(db, tenant_id, borrower_id, scope)   # tenant + portfolio scope
+    get_owned_optional(db, Region, body.region_id, tenant_id, label="Region")
+    get_owned_optional(db, Branch, body.branch_id, tenant_id, label="Branch")
     # Record-level lock (Phase 2): when the borrower is edit-locked (active loan)
     # their locked identity fields are frozen and must go through the maker-checker
     # edit-request workflow rather than this direct PUT.
+    changed = [f for f in LOCKED_FIELDS
+               if str(getattr(body, f, None) or "") != str(getattr(b, f, None) or "")]
+    # Field-level lock: primary identity fields need clients.edit_locked (effective grant).
+    if changed and not user_can(db, user, "clients.edit_locked"):
+        raise HTTPException(422, "You are not permitted to change locked field(s): "
+                                 f"{', '.join(changed)}")
     record_locked = bool(getattr(b, "edit_locked", False)) or \
         client_edit.has_active_loan(db, tenant_id=tenant_id, client_id=b.id)
     if record_locked:
-        changed = [f for f in LOCKED_FIELDS
-                   if str(getattr(body, f, None) or "") != str(getattr(b, f, None) or "")]
         if changed:
             obs.log_cbk_event(obs.CBK_EDIT_LOCK_ENFORCED, tenant_id=tenant_id,
                               entity_type="borrower", entity_id=b.id, outcome="blocked",
@@ -214,6 +249,8 @@ def _loan_dict(l: Loan) -> dict:
         "approved_by_user_id": getattr(l, "approved_by_user_id", None),
         "decision_note": getattr(l, "decision_note", None),
         "active_lock": bool(getattr(l, "active_lock", False)),
+        "interest_rebate": float(getattr(l, "interest_rebate", 0) or 0),
+        "early_settled_at": getattr(l, "early_settled_at", None),
     }
 
 
@@ -233,6 +270,26 @@ def list_loans(tenant_id: int = Depends(require_module("lending")), db: Session 
     total = q.count()
     rows = q.order_by(Loan.id.desc()).offset((page - 1) * page_size).limit(page_size).all()
     return {"total": total, "page": page, "items": [_loan_dict(l) for l in rows]}
+
+
+@router.get("/loans/{loan_id}/payoff")
+def loan_payoff(loan_id: int, on: date | None = None,
+                tenant_id: int = Depends(require_module("lending")),
+                db: Session = Depends(get_db), scope: UserScope = Depends(get_scope)):
+    """What the borrower must pay to clear the loan today (or on `on`).
+
+    Before the due date only interest earned so far is payable (CBK LN 191/2026
+    reg. 56(4)); the rest of the term's interest is shown as `rebate` and is
+    written off automatically when a payment of at least `payoff_amount` arrives."""
+    from app.services import repayments as rp
+    l = (db.query(Loan).options(joinedload(Loan.product))
+         .filter(Loan.id == loan_id, Loan.tenant_id == tenant_id).first())
+    if not l:
+        raise HTTPException(404, "Loan not found")
+    if not scope.can_see_loan(l):
+        raise HTTPException(403, "Loan is outside your data scope")
+    return {"loan_id": l.id, "account_number": l.account_number, "status": l.status,
+            "due_date": l.due_date, **rp.payoff_quote(db, l, on)}
 
 
 @router.get("/loans/{loan_id}")
@@ -268,11 +325,13 @@ def loan_detail(loan_id: int, tenant_id: int = Depends(require_module("lending")
 @router.post("/loans/apply")
 def apply_for_loan(body: LoanApplication, tenant_id: int = Depends(require_module("lending")),
                    db: Session = Depends(get_db),
-                   user: User = Depends(require_permission("loans.create"))):
-    borrower = db.query(Borrower).filter(Borrower.id == body.borrower_id,
-                                         Borrower.tenant_id == tenant_id).first()
-    if not borrower:
-        raise HTTPException(404, "Borrower not found")
+                   user: User = Depends(require_permission("loans.create")),
+                   scope: UserScope = Depends(get_scope)):
+    # Tenant + portfolio scope, and a row lock so concurrent applications for
+    # the same client cannot both read the same loan-cycle number.
+    borrower = require_client(db, tenant_id, body.borrower_id, scope, lock=True)
+    # Never trust a caller-supplied officer id: derive / validate it.
+    staff_id = resolve_loan_officer(db, tenant_id, scope, borrower, body.staff_id)
     if borrower.profile_status != "approved":
         raise HTTPException(
             422,
@@ -296,12 +355,14 @@ def apply_for_loan(body: LoanApplication, tenant_id: int = Depends(require_modul
         if not has_survey:
             raise HTTPException(428, "IMPACT_SURVEY_REQUIRED")  # 428 Precondition Required
 
+    # Serialise account-number generation per tenant (count()+1 is racy).
+    db.query(Tenant).filter(Tenant.id == tenant_id).with_for_update().first()
     seq = db.query(Loan).filter(Loan.tenant_id == tenant_id).count() + 1
     loan = Loan(
         tenant_id=tenant_id,
         account_number=f"FL/FY{date.today().year}/{tenant_id}/{seq}",
         borrower_id=borrower.id, product_id=product.id,
-        staff_id=body.staff_id, branch_id=borrower.branch_id,
+        staff_id=staff_id, branch_id=borrower.branch_id,
         principal=body.principal, interest_rate=product.interest_rate,
         status="pending", application_date=date.today(), loan_cycle_number=cycle,
         outstanding_balance=0,
@@ -316,16 +377,23 @@ def transition_loan(loan_id: int, body: LoanStatusUpdate,
                     tenant_id: int = Depends(require_module("lending")),
                     db: Session = Depends(get_db),
                     scope: UserScope = Depends(get_scope),
+                    user: User = Depends(require_permission("loans.transition")),
                     request: Request = None):
     """Generic lifecycle transitions (e.g. active → paid/overdue/defaulted).
+
+    Requires ``loans.transition`` (credit-risk roles only; HQ operations is
+    read-only). ``paid`` is only accepted when the loan carries NO outstanding
+    balance, so this endpoint can never write a debt off the books by status.
 
     NOTE: Loan APPROVAL is no longer performed here (it moved to the Approvals
     inbox at /api/v1/approvals with threshold + escalation enforcement) and
     DISBURSEMENT moved to /api/v1/payments/disburse (maker-checker). This
     endpoint therefore refuses the approve/disburse steps.
     """
-    loan = (db.query(Loan).options(joinedload(Loan.borrower), joinedload(Loan.product))
-            .filter(Loan.id == loan_id, Loan.tenant_id == tenant_id).first())
+    # Row-lock the loan so a concurrent repayment/settlement cannot interleave
+    # with the balance check below (no joinedload: FOR UPDATE can't span an outer join).
+    loan = (db.query(Loan).filter(Loan.id == loan_id, Loan.tenant_id == tenant_id)
+            .with_for_update().first())
     if not loan:
         raise HTTPException(404, "Loan not found")
     if not scope.can_see_loan(loan):
@@ -337,6 +405,13 @@ def transition_loan(loan_id: int, body: LoanStatusUpdate,
         raise HTTPException(409, "Use the Approvals inbox (/api/v1/approvals/loans) to approve loans.")
     if body.status == "active":
         raise HTTPException(409, "Use disbursement (/api/v1/payments/disburse) to activate an approved loan.")
+
+    if body.status == "paid":
+        balance = money(loan.outstanding_balance)
+        if balance > 0:
+            raise HTTPException(
+                409, f"Loan has an outstanding balance of KES {balance}. A loan can only be "
+                     "marked paid once the balance is zero; record the repayment instead.")
 
     prev = loan.status
     loan.status = body.status

@@ -448,7 +448,20 @@ def _base_context(db, tenant_id, borrower, loan) -> dict:
         "days_left": "",
         "dcp_name": dcp_name(db, tenant_id),
         "loan_ref": getattr(loan, "account_number", "") or "",
+        # WP2: what the borrower types at the paybill. Available to every
+        # template as {{customer_number}} / {{paybill}}.
+        "customer_number": getattr(borrower, "customer_number", "") or "",
+        "paybill": _paybill(db, tenant_id),
     }
+
+
+def _paybill(db, tenant_id) -> str:
+    try:
+        from app.services import mpesa
+        sc = mpesa.resolve_creds(db, tenant_id).shortcode or ""
+        return "" if str(sc).strip().lower() in ("", "placeholder") else str(sc)
+    except Exception:  # noqa: BLE001 — never block an SMS on config lookup
+        return ""
 
 
 def _fire(db, tenant_id, phone, event_key, context, trigger_type) -> SmsLog | None:

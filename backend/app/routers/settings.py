@@ -112,6 +112,20 @@ def update_daraja(body: DarajaConfigIn, request: Request,
             val = val.strip()
             cfg[field] = val or None
 
+    # WP2: each DCP has its own paybill, and incoming payments are routed to a
+    # DCP by that number — two DCPs claiming one paybill would make every
+    # payment to it unroutable. Refuse the clash at save time.
+    new_sc = str(cfg.get("shortcode") or "").strip()
+    if new_sc:
+        if not new_sc.isdigit() or not (5 <= len(new_sc) <= 7):
+            raise HTTPException(422, "Paybill / shortcode must be 5-7 digits")
+        clash = [r for r in (db.query(TenantIntegrationConfig)
+                             .filter(TenantIntegrationConfig.integration == "daraja",
+                                     TenantIntegrationConfig.tenant_id != tenant_id).all())
+                 if str((r.config or {}).get("shortcode") or "").strip() == new_sc]
+        if clash:
+            raise HTTPException(409, "This paybill number is already registered to another DCP")
+
     # Secret fields — encrypt and store only when a non-blank value is supplied.
     changed_secrets = []
     for field in _SECRET_FIELDS:

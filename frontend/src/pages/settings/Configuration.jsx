@@ -120,8 +120,9 @@ function DarajaTab() {
             </select>
           </div>
           <div>
-            <label className="text-xs font-semibold text-gray-600">Shortcode</label>
-            <input className="input" value={form.shortcode} onChange={(e) => set("shortcode", e.target.value)} />
+            <label className="text-xs font-semibold text-gray-600">Paybill number (shortcode)</label>
+            <input className="input" inputMode="numeric" value={form.shortcode} onChange={(e) => set("shortcode", e.target.value)} />
+            <p className="text-[11px] text-gray-500 mt-1">Payments into this paybill are credited to your DCP only.</p>
           </div>
           <div>
             <label className="text-xs font-semibold text-gray-600">Initiator name</label>
@@ -144,6 +145,63 @@ function DarajaTab() {
           <button className="btn-ghost" onClick={runTest}>Test connection</button>
         </div>
       </div>
+      <AllocationCard />
+    </div>
+  );
+}
+
+// --------------------------------------------------------------------------- //
+// WP2 — how a repayment is split between interest, fees/charges and principal
+// --------------------------------------------------------------------------- //
+function AllocationCard() {
+  const [cfg, setCfg] = useState(null);
+  const [order, setOrder] = useState(""); const [basis, setBasis] = useState(""); const [early, setEarly] = useState("");
+  const [msg, setMsg] = useState(""); const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
+  const load = () => api("/api/v1/payments/settings").then((d) => {
+    setCfg(d); setOrder(d.allocation_order); setBasis(d.allocation_order_basis || ""); setEarly(d.early_settlement_method);
+  }).catch((e) => setErr(e.detail || "Failed to load payment settings"));
+  useEffect(() => { load(); }, []);
+  if (!cfg) return err ? <div className="mt-4"><Notice msg={err} tone="bad" /></div> : null;
+
+  async function save() {
+    setBusy(true); setErr(""); setMsg("");
+    try {
+      await api("/api/v1/payments/settings", { method: "PUT", body: { allocation_order: order, basis, early_settlement_method: early } });
+      setMsg("Payment settings saved. They apply to payments received from now on."); load();
+    } catch (e) { setErr(e.detail || "Save failed"); } finally { setBusy(false); }
+  }
+  return (
+    <div className="card p-5 space-y-3 mt-4">
+      <Notice msg={msg} /><Notice msg={err} tone="bad" />
+      <h3 className="font-bold">Repayment allocation order</h3>
+      <p className="text-xs text-gray-500">
+        How each payment is split between principal, fees/charges and interest. The CBK
+        Non-Deposit Taking Credit Providers Regulations, 2026 (Legal Notice 191), regulation 56(2),
+        require principal first, then fees and charges, then interest — the default.
+      </p>
+      <select className="input" value={order} onChange={(e) => setOrder(e.target.value)}>
+        {Object.entries(cfg.allocation_order_options || {}).map(([k, label]) => (
+          <option key={k} value={k}>{label}</option>
+        ))}
+      </select>
+      <div>
+        <label className="text-xs font-semibold text-gray-600">Basis (e.g. "LN 191/2026, regulation 56(2)")</label>
+        <input className="input" value={basis} onChange={(e) => setBasis(e.target.value)} />
+      </div>
+      {cfg.allocation_order_is_default && (
+        <p className="text-[11px] text-gray-500">Using the default required by regulation 56(2).</p>
+      )}
+      <h3 className="font-bold pt-3 border-t border-border">Early full repayment</h3>
+      <p className="text-xs text-gray-500">
+        A client who repays in full before the due date does not pay interest for the remaining
+        period (CBK LN 191/2026, regulation 56(4)). Choose how the interest earned so far is counted.
+      </p>
+      <select className="input" value={early} onChange={(e) => setEarly(e.target.value)}>
+        {Object.entries(cfg.early_settlement_options || {}).map(([k, label]) => (
+          <option key={k} value={k}>{label}</option>
+        ))}
+      </select>
+      <button className="btn-primary" disabled={busy} onClick={save}>{busy ? "Saving…" : "Save payment settings"}</button>
     </div>
   );
 }
@@ -277,6 +335,7 @@ function ThresholdsTab() {
               <option value="loan_approval">Loan approval</option>
               <option value="disbursement">Disbursement</option>
               <option value="refund">Refund</option>
+              <option value="manual_payment">Manual payment / suspense allocation</option>
             </select>
           </div>
           <div>

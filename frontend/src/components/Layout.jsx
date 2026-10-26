@@ -55,7 +55,7 @@ const NAV = [
   ]},
   { group: "Approvals", items: [
     { to: "/approvals", label: "Approvals Inbox", icon: "✅",
-      anyPerm: ["loans.approve", "clients.approve", "disburse.approve", "refund.approve"] },
+      anyPerm: ["loans.approve", "clients.approve", "disburse.approve", "refund.approve", "reconcile.approve"] },
   ]},
   { group: "Engagement", items: [
     { to: "/crm", label: "CRM Pipeline", module: "crm", icon: "🧭",

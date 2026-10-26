@@ -105,3 +105,15 @@ def list_roles_detail(db, tenant_id: int) -> list[dict]:
 def permission_catalog() -> list[dict]:
     """The permission catalog (key + description) for the matrix UI."""
     return [{"key": k, "description": v} for k, v in PERMISSIONS.items()]
+
+
+def user_can(db, user, key: str) -> bool:
+    """Whether `user` holds permission `key` under the tenant's EFFECTIVE grants.
+
+    Prefer this over the static ``has_permission(role, key)`` inside handlers:
+    the static check ignores per-tenant overrides, so a permission an admin has
+    revoked in the Roles matrix would still be honoured.
+    """
+    if user.role == "super_admin":
+        return True
+    return key in effective_permissions(db, user.tenant_id, user.role)
