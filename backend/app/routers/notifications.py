@@ -35,6 +35,7 @@ def _accrue_overdue_penalty(loan) -> Decimal:
     if allowed <= 0:
         return Decimal("0.00")
     loan.outstanding_balance = money(D(loan.outstanding_balance or 0) + allowed)
+    loan.penalties_charged = money(D(getattr(loan, "penalties_charged", 0) or 0) + allowed)
     return allowed
 
 router = APIRouter(prefix="/api/v1/notifications", tags=["notifications"])

@@ -195,18 +195,20 @@ def resolve_tenant_for_webhook(db, endpoint: str, body: dict) -> tuple[int | Non
     try:
         if endpoint in (ENDPOINT_B2C_RESULT, ENDPOINT_B2C_TIMEOUT,
                         ENDPOINT_REVERSAL_RESULT, ENDPOINT_REVERSAL_TIMEOUT):
-            txn_type = "b2c" if endpoint in (ENDPOINT_B2C_RESULT, ENDPOINT_B2C_TIMEOUT) else "reversal"
+            # B2C results cover both loan payouts and refunds (WP5).
+            txn_types = (("b2c", "refund") if endpoint in (ENDPOINT_B2C_RESULT, ENDPOINT_B2C_TIMEOUT)
+                         else ("reversal",))
             result = body.get("Result", {}) or {}
             conv = result.get("ConversationID")
             orig = result.get("OriginatorConversationID")
             txn = None
             if conv:
                 txn = (db.query(PaymentTransaction)
-                       .filter(PaymentTransaction.type == txn_type,
+                       .filter(PaymentTransaction.type.in_(txn_types),
                                PaymentTransaction.mpesa_ref == str(conv)).first())
             if txn is None and orig:
                 for c in (db.query(PaymentTransaction)
-                          .filter(PaymentTransaction.type == txn_type,
+                          .filter(PaymentTransaction.type.in_(txn_types),
                                   PaymentTransaction.status.in_(("processing", "timed_out"))).all()):
                     if (c.raw_payload or {}).get("result", {}).get("OriginatorConversationID") == orig:
                         txn = c

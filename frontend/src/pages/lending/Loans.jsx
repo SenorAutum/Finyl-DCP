@@ -58,7 +58,13 @@ function QuotePreview({ productId, principal, borrowerId }) {
             <Row label="Excise duty" value={`${kes2(quote.quote.excise_duty)} (${pctOf(quote.quote.excise_rate)})`} />
             <Row label="Total cost of credit" value={kes2(quote.quote.total_cost_of_credit)} />
             <Row label="Effective annual rate" value={pctOf(quote.quote.effective_annual_rate)} />
+            <Row label="Paid to client (M-Pesa)" value={kes2(quote.quote.amount_received)} />
             <Row label="Total repayable" value={<span className="font-bold text-charcoal">{kes2(quote.quote.total_repayable)}</span>} />
+          </div>
+          <div className="text-[11px] text-gray-500 mt-1">
+            {quote.quote.fee_collection === "add_to_balance"
+              ? "Fees and excise duty are added to the loan balance."
+              : "Fees and excise duty are deducted from the amount paid out."}
           </div>
           {quote.suggested_limit && (
             <div className="mt-2 pt-2 border-t border-border text-xs">

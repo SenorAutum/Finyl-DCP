@@ -176,6 +176,13 @@ class Loan(Base):
     # written off when the loan is repaid in full before its due date (mig. 031).
     interest_rebate = Column(Numeric(12, 2), default=0)
     early_settled_at = Column(DateTime)
+    # WP5 (F23, migration 034): the price agreed when the loan was created
+    # (fees, excise, payout, balance — services/pricing.py) and the part of the
+    # balance that is fees + excise when the product adds them to the balance.
+    pricing_snapshot = Column(JSON)
+    fees_in_balance = Column(Numeric(12, 2), default=0)
+    # WP5 (F25): penalties added to the balance, so the balance can be checked.
+    penalties_charged = Column(Numeric(12, 2), default=0)
     active_lock = Column(Boolean, nullable=False, default=False)  # Phase 2 (migration 021)
     loan_cycle_number = Column(Integer, default=1)   # borrower's Nth loan — drives impact survey gate
     created_at = Column(DateTime, default=datetime.utcnow)

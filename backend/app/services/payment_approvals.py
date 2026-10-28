@@ -380,16 +380,21 @@ def execute_approved(db, tenant_id: int, p: PendingApproval, checker) -> dict:
     if p.action_type == "suspense_refund":
         from app.services.disbursement import execute_refund
         entry = _locked_entry(db, tenant_id, p)
-        result = execute_refund(db, tenant_id, float(p.amount), p.phone, p.loan_id, checker.id,
-                                p.reason or f"Refund suspense #{entry.id}")
-        entry.status = "refunded"
-        entry.resolved_at = datetime.utcnow()
+        # WP5: the entry is `refund_processing` until Safaricom's result
+        # settles it (refunded) or it fails (back to open). Before WP5 it was
+        # marked refunded as soon as the request was accepted.
+        entry.status = "refund_processing"
         entry.resolved_by_user_id = checker.id
         payload = dict(entry.raw_payload or {})
-        payload["refund"] = {"pending_id": p.id, "phone": p.phone, "result": result,
+        payload["refund"] = {"pending_id": p.id, "phone": p.phone,
                              "note": (p.details or {}).get("note")}
         entry.raw_payload = payload
-        return {"status": "refunded", "suspense_id": entry.id, **result}
+        db.flush()
+        result = execute_refund(db, tenant_id, float(p.amount), p.phone, p.loan_id, checker.id,
+                                p.reason or f"Refund suspense #{entry.id}",
+                                context={"suspense_id": entry.id, "pending_id": p.id})
+        db.refresh(entry)
+        return {"status": entry.status, "suspense_id": entry.id, **result}
     if p.action_type == "suspense_reversal":
         return _execute_reversal(db, tenant_id, p, checker)
     raise HTTPException(400, f"Unsupported action type {p.action_type}")

@@ -7,7 +7,11 @@ const EMPTY = {
   name: "", code: "", interest_rate: 10, interest_method: "flat", tenure_value: 4,
   tenure_unit: "weeks", repayment_frequency: "weekly", min_amount: 1000, max_amount: 100000,
   min_age: 18, max_age: 65, penalty_rate: 1.0, active: true,
+  // Fees live in product.rules (WP5): processing %, flat facility fee, and how
+  // they are collected — deducted from the payout or added to the balance.
+  processing_fee_rate: 0, facility_fee: 0, fee_collection: "deduct",
 };
+const FEE_KEYS = ["processing_fee_rate", "facility_fee", "fee_collection"];
 
 export default function Products() {
   const [products, setProducts] = useState(null);
@@ -27,8 +31,13 @@ export default function Products() {
       ...f, interest_rate: Number(f.interest_rate), tenure_value: Number(f.tenure_value),
       min_amount: Number(f.min_amount), max_amount: Number(f.max_amount),
       min_age: Number(f.min_age), max_age: Number(f.max_age), penalty_rate: Number(f.penalty_rate),
-      rules: {}, active: !!f.active,
+      // Keep any other rules the product already has (this used to send {} and
+      // wipe the product's fee settings on every edit).
+      rules: { ...(editing.rules || {}), processing_fee_rate: Number(f.processing_fee_rate) || 0,
+               facility_fee: Number(f.facility_fee) || 0, fee_collection: f.fee_collection || "deduct" },
+      active: !!f.active,
     };
+    for (const k of FEE_KEYS) delete body[k];
     try {
       if (editing.id) await api(`/api/v1/lending/products/${editing.id}`, { method: "PUT", body });
       else await api("/api/v1/lending/products", { method: "POST", body });
@@ -58,9 +67,15 @@ export default function Products() {
                 <div className="flex justify-between"><span className="text-gray-400">Amount</span><span className="font-semibold">{fmtKES(p.min_amount)} – {fmtKES(p.max_amount)}</span></div>
                 <div className="flex justify-between"><span className="text-gray-400">Age eligibility</span><span className="font-semibold">{p.min_age}–{p.max_age} yrs</span></div>
                 <div className="flex justify-between"><span className="text-gray-400">Penalty</span><span className="font-semibold">{p.penalty_rate}% / period</span></div>
+                <div className="flex justify-between"><span className="text-gray-400">Fees</span><span className="font-semibold">
+                  {(p.rules?.processing_fee_rate || 0)}% + {fmtKES(p.rules?.facility_fee || 0)} · {p.rules?.fee_collection === "add_to_balance" ? "added to balance" : "deducted from payout"}
+                </span></div>
               </div>
               <button className="btn-ghost w-full mt-4 !py-1.5 text-sm"
-                onClick={() => setEditing({ id: p.id, form: { ...EMPTY, ...Object.fromEntries(Object.entries(p).filter(([k]) => k in EMPTY)) } })}>
+                onClick={() => setEditing({ id: p.id, rules: p.rules || {}, form: {
+                  ...EMPTY, ...Object.fromEntries(Object.entries(p).filter(([k]) => k in EMPTY)),
+                  ...Object.fromEntries(FEE_KEYS.filter((k) => (p.rules || {})[k] != null).map((k) => [k, p.rules[k]])),
+                } })}>
                 Edit
               </button>
             </div>
@@ -96,6 +111,13 @@ export default function Products() {
                 <input type="checkbox" checked={!!editing.form.active} onChange={set("active")} /> Active
               </label>
             </div>
+            <div><label className="label">Processing fee %</label><input type="number" step="0.01" min="0" className="input" value={editing.form.processing_fee_rate} onChange={set("processing_fee_rate")} /></div>
+            <div><label className="label">Facility fee (KES)</label><input type="number" step="1" min="0" className="input" value={editing.form.facility_fee} onChange={set("facility_fee")} /></div>
+            <div><label className="label">Fees + excise duty are</label>
+              <select className="input" value={editing.form.fee_collection} onChange={set("fee_collection")}>
+                <option value="deduct">Deducted from the payout</option>
+                <option value="add_to_balance">Added to the loan balance</option>
+              </select></div>
             <div><label className="label">Min age</label><input type="number" className="input" value={editing.form.min_age} onChange={set("min_age")} /></div>
             <div><label className="label">Max age</label><input type="number" className="input" value={editing.form.max_age} onChange={set("max_age")} /></div>
             <div className="col-span-full flex justify-end gap-2 pt-2">

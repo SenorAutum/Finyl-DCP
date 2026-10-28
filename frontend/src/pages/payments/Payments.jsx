@@ -3,6 +3,11 @@
 import { useEffect, useState } from "react";
 import { api, fmtKES } from "../../lib/api";
 import { Badge, Empty, Modal, PageHeader, Pagination, Spinner } from "../../components/ui";
+import { useAuth } from "../../hooks/useAuth";
+
+// WP5: payouts/refunds whose result never arrived. A different approver checks
+// the M-Pesa portal and records what happened.
+const STUCK = ["initiated", "uncertain", "timed_out"];
 
 const fmtDT = (d) => (d ? new Date(d).toLocaleString("en-KE", { dateStyle: "medium", timeStyle: "short" }) : "—");
 
@@ -10,9 +15,27 @@ function TxTable() {
   const [data, setData] = useState(null);
   const [type, setType] = useState("");
   const [page, setPage] = useState(1);
+  const [reload, setReload] = useState(0);
+  const [msg, setMsg] = useState("");
+  const { can } = useAuth();
   useEffect(() => {
     api(`/api/v1/payments/transactions?type=${type}&page=${page}`).then(setData).catch(() => {});
-  }, [type, page]);
+  }, [type, page, reload]);
+
+  const resolve = async (t) => {
+    const paid = confirm(`Payout #${t.id} (${fmtKES(t.amount)}) has no confirmed result.\n\nCheck the M-Pesa portal.\nOK = it WAS paid · Cancel = it was NOT paid`);
+    const receipt = paid ? prompt("M-Pesa receipt of the payout:") : null;
+    if (paid && !receipt) return;
+    const note = prompt("What did you check? (e.g. 'M-Pesa portal, 26 Oct, no transaction found')");
+    if (!note) return;
+    setMsg("");
+    try {
+      await api(`/api/v1/payments/payouts/${t.id}/resolve`, { method: "POST",
+        body: { outcome: paid ? "paid" : "not_paid", receipt, note } });
+      setMsg(paid ? "Recorded as paid." : "Recorded as not paid — the loan can be paid out again.");
+      setReload((n) => n + 1);
+    } catch (e) { setMsg(e.detail || "Could not resolve the payout."); }
+  };
   return (
     <>
       <div className="p-3 border-b border-border">
@@ -21,8 +44,11 @@ function TxTable() {
           <option value="b2c">B2C disbursement</option>
           <option value="c2b">C2B repayment</option>
           <option value="stk_push">STK push</option>
+          <option value="refund">Refund</option>
+          <option value="reversal">Reversal</option>
         </select>
       </div>
+      {msg && <div className="mx-3 mt-3 text-sm text-teal bg-teal-50 rounded-lg p-2">{msg}</div>}
       {!data ? <Spinner /> : data.items.length === 0 ? <Empty /> : (
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -38,7 +64,12 @@ function TxTable() {
                 <td className="td font-semibold">{fmtKES(t.amount)}</td>
                 <td className="td">{t.phone}</td>
                 <td className="td font-mono text-xs">{t.mpesa_ref}</td>
-                <td className="td"><Badge value={t.status} /></td>
+                <td className="td">
+                  <Badge value={t.status} />
+                  {["b2c", "refund"].includes(t.type) && STUCK.includes(t.status) && can("disburse.approve", "refund.approve") && (
+                    <button className="btn-ghost !py-0.5 !px-2 text-xs ml-2" onClick={() => resolve(t)}>Resolve</button>
+                  )}
+                </td>
               </tr>
             ))}</tbody>
           </table>

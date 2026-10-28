@@ -12,7 +12,7 @@ const kes2 = (n) =>
   n == null ? "—" : `KES ${Number(n).toLocaleString("en-KE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const fmtDT = (d) => (d ? new Date(d).toLocaleString("en-KE", { dateStyle: "medium", timeStyle: "short" }) : "—");
 
-const STATUSES = ["", "open", "pending_approval", "reversal_pending", "allocated", "refunded", "reversed"];
+const STATUSES = ["", "open", "pending_approval", "refund_processing", "reversal_pending", "allocated", "refunded", "reversed"];
 const CHANNELS = [
   ["mpesa_paybill", "M-Pesa paybill"],
   ["mpesa_till", "M-Pesa till"],
@@ -242,7 +242,7 @@ export default function Suspense() {
                         </>
                       ) : s.status === "pending_approval" ? (
                         <span className="text-xs text-amber-700 italic">awaiting approval</span>
-                      ) : s.status === "reversal_pending" ? (
+                      ) : ["reversal_pending", "refund_processing"].includes(s.status) ? (
                         <span className="text-xs text-amber-700 italic">waiting for Safaricom</span>
                       ) : (
                         <span className="text-xs text-gray-400 italic">resolved</span>

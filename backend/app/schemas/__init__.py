@@ -557,3 +557,10 @@ from app.schemas.third_party import (  # noqa: E402,F401
     ApiClientCreate, MpesaStatementIngestIn, BankStatementIngestIn,
 )
 from app.schemas.search import SearchHit, SearchResponse  # noqa: E402,F401
+
+
+class PayoutResolveIn(BaseModel):
+    """WP5: what the M-Pesa portal shows for a payout whose result never arrived."""
+    outcome: str                      # paid | not_paid
+    receipt: Optional[str] = None     # M-Pesa receipt, required when paid
+    note: str                         # what was checked

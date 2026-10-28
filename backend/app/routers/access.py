@@ -671,29 +671,42 @@ def trigger_backup(request: Request, tenant_id: int = Depends(get_tenant_id),
 def integrity_check(tenant_id: int = Depends(get_tenant_id),
                     actor: User = Depends(require_permission("backups.manage")),
                     db: Session = Depends(get_db)):
-    """Lightweight consistency checks reported as simple stats."""
+    """Consistency checks on this DCP's loans.
+
+    WP5 (F25): exact Decimal arithmetic (the old float/Decimal mix crashed), and
+    balance mismatches now count against `healthy`. For an open loan:
+        balance = principal + interest + fees in balance + penalties charged
+                  - repayments - early-settlement interest written off
+    A difference above KES 1 is listed. Loans with penalties charged before WP5
+    were not recorded and will show up here until reviewed."""
+    from app.core.money import D, money
     loans = db.query(Loan).filter(Loan.tenant_id == tenant_id).all()
     borrower_ids = {b.id for b in db.query(Borrower.id).filter(Borrower.tenant_id == tenant_id)}
     loans_without_borrower = sum(1 for l in loans if l.borrower_id not in borrower_ids)
 
-    mismatched = 0
+    mismatches = []
     for l in loans:
-        if l.status in ("active", "overdue"):
-            paid = sum(float(r.amount) for r in l.repayments)
-            expected = round(l.total_due, 2)
-            outstanding = float(l.outstanding_balance or 0)
-            if abs((expected - paid) - outstanding) > 1.0:
-                mismatched += 1
+        if l.status not in ("active", "overdue", "defaulted"):
+            continue
+        paid = sum((D(r.amount or 0) for r in l.repayments), D(0))
+        expected = money(D(l.total_due) + D(getattr(l, "fees_in_balance", 0) or 0)
+                         + D(getattr(l, "penalties_charged", 0) or 0)
+                         - paid - D(getattr(l, "interest_rebate", 0) or 0))
+        actual = money(l.outstanding_balance or 0)
+        if abs(expected - actual) > D("1.00"):
+            mismatches.append({"loan_id": l.id, "account_number": l.account_number,
+                               "expected": float(expected), "actual": float(actual)})
 
-    negative_balances = sum(1 for l in loans if float(l.outstanding_balance or 0) < 0)
+    negative_balances = sum(1 for l in loans if money(l.outstanding_balance or 0) < 0)
     checks = {
         "loans_without_client": loans_without_borrower,
-        "outstanding_balance_mismatches": mismatched,
+        "outstanding_balance_mismatches": len(mismatches),
         "negative_balances": negative_balances,
         "total_loans_checked": len(loans),
     }
-    healthy = loans_without_borrower == 0 and negative_balances == 0
+    healthy = loans_without_borrower == 0 and negative_balances == 0 and not mismatches
     write_audit(db, tenant_id=tenant_id, user=actor, action="integrity.check",
                 entity_type="integrity", details=checks)
     db.commit()
-    return {"healthy": healthy, "checks": checks, "checked_at": datetime.utcnow().isoformat()}
+    return {"healthy": healthy, "checks": checks, "mismatches": mismatches[:100],
+            "checked_at": datetime.utcnow().isoformat()}
