@@ -250,6 +250,8 @@ def _loan_dict(l: Loan) -> dict:
         "decision_note": getattr(l, "decision_note", None),
         "active_lock": bool(getattr(l, "active_lock", False)),
         "interest_rebate": float(getattr(l, "interest_rebate", 0) or 0),
+        "fees_in_balance": float(getattr(l, "fees_in_balance", 0) or 0),
+        "pricing": getattr(l, "pricing_snapshot", None),
         "early_settled_at": getattr(l, "early_settled_at", None),
     }
 
@@ -376,6 +378,8 @@ def apply_for_loan(body: LoanApplication, tenant_id: int = Depends(require_modul
         principal=body.principal, interest_rate=product.interest_rate,
         status="pending", application_date=date.today(), loan_cycle_number=cycle,
         outstanding_balance=0,
+        # WP5 (F23): the price shown to the borrower now, kept for payout/balance.
+        pricing_snapshot=_quote_breakdown(product, body.principal),
     )
     db.add(loan)
     db.commit()
@@ -478,66 +482,10 @@ def reassign_loan(loan_id: int, body: ReassignRequest,
 # Loan-origination pricing quote & suggested credit limit (read-only, advisory)
 # ---------------------------------------------------------------------------
 def _quote_breakdown(product: Product, principal) -> dict:
-    """Decimal-accurate pricing preview for a prospective loan. No mutation.
-
-    Fee configuration is read from ``product.rules`` (optional keys, default 0):
-      - ``processing_fee_rate``: percent of principal
-      - ``facility_fee``: flat amount
-    Kenya excise duty is levied at 20% of total fees.
-    """
-    principal = money(principal)
-    rate = D(product.interest_rate or 0)                 # % over the product tenure
-    interest = money(principal * rate / D(100))
-
-    rules = product.rules or {}
-    try:
-        proc_rate = D(str(rules.get("processing_fee_rate", 0) or 0))
-    except Exception:
-        proc_rate = D(0)
-    try:
-        facility_flat = D(str(rules.get("facility_fee", 0) or 0))
-    except Exception:
-        facility_flat = D(0)
-
-    processing_fee = money(principal * proc_rate / D(100))
-    facility_fee = money(facility_flat)
-    total_fees = money(processing_fee + facility_fee)
-    excise_duty = money(total_fees * D("0.20"))          # 20% excise on fees (Kenya)
-    total_cost_of_credit = money(interest + total_fees + excise_duty)
-    total_repayable = money(principal + total_cost_of_credit)
-
-    # APR-style annualised effective rate over the product tenure
-    tenure_value = max(1, int(product.tenure_value or 1))
-    unit = (product.tenure_unit or "weeks").lower()
-    if unit == "weeks":
-        years = D(tenure_value) * D(7) / D(365)
-    elif unit == "months":
-        years = D(tenure_value) / D(12)
-    else:
-        years = D(tenure_value) / D(365)
-    if years <= 0:
-        years = D(1)
-    effective_annual_rate = (money((total_cost_of_credit / principal) / years * D(100))
-                             if principal > 0 else D(0))
-
-    return {
-        "product_id": product.id,
-        "product_name": product.name,
-        "principal": float(principal),
-        "interest_rate": float(rate),
-        "interest_method": product.interest_method,
-        "tenure_value": tenure_value,
-        "tenure_unit": product.tenure_unit,
-        "interest": float(interest),
-        "processing_fee": float(processing_fee),
-        "facility_fee": float(facility_fee),
-        "total_fees": float(total_fees),
-        "excise_duty": float(excise_duty),
-        "excise_rate": 0.20,
-        "total_cost_of_credit": float(total_cost_of_credit),
-        "total_repayable": float(total_repayable),
-        "effective_annual_rate": float(effective_annual_rate),
-    }
+    """Pricing preview — WP5: the same calculation that sets the loan's payout
+    and balance (services/pricing.py), so the quote is what gets charged."""
+    from app.services.pricing import quote_breakdown
+    return quote_breakdown(product, principal)
 
 
 def _suggested_limit(db: Session, tenant_id: int, borrower_id: int, product: Product) -> dict:

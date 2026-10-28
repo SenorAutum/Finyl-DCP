@@ -499,8 +499,17 @@ def test_suspense_refund_pays_out_after_approval(seed, recon2, mock_b2c):
     assert len(mock_b2c.calls) == 1
     assert mock_b2c.calls[0]["phone"] == "254712345678"
     db.refresh(entry)
-    assert entry.status == "refunded"
-    assert db.query(PaymentTransaction).filter(PaymentTransaction.type == "refund").count() == 1
+    # WP5: not "refunded" until Safaricom's result arrives.
+    assert entry.status == "refund_processing"
+    txn = db.query(PaymentTransaction).filter(PaymentTransaction.type == "refund").one()
+    assert txn.status == "processing"
+    body = {"Result": {"ResultCode": 0, "ResultDesc": "ok", "ConversationID": txn.mpesa_ref,
+                       "TransactionID": "RFD123"}}
+    payments._ingest_and_process(db, ws.ENDPOINT_B2C_RESULT, body, payments._process_b2c_result,
+                                 {"ResultCode": 0})
+    db.refresh(entry)
+    db.refresh(txn)
+    assert entry.status == "refunded" and txn.status == "success"
 
 
 def test_refund_to_masked_number_needs_explicit_phone_and_note(seed):

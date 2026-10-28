@@ -72,7 +72,7 @@ export default function LoanDetail() {
 
       setMsg(r.status === "pending_approval"
         ? `Amount exceeds the maker-checker threshold — parked for a second approver (pending #${r.pending_id}).`
-        : "Loan disbursed via M-Pesa B2C and marked active.");
+        : `KES ${Number(r.amount).toLocaleString("en-KE")} sent to M-Pesa. The loan becomes active when Safaricom confirms the payment.`);
         
       await load(); // Reload pulls the definitive ground-truth state from the backend
     } catch (e) { 

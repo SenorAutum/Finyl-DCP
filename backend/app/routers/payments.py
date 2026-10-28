@@ -31,7 +31,7 @@ from app.core.obs import log_money_event
 from app.models import Loan, PaymentTransaction, PendingApproval, Repayment, User, SuspenseEntry
 from app.schemas import (C2BCallback, StkPushRequest, DisburseRequest,
                          RefundRequest, ReconcileRequest, ManualPaymentIn,
-                         PaymentSettingsIn, SuspenseAllocateIn, SuspenseRefundIn)
+                         PaymentSettingsIn, PayoutResolveIn, SuspenseAllocateIn, SuspenseRefundIn)
 from app.services import mpesa
 from app.services import payment_approvals as pay_appr
 from app.services import rbac as rbac_svc
@@ -131,17 +131,18 @@ def refund_payment(body: RefundRequest,
       * ALL refunds require maker-checker regardless of threshold — the request is
         always parked for a second approver, carrying the validated phone/amount.
     """
-    loan = (db.query(Loan).options(joinedload(Loan.borrower))
-            .filter(Loan.id == body.loan_id, Loan.tenant_id == tenant_id).first())
+    # F07: lock the loan so two refund requests are worked out one after the
+    # other, and subtract refunds already requested or sent.
+    loan = (db.query(Loan)
+            .filter(Loan.id == body.loan_id, Loan.tenant_id == tenant_id)
+            .with_for_update().first())
     if not loan:
         raise HTTPException(404, "Loan not found")
-
-    repayments = (db.query(Repayment)
-                  .filter(Repayment.loan_id == loan.id, Repayment.tenant_id == tenant_id).all())
-    total_paid = sum(float(r.amount) for r in repayments)
-    overpayment = round(total_paid - float(loan.total_due), 2)
+    from app.services.disbursement import refundable_overpayment
+    overpayment = float(refundable_overpayment(db, tenant_id, loan))
     if overpayment <= 0:
-        raise HTTPException(400, "No recorded overpayment on this loan to refund")
+        raise HTTPException(400, "No unrefunded overpayment on this loan "
+                                 "(refunds already requested or sent are deducted)")
 
     # Destination phone: borrower's registered number. A supplied phone must match it.
     borrower_msisdn = mpesa.normalise_msisdn(loan.borrower.phone)
@@ -399,13 +400,16 @@ def reconcile_disbursements(tenant_id: int = Depends(require_module("payments"))
     q = (db.query(PaymentTransaction)
          .filter(PaymentTransaction.tenant_id == tenant_id,
                  PaymentTransaction.type == "b2c",
-                 PaymentTransaction.status.in_(("processing", "timed_out")),
+                 PaymentTransaction.status.in_(("initiated", "processing", "timed_out",
+                                                "uncertain")),
                  PaymentTransaction.created_at <= cutoff)
          .order_by(PaymentTransaction.created_at.asc()))
     stuck = q.all()
     resolved = []
     if simulate and not mpesa.is_configured(mpesa.resolve_creds(db, tenant_id)):
         for txn in stuck:
+            if txn.status not in ("processing", "timed_out") or not txn.mpesa_ref:
+                continue  # never reached Safaricom's queue: resolve by hand
             conv = txn.mpesa_ref
             orig = (txn.raw_payload or {}).get("result", {}).get("OriginatorConversationID")
             result = mpesa.simulate_b2c_result(conv, orig, success=True,
@@ -420,6 +424,7 @@ def reconcile_disbursements(tenant_id: int = Depends(require_module("payments"))
     return {"stuck_count": len(stuck),
             "stuck": [{"txn_id": t.id, "loan_id": t.loan_id, "status": t.status,
                        "conversation_id": t.mpesa_ref, "amount": float(t.amount),
+                       "needs_manual_check": t.status in ("initiated", "uncertain"),
                        "created_at": t.created_at} for t in stuck],
             "resolved": resolved}
 
@@ -451,17 +456,19 @@ async def _read_payload(request: Request) -> dict:
 
 
 def _find_b2c_txn(db: Session, conversation_id, originator_id=None):
-    """Locate a processing B2C transaction by ConversationID (stored as mpesa_ref),
-    falling back to OriginatorConversationID recorded in the raw payload."""
+    """Locate a B2C payout OR refund by ConversationID (stored as mpesa_ref),
+    falling back to OriginatorConversationID recorded in the raw payload.
+    WP5: refunds are B2C payments too — before, their results were never matched."""
     txn = None
     if conversation_id:
         txn = (db.query(PaymentTransaction)
-               .filter(PaymentTransaction.type == "b2c",
+               .filter(PaymentTransaction.type.in_(("b2c", "refund")),
                        PaymentTransaction.mpesa_ref == str(conversation_id)).first())
     if txn is None and originator_id:
         candidates = (db.query(PaymentTransaction)
-                      .filter(PaymentTransaction.type == "b2c",
-                              PaymentTransaction.status.in_(("processing", "timed_out"))).all())
+                      .filter(PaymentTransaction.type.in_(("b2c", "refund")),
+                              PaymentTransaction.status.in_(("processing", "timed_out",
+                                                             "uncertain"))).all())
         for c in candidates:
             res = (c.raw_payload or {}).get("result", {})
             if res.get("OriginatorConversationID") == originator_id:
@@ -992,3 +999,38 @@ def reverse_suspense(entry_id: int, body: SuspenseRefundIn, request: Request,
     db.commit()
     return {"status": "pending_approval", "pending_id": pending.id, "suspense_id": entry.id,
             "message": "Reversal awaiting a second approver."}
+
+
+# --------------------------------------------------------------------------- #
+# WP5 (F06) — settle a payout whose result never arrived, after checking M-Pesa
+# --------------------------------------------------------------------------- #
+@router.post("/payouts/{txn_id}/resolve")
+def resolve_payout(txn_id: int, body: PayoutResolveIn, request: Request,
+                   tenant_id: int = Depends(require_module("payments")),
+                   db: Session = Depends(get_db),
+                   user: User = Depends(require_permission("disburse.approve", "refund.approve",
+                                                           mode="any"))):
+    """Record what the M-Pesa portal shows for a payout stuck as initiated /
+    uncertain / timed out: `paid` (with the M-Pesa receipt) settles it exactly
+    as Safaricom's result would; `not_paid` makes the loan retryable or re-opens
+    the refunded receipt. The person who started the payout cannot resolve it."""
+    from app.core.permissions import has_permission
+    from app.services import disbursement as disb
+    txn = (db.query(PaymentTransaction)
+           .filter(PaymentTransaction.id == txn_id, PaymentTransaction.tenant_id == tenant_id,
+                   PaymentTransaction.type.in_(("b2c", "refund")))
+           .with_for_update().first())
+    if not txn:
+        raise HTTPException(404, "Payout not found")
+    need = "disburse.approve" if txn.type == "b2c" else "refund.approve"
+    if not has_permission(user.role, need):
+        raise HTTPException(403, f"Missing required permission: {need}")
+    if (txn.raw_payload or {}).get("actor_user_id") == user.id:
+        raise HTTPException(403, "The person who started this payout cannot resolve it")
+    out = disb.resolve_payout(db, tenant_id, txn, body.outcome, body.receipt, body.note, user.id)
+    write_audit(db, tenant_id=tenant_id, user=user, action="payout.resolve",
+                entity_type="payment_transaction", entity_id=txn.id,
+                details={"outcome": body.outcome, "receipt": body.receipt, "note": body.note,
+                         "result": out}, request=request)
+    db.commit()
+    return out

@@ -115,7 +115,17 @@ def test_quote_scenario_one():
     assert q["excise_duty"] == 80.00         # 20% of 400
     assert q["excise_rate"] == 0.20
     assert q["total_cost_of_credit"] == 1480.00   # 1000 + 400 + 80
-    assert q["total_repayable"] == 11480.00       # principal + TCC
+    # WP5 (F23): default fee collection deducts fees + excise from the payout.
+    assert q["fee_collection"] == "deduct"
+    assert q["amount_received"] == 9520.00        # 10 000 - 400 - 80
+    assert q["total_repayable"] == 11000.00       # principal + interest
+    # Same product, fees added to the balance instead.
+    prod_add = _product(10.0, {"processing_fee_rate": 2.5, "facility_fee": 150,
+                               "fee_collection": "add_to_balance"})
+    q2 = _quote_breakdown(prod_add, 10000)
+    assert q2["amount_received"] == 10000.00
+    assert q2["total_repayable"] == 11480.00      # principal + TCC
+    assert q2["total_cost_of_credit"] == 1480.00
 
 
 def test_quote_scenario_two():
@@ -128,7 +138,8 @@ def test_quote_scenario_two():
     assert q["total_fees"] == 675.00
     assert q["excise_duty"] == 135.00        # 20% of 675
     assert q["total_cost_of_credit"] == 4560.00
-    assert q["total_repayable"] == 29560.00
+    assert q["amount_received"] == 24190.00       # 25 000 - 675 - 135
+    assert q["total_repayable"] == 28750.00       # repayable - received = 4560
 
 
 def test_quote_excise_is_exactly_20pct_of_fees():

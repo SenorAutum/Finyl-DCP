@@ -43,6 +43,9 @@ ACC_LOANS_RECEIVABLE = "1000"
 ACC_CASH = "1010"
 ACC_SUSPENSE = "1900"
 ACC_INTEREST_INCOME = "4000"
+ACC_EXCISE_PAYABLE = "2000"
+ACC_FEE_INCOME = "4010"
+ACC_PENALTY_INCOME = "4020"
 
 
 def _seed_coa_if_empty(db: Session, tenant_id: int) -> None:
@@ -110,7 +113,10 @@ def _build_gl_lines(db: Session, tenant_id: int, dfrom: date, dto: date,
             "reference": ref or "",
         })
 
-    # Disbursements — money out to borrowers
+    # Disbursements — money out to borrowers.
+    # WP5 (F23): when fees + excise are deducted from the payout, the loan is
+    # still for the full principal: Dr Loans Receivable (principal) /
+    # Cr Cash (amount paid out) / Cr Fee Income / Cr Excise Duty Payable.
     disbursements = (db.query(PaymentTransaction)
                      .filter(PaymentTransaction.tenant_id == tenant_id,
                              PaymentTransaction.type == "b2c",
@@ -119,36 +125,111 @@ def _build_gl_lines(db: Session, tenant_id: int, dfrom: date, dto: date,
                              PaymentTransaction.created_at <= end).all())
     for t in disbursements:
         d = t.created_at.date() if t.created_at else dfrom
-        amt = D(t.amount or 0)
+        paid_out = D(t.amount or 0)
         ref = t.mpesa_ref or f"TXN-{t.id}"
         desc = f"Loan disbursement (loan #{t.loan_id})"
-        add(d, ACC_LOANS_RECEIVABLE, desc, amt, 0, ref)
-        add(d, ACC_CASH, desc, 0, amt, ref)
+        snap = (t.raw_payload or {}).get("pricing") or {}
+        principal = D(str(snap.get("principal"))) if snap.get("principal") is not None else paid_out
+        excise = (D(str(snap.get("excise_duty", 0))) if snap.get("fee_collection") == "deduct"
+                  else D(0))
+        fee = principal - paid_out - excise        # fees kept (less any rounding in the borrower's favour)
+        add(d, ACC_LOANS_RECEIVABLE, desc, principal, 0, ref)
+        add(d, ACC_CASH, desc, 0, paid_out, ref)
+        if excise > 0:
+            add(d, ACC_EXCISE_PAYABLE, desc, 0, excise, ref)
+        if fee > 0:
+            add(d, ACC_FEE_INCOME, desc, 0, fee, ref)
+        elif fee < 0:
+            add(d, ACC_FEE_INCOME, desc + " (rounding)", -fee, 0, ref)
 
-    # Repayments — money in from borrowers (interest/principal split)
+    # Repayments — money in from borrowers, by the component it settled.
+    # WP5: fees/charges collected with repayments (products that add fees to the
+    # balance, and penalties) were booked as principal; now product fees go to
+    # Fee Income + Excise Duty Payable and the rest of the fee component (penalties)
+    # to Penalty Income.
     repayments = (db.query(Repayment)
                   .filter(Repayment.tenant_id == tenant_id,
                           Repayment.payment_date >= start,
-                          Repayment.payment_date <= end).all())
+                          Repayment.payment_date <= end)
+                  .order_by(Repayment.payment_date, Repayment.id).all())
+    loan_cache: dict = {}
+    fee_paid_before: dict = {}
+
+    def _loan_fee_info(loan_id):
+        if loan_id not in loan_cache:
+            loan = db.query(Loan).filter(Loan.id == loan_id, Loan.tenant_id == tenant_id).first()
+            snap = (loan.pricing_snapshot or {}) if loan is not None else {}
+            in_balance = D(str(getattr(loan, "fees_in_balance", 0) or 0)) if loan else D(0)
+            fees = D(str(snap.get("total_fees", 0) or 0))
+            excise = D(str(snap.get("excise_duty", 0) or 0))
+            share = (excise / (fees + excise)) if (fees + excise) > 0 else D(0)
+            loan_cache[loan_id] = (in_balance, share)
+            prior = (db.query(Repayment)
+                     .filter(Repayment.tenant_id == tenant_id, Repayment.loan_id == loan_id,
+                             Repayment.payment_date < start).all())
+            fee_paid_before[loan_id] = sum((D(r.fee_component or 0) for r in prior), D(0))
+        return loan_cache[loan_id]
+
     for r in repayments:
         d = r.payment_date.date() if r.payment_date else dfrom
         total = D(r.amount or 0)
         principal = D(r.principal_component or 0)
         interest = D(r.interest_component or 0)
-        # Guard against a missing/zero split so the entry stays balanced.
-        if money(principal + interest) != money(total):
-            principal = total
-            interest = D(0)
+        fee = D(getattr(r, "fee_component", 0) or 0)
+        # Guard against a missing split (older rows) so the entry stays balanced.
+        if money(principal + interest + fee) != money(total):
+            principal, interest, fee = total, D(0), D(0)
         ref = r.mpesa_ref or f"REP-{r.id}"
         desc = f"Loan repayment (loan #{r.loan_id})"
         add(d, ACC_CASH, desc, total, 0, ref)
-        add(d, ACC_LOANS_RECEIVABLE, desc, 0, principal, ref)
+        if principal > 0:
+            add(d, ACC_LOANS_RECEIVABLE, desc, 0, principal, ref)
         if interest > 0:
             add(d, ACC_INTEREST_INCOME, desc, 0, interest, ref)
+        if fee > 0:
+            in_balance, excise_share = _loan_fee_info(r.loan_id)
+            left = max(in_balance - fee_paid_before[r.loan_id], D(0))
+            product_fee = min(fee, left)
+            penalty = fee - product_fee
+            fee_paid_before[r.loan_id] += fee
+            excise = money(product_fee * excise_share)
+            if product_fee - excise > 0:
+                add(d, ACC_FEE_INCOME, desc, 0, product_fee - excise, ref)
+            if excise > 0:
+                add(d, ACC_EXCISE_PAYABLE, desc, 0, excise, ref)
+            if penalty > 0:
+                add(d, ACC_PENALTY_INCOME, desc, 0, penalty, ref)
+
+    # Refunds of loan overpayments (legacy path, not via suspense): money back
+    # out against the loan. Suspense refunds are booked by the suspense block.
+    loan_refunds = (db.query(PaymentTransaction)
+                    .filter(PaymentTransaction.tenant_id == tenant_id,
+                            PaymentTransaction.type == "refund",
+                            PaymentTransaction.status == "success",
+                            PaymentTransaction.created_at >= start,
+                            PaymentTransaction.created_at <= end).all())
+    for t in loan_refunds:
+        if (t.raw_payload or {}).get("suspense_id"):
+            continue
+        d = t.created_at.date() if t.created_at else dfrom
+        ref = t.mpesa_ref or f"TXN-{t.id}"
+        desc = f"Overpayment refund (loan #{t.loan_id})"
+        add(d, ACC_LOANS_RECEIVABLE, desc, D(t.amount or 0), 0, ref)
+        add(d, ACC_CASH, desc, 0, D(t.amount or 0), ref)
 
     # Suspense movements
     suspense = (db.query(SuspenseEntry)
                 .filter(SuspenseEntry.tenant_id == tenant_id).all())
+    # Refunds are sent in whole shillings, rounded up (WP5): book the cash
+    # actually sent and the rounding as a small fee-income reduction.
+    refund_sent = {}
+    for t in (db.query(PaymentTransaction)
+              .filter(PaymentTransaction.tenant_id == tenant_id,
+                      PaymentTransaction.type == "refund",
+                      PaymentTransaction.status == "success").all()):
+        sid = (t.raw_payload or {}).get("suspense_id")
+        if sid:
+            refund_sent[sid] = D(t.amount or 0)
     for s in suspense:
         amt = D(s.amount or 0)
         ref = s.mpesa_ref or f"SUS-{s.id}"
@@ -158,13 +239,16 @@ def _build_gl_lines(db: Session, tenant_id: int, dfrom: date, dto: date,
             desc = f"Suspense receipt ({s.reason})"
             add(d, ACC_CASH, desc, amt, 0, ref)
             add(d, ACC_SUSPENSE, desc, 0, amt, ref)
-        # Resolved out of suspense (allocated / refunded in window)
-        if (s.status in ("allocated", "refunded") and s.resolved_at
+        # Resolved out of suspense (allocated / refunded / reversed in window)
+        if (s.status in ("allocated", "refunded", "reversed") and s.resolved_at
                 and start <= s.resolved_at <= end):
             d = s.resolved_at.date()
             desc = f"Suspense {s.status}"
+            sent = refund_sent.get(s.id, amt) if s.status == "refunded" else amt
             add(d, ACC_SUSPENSE, desc, amt, 0, ref)
-            add(d, ACC_CASH, desc, 0, amt, ref)
+            add(d, ACC_CASH, desc, 0, sent, ref)
+            if sent > amt:
+                add(d, ACC_FEE_INCOME, desc + " (rounding)", sent - amt, 0, ref)
 
     lines.sort(key=lambda x: (x["date"], x["account_code"]))
     return lines

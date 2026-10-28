@@ -248,7 +248,19 @@ def decide_pending_action(pid: int, body: ApprovalDecision, request: Request,
             raise HTTPException(404, "Loan not found")
         result = execute_disbursement(db, tenant_id, loan, user.id)
     elif p.action_type == "refund":
-        result = execute_refund(db, tenant_id, float(p.amount), p.phone, p.loan_id, user.id, p.reason)
+        # F07: re-check at approval time — other refunds may have been
+        # requested or sent since this one was raised.
+        from app.services.disbursement import refundable_overpayment
+        loan = (db.query(Loan).filter(Loan.id == p.loan_id, Loan.tenant_id == tenant_id)
+                .with_for_update().first())
+        if not loan:
+            raise HTTPException(404, "Loan not found")
+        available = refundable_overpayment(db, tenant_id, loan, count_pending=False)
+        if float(p.amount) > float(available):
+            raise HTTPException(409, f"Only KES {available} of this loan's overpayment is still "
+                                     "unrefunded — reject this request")
+        result = execute_refund(db, tenant_id, float(p.amount), p.phone, p.loan_id, user.id,
+                                p.reason, context={"pending_id": p.id})
     else:
         result = pay_appr.execute_approved(db, tenant_id, p, user)
     p.status = "approved"; p.checker_user_id = user.id; p.checker_at = datetime.utcnow()
