@@ -108,7 +108,7 @@ function DailyTasksTab({ staff }) {
     setData(null);
     api(`/api/v1/field/daily-tasks${userId ? `?user_id=${userId}` : ""}`).then(setData).catch((e) => setErr(e.detail));
   };
-  useEffect(load, [userId]);
+  useEffect(() => { load(); }, [userId]);
 
   const create = async (e) => {
     e.preventDefault();
@@ -237,7 +237,7 @@ function LocationAlertsTab({ staffMap }) {
     const qs = ack === "" ? "" : `?acknowledged=${ack}`;
     api(`/api/v1/field/location-alerts${qs}`).then(setData).catch((e) => setErr(e.detail));
   };
-  useEffect(load, [ack]);
+  useEffect(() => { load(); }, [ack]);
 
   const acknowledge = async (id) => {
     setBusy(id); setErr("");

@@ -107,7 +107,16 @@ function LoanApprovals() {
     try {
       const r = await api(`/api/v1/approvals/loans/${id}`, { method: "POST", body: { action, note } });
       setMsg(r.message || "Done"); reload();
-    } catch (e) { setMsg(e.detail); }
+    } catch (e) {
+      // WP6: KYC "needs manual review" -> a KYC-resolve holder approves with a note.
+      const review = action === "approve" && /manual review/i.test(e.detail || "");
+      const n = review ? prompt(`${e.detail}\n\nWhat did you check? (recorded with the approval)`) : null;
+      if (!n) { setMsg(e.detail); return; }
+      try {
+        const r = await api(`/api/v1/approvals/loans/${id}`, { method: "POST", body: { action, note: n } });
+        setMsg(r.message || "Done"); reload();
+      } catch (e2) { setMsg(e2.detail); }
+    }
   };
   if (!rows) return <Spinner />;
   return (
@@ -158,7 +167,16 @@ function ClientApprovals() {
   const act = async (id, action) => {
     const note = action === "reject" ? (prompt("Reason?") || "") : null;
     try { await api(`/api/v1/approvals/clients/${id}`, { method: "POST", body: { action, note } }); setMsg(`Client ${action}d`); reload(); }
-    catch (e) { setMsg(e.detail); }
+    catch (e) {
+      // WP6: KYC "needs manual review" -> a KYC-resolve holder approves with a note.
+      const review = action === "approve" && /manual review/i.test(e.detail || "");
+      const n = review ? prompt(`${e.detail}\n\nWhat did you check? (recorded with the approval)`) : null;
+      if (!n) { setMsg(e.detail); return; }
+      try {
+        await api(`/api/v1/approvals/clients/${id}`, { method: "POST", body: { action, note: n } });
+        setMsg(`Client ${action}d`); reload();
+      } catch (e2) { setMsg(e2.detail); }
+    }
   };
   if (!rows) return <Spinner />;
   return (

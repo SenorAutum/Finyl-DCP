@@ -10,7 +10,7 @@ export default function BranchesRegions() {
   const [modal, setModal] = useState(null); // 'region' | 'branch'
   const [msg, setMsg] = useState("");
   const load = () => api("/api/v1/access/org").then(setOrg).catch((e) => { setMsg(e.detail); setOrg({ regions: [], branches: [], staff: [] }); });
-  useEffect(load, []);
+  useEffect(() => { load(); }, []);
   if (!org) return <Spinner />;
   const canManage = can("org.manage");
   const regionName = (id) => org.regions.find((r) => r.id === id)?.name || "—";

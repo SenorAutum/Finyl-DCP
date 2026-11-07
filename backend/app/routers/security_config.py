@@ -95,18 +95,31 @@ def update_security(body: SecurityConfigUpdate, tenant_id: int = Depends(get_ten
 
 
 # --- OTP -------------------------------------------------------------------
+RESERVED_OTP_PURPOSES = {"login", "consent"}
+
 @router.post("/auth/otp/request")
 def otp_request(body: OtpRequestIn, user=Depends(get_current_user),
                 db: Session = Depends(get_db), request: Request = None):
+    # WP6 (F21/F22): sign-in and client-consent codes have their own flows and
+    # bindings. Issuing one here would replace a pending code or mint an
+    # unbound one, so those purposes are refused on this generic endpoint.
+    if body.purpose in RESERVED_OTP_PURPOSES:
+        raise HTTPException(422, f"Codes for '{body.purpose}' cannot be requested here")
     ip = request.headers.get("x-forwarded-for") if request else None
     code = otp_svc.generate(db, user, purpose=body.purpose, ip=ip)
     delivery = otp_svc.deliver(db, user, code)
-    return {"status": "sent", "purpose": body.purpose, "delivery": delivery}
+    sent_to = [k for k, v in (delivery.get("channels") or {}).items() if v]
+    if not sent_to:
+        raise HTTPException(503, "The code could not be sent: add a mobile number to your "
+                                 "account (User & Access Management) or try again later.")
+    return {"status": "sent", "purpose": body.purpose, "delivery": {"channels": sent_to}}
 
 
 @router.post("/auth/otp/verify")
 def otp_verify(body: OtpVerifyIn, user=Depends(get_current_user),
                db: Session = Depends(get_db)):
+    if body.purpose in RESERVED_OTP_PURPOSES:
+        raise HTTPException(422, f"Codes for '{body.purpose}' cannot be verified here")
     ok, reason = otp_svc.verify(db, user, body.code, purpose=body.purpose)
     if not ok:
         raise HTTPException(400, f"OTP verification failed: {reason}")

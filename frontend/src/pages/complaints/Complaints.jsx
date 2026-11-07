@@ -42,7 +42,7 @@ export default function Complaints() {
     api(`/api/v1/complaints?status=${status}&category=${category}&page=${page}`).then(setData).catch(() => {});
     api("/api/v1/complaints/stats").then(setStats).catch(() => {});
   };
-  useEffect(load, [status, category, page]);
+  useEffect(() => { load(); }, [status, category, page]);
   useEffect(() => {
     api("/api/v1/complaints/meta").then(setMeta).catch(() => {});
     api("/api/v1/lending/org").then((o) => setStaff(o.staff)).catch(() => {});

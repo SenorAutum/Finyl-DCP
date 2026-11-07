@@ -24,6 +24,12 @@ class OtpToken(Base):
     attempts = Column(Integer, nullable=False, default=0)
     ip = Column(String(45))
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    # WP6 (F22): what the code was issued for. A code only verifies for the same
+    # tenant, recipient and context (client/lead, consent text + version, purpose).
+    tenant_id = Column(Integer)
+    recipient = Column(String(20))
+    context_hash = Column(String(64))
+    context = Column(JSONB)
 
 
 class ClientConsentLog(Base):
@@ -46,6 +52,7 @@ class ClientConsentLog(Base):
     otp_token_id = Column(Integer, ForeignKey("otp_tokens.id", ondelete="SET NULL"))
     officer_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
     consent_text = Column(String)
+    consent_version = Column(String(20))   # WP6 (F22)
     ip = Column(String(45))
     consented_at = Column(DateTime(timezone=True), default=datetime.utcnow)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)

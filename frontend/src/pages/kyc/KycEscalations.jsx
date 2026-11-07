@@ -24,7 +24,7 @@ export default function KycEscalations() {
     setData(null);
     api(`/api/v1/kyc-escalations?status=${status}`).then(setData).catch((e) => setErr(e.detail));
   };
-  useEffect(load, [status]);
+  useEffect(() => { load(); }, [status]);
 
   const set = (k) => (e) => setForm((p) => ({ ...p, [k]: e.target.value }));
 

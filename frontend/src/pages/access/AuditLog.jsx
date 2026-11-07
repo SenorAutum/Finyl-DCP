@@ -13,7 +13,7 @@ export default function AuditLog() {
     const q = new URLSearchParams(Object.entries(f).filter(([, v]) => v)).toString();
     api(`/api/v1/access/audit${q ? "?" + q : ""}`).then(setRows).catch((e) => { setMsg(e.detail); setRows([]); });
   };
-  useEffect(load, []); // eslint-disable-line
+  useEffect(() => { load(); }, []); // eslint-disable-line
 
   const ts = (s) => (s ? new Date(s).toLocaleString("en-KE") : "—");
 

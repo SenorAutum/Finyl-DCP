@@ -6,7 +6,7 @@ import { useAuth } from "../../hooks/useAuth";
 import { PageHeader, Badge, Empty, Spinner, Modal } from "../../components/ui";
 
 const EMPTY = { email: "", full_name: "", role: "relationship_officer", password: "",
-                branch_id: "", region_id: "", staff_id: "", active: true };
+                branch_id: "", region_id: "", staff_id: "", active: true, phone: "" };
 
 export default function Users() {
   const { can } = useAuth();
@@ -33,6 +33,7 @@ export default function Users() {
       email: form.email, full_name: form.full_name, role: form.role,
       branch_id: toInt(form.branch_id), region_id: toInt(form.region_id),
       staff_id: toInt(form.staff_id), active: form.active,
+      phone: (form.phone || "").trim(),
     };
     try {
       if (form.id) {
@@ -98,7 +99,8 @@ export default function Users() {
                     {canManage && <button className="btn-ghost !py-1 !px-2 text-xs" onClick={() => setEditing({
                       id: u.id, email: u.email, full_name: u.full_name, role: u.role,
                       branch_id: u.branch_id || "", region_id: u.region_id || "",
-                      staff_id: u.staff_id || "", active: u.active, password: "" })}>Edit</button>}
+                      staff_id: u.staff_id || "", active: u.active, password: "",
+                      phone: u.phone || "" })}>Edit</button>}
                     {can("users.lock") && <>
                       <button className="btn-ghost !py-1 !px-2 text-xs" onClick={() => setState(u, { lock: !u.is_locked })}>
                         {u.is_locked ? "Unlock" : "Lock"}</button>
@@ -131,6 +133,9 @@ function UserForm({ form: initial, meta, org, onCancel, onSave }) {
         <div><label className="label">Full name</label><input className="input" value={f.full_name} onChange={up("full_name")} /></div>
         <div><label className="label">Email</label>
           <input className="input" value={f.email} onChange={up("email")} disabled={!!f.id} /></div>
+        <div><label className="label">Mobile number</label>
+          <input className="input" value={f.phone || ""} onChange={up("phone")} placeholder="0712345678" />
+          <div className="text-[11px] text-gray-400 mt-0.5">Sign-in codes are sent here when the DCP requires a one-time code at login.</div></div>
         <div><label className="label">Role</label>
           <select className="input" value={f.role} onChange={up("role")}>
             {(meta.assignable_roles || []).map((r) => <option key={r.role} value={r.role}>{r.label}</option>)}

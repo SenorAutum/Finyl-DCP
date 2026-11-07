@@ -71,5 +71,6 @@ class User(Base):
     failed_login_attempts = Column(Integer, nullable=False, default=0, server_default="0")
     locked_until = Column(DateTime(timezone=True), nullable=True)           # temporary auto-lock window
     token_version = Column(Integer, nullable=False, default=0, server_default="0")  # bump to revoke all tokens
+    phone = Column(String(20), nullable=True)   # WP6 (F21): login one-time codes go here by SMS
 
     tenant = relationship("Tenant", back_populates="users")

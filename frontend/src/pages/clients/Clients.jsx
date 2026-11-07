@@ -21,7 +21,7 @@ export default function Clients() {
     api(`/api/v1/clients?search=${encodeURIComponent(search)}&kyc_status=${kyc}&page=${page}`)
       .then(setData).catch((e) => setErr(e.detail));
   };
-  useEffect(load, [search, kyc, page]);
+  useEffect(() => { load(); }, [search, kyc, page]);
 
   return (
     <div>

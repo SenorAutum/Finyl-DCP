@@ -25,7 +25,7 @@ export default function ApiClients() {
     setData(null);
     api("/api/v1/api-clients").then(setData).catch((e) => setErr(e.detail));
   };
-  useEffect(load, []);
+  useEffect(() => { load(); }, []);
 
   const toggleScope = (s) => setForm((p) => ({
     ...p, scopes: p.scopes.includes(s) ? p.scopes.filter((x) => x !== s) : [...p.scopes, s],

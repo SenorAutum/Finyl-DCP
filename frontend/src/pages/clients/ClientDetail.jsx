@@ -3,10 +3,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, download, fmtDate, fmtKES } from "../../lib/api";
-import { Badge, Empty, KpiCard, PageHeader, Spinner } from "../../components/ui";
+import { Badge, Empty, KpiCard, Modal, PageHeader, Spinner } from "../../components/ui";
 import { useAuth } from "../../hooks/useAuth";
 import ClientForm from "./ClientForm";
 import CreditAnalysis from "./CreditAnalysis";
+
+const ID_DOC_TYPES = ["national_id_front", "national_id_back", "passport"];
 
 const bytes = (n) => (n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
 
@@ -101,6 +103,77 @@ function FaceValidationPanel({ clientId }) {
   );
 }
 
+// WP6: the central KYC decision, exactly as approval and lending will apply it.
+function KycDecisionPanel({ d }) {
+  if (!d) return null;
+  const tone = d.decision === "pass" ? "bg-emerald-100 text-emerald-700"
+    : d.decision === "escalate" ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-700";
+  const label = d.decision === "pass" ? "Passes" : d.decision === "escalate" ? "Needs manual review" : "Does not pass";
+  return (
+    <div className="card p-5 mb-5">
+      <div className="flex items-center justify-between flex-wrap gap-2 mb-2">
+        <h2 className="font-bold text-base">KYC Check</h2>
+        <span className={`inline-flex px-2 py-0.5 rounded-full text-[11px] font-semibold ${tone}`}>{label}</span>
+      </div>
+      {d.explained?.length ? (
+        <ul className="text-sm space-y-1 list-disc pl-5">
+          {d.explained.map((t, i) => <li key={i}>{t}</li>)}
+        </ul>
+      ) : (
+        <p className="text-sm text-gray-500">Every check your organisation requires is in order.</p>
+      )}
+      <p className="text-[11px] text-gray-400 mt-2">
+        Profile approval, loan applications and loan approval all apply this check.
+      </p>
+    </div>
+  );
+}
+
+// WP6: a staff member (by default a second one) confirms the name M-Pesa holds for the client's number.
+function ConfirmMpesaModal({ client, mode, onClose, onDone }) {
+  const [name, setName] = useState("");
+  const [evidence, setEvidence] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true); setErr("");
+    try {
+      await api(`/api/v1/clients/${client.id}/confirm-mpesa`, {
+        method: "POST", body: { registered_name: name, evidence, phone: client.phone },
+      });
+      onDone();
+    } catch (ex) { setErr(ex.detail || "Could not confirm"); setBusy(false); }
+  };
+  return (
+    <Modal title="Confirm M-Pesa name" onClose={onClose}>
+      <form onSubmit={submit} className="space-y-4">
+        <p className="text-sm text-gray-600">
+          Check who owns <span className="font-semibold">{client.phone}</span> — for example, start a
+          KES 1 send-money to the number and read the name M-Pesa shows before confirming, or see
+          it on the client's own phone. Type the name exactly as M-Pesa shows it.
+        </p>
+        {err && <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">{err}</div>}
+        <div><label className="label">Name M-Pesa shows</label>
+          <input className="input" value={name} onChange={(e) => setName(e.target.value)} required /></div>
+        <div><label className="label">How you saw it</label>
+          <textarea className="input" rows={3} value={evidence} required
+            placeholder="e.g. KES 1 send-money test at 10:15 today; M-Pesa showed JANE W WANJIKU"
+            onChange={(e) => setEvidence(e.target.value)} /></div>
+        <p className="text-[11px] text-gray-400">
+          {mode === "single_person"
+            ? "The name must match the client's names."
+            : "You cannot confirm a client you captured or whose portfolio you hold. The name must match the client's names."}
+        </p>
+        <div className="flex justify-end gap-2">
+          <button type="button" className="btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn-primary" disabled={busy}>{busy ? "Saving…" : "Confirm name"}</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
 // Pending/approved change-requests raised against this client's locked fields.
 // The list endpoint is permission-gated, so a 403 simply hides the panel.
 function EditRequestsPanel({ clientId }) {
@@ -160,11 +233,25 @@ export default function ClientDetail() {
   const [c, setC] = useState(null);
   const [err, setErr] = useState("");
   const [editing, setEditing] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [kyc, setKyc] = useState(null);
+  const [ocrMsg, setOcrMsg] = useState({});
 
   const load = useCallback(() => {
     api(`/api/v1/clients/${id}`).then(setC).catch((e) => setErr(e.detail));
+    api(`/api/v1/clients/${id}/kyc-decision`).then(setKyc).catch(() => setKyc(null));
   }, [id]);
-  useEffect(load, [load]);
+
+  const readId = async (doc) => {
+    setOcrMsg((m) => ({ ...m, [doc.id]: "Reading…" }));
+    try {
+      const r = await api(`/api/v1/clients/${id}/documents/${doc.id}/ocr`, { method: "POST", body: {} });
+      setOcrMsg((m) => ({ ...m, [doc.id]: !r.id_number_read ? "ID number not readable"
+        : r.id_number_matches ? "ID number matches" : "ID number does NOT match" }));
+      load();
+    } catch (e) { setOcrMsg((m) => ({ ...m, [doc.id]: e.detail || "Could not read" })); }
+  };
+  useEffect(() => { load(); }, [load]);
 
   if (err) return <div className="card p-6 text-sm text-red-600">{err}</div>;
   if (!c) return <Spinner />;
@@ -194,8 +281,15 @@ export default function ClientDetail() {
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-5">
         <KpiCard label="KYC status" value={<Badge value={c.kyc_status} />} />
-        <KpiCard label="M-Pesa" value={c.mpesa_validated ? "Validated" : "Unvalidated"}
-          tone={c.mpesa_validated ? "good" : "warn"} sub={c.mpesa_validation_name || "—"} />
+        <KpiCard label="M-Pesa name" value={c.mpesa_confirmation_current ? "Confirmed" : "Not confirmed"}
+          tone={c.mpesa_confirmation_current ? "good" : "warn"}
+          sub={c.mpesa_confirmation_current
+            ? `${c.mpesa_validation_name || ""}${c.mpesa_validation_method === "manual" ? " · by staff" : ""}`
+            // Who may confirm is each DCP's choice (KYC Settings): a second person
+            // with approval rights (default), or anyone who edits clients.
+            : ((kyc?.mpesa_confirmation_mode === "single_person" ? can("clients.edit", "clients.approve") : can("clients.approve"))
+              ? <button className="text-accent font-semibold underline" onClick={() => setConfirming(true)}>Confirm M-Pesa name</button>
+              : "Needs someone with approval rights")} />
         <KpiCard label="Loans" value={(c.loans || []).length} sub={`${fmtKES(outstanding)} outstanding`} />
         <KpiCard label="Credit score" value={c.credit_score ?? "—"} sub={`Rating ${c.current_credit_rating || "—"}`} />
       </div>
@@ -230,6 +324,8 @@ export default function ClientDetail() {
         </div>
       </div>
 
+      <KycDecisionPanel d={kyc} />
+
       <ConsentPanel clientId={c.id} />
 
       <FaceValidationPanel clientId={c.id} />
@@ -243,7 +339,7 @@ export default function ClientDetail() {
               <tbody>
                 {c.wallets.map((w) => (
                   <tr key={w.id} className="border-t border-border">
-                    <td className="td">{w.mobile_number || "—"}</td>
+                    <td className="td">{w.wallet_locked && <span title="Locked: confirmed for payouts">🔒 </span>}{w.mobile_number || "—"}</td>
                     <td className="td">{w.wallet_number || "—"}</td>
                     <td className="td">{w.operator || "—"}</td>
                     <td className="td">{w.active ? "Yes" : "No"}</td>
@@ -289,7 +385,14 @@ export default function ClientDetail() {
                     <td className="td font-semibold">{d.original_name}</td>
                     <td className="td capitalize">{(d.doc_type || "other").replace(/_/g, " ")}</td>
                     <td className="td">{bytes(d.size_bytes || 0)}</td>
-                    <td className="td">{d.ocr_applied ? "Yes" : "—"}</td>
+                    <td className="td">
+                      {ocrMsg[d.id] || (d.ocr_applied ? "Read" : "—")}
+                      {ID_DOC_TYPES.includes(d.doc_type) && can("docs.upload") && (
+                        <button className="ml-2 text-accent text-xs font-semibold underline" onClick={() => readId(d)}>
+                          {d.ocr_applied ? "Read again" : "Read ID"}
+                        </button>
+                      )}
+                    </td>
                     <td className="td">{d.uploaded_by || "—"}</td>
                     <td className="td">{fmtDate(d.uploaded_at)}</td>
                     <td className="td text-right">
@@ -350,6 +453,11 @@ export default function ClientDetail() {
       </div>
 
       <EditRequestsPanel clientId={c.id} />
+
+      {confirming && (
+        <ConfirmMpesaModal client={c} mode={kyc?.mpesa_confirmation_mode} onClose={() => setConfirming(false)}
+          onDone={() => { setConfirming(false); load(); }} />
+      )}
 
       {editing && (
         <ClientForm clientId={c.id} onClose={() => setEditing(false)}

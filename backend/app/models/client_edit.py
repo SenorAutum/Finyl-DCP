@@ -34,6 +34,10 @@ class ClientEditRequest(Base):
     supporting_docs = Column(JSONB)
     status = Column(Text, nullable=False, default="pending", index=True)
     rejection_reason = Column(Text)
+    # WP6 (F13): primary-tier edits need two different approvers.
+    first_approved_by = Column(Integer, ForeignKey("users.id"))
+    first_approved_at = Column(DateTime(timezone=True))
+    approvals_required = Column(Integer)      # snapshot of the DCP setting (1 or 2)
 
     client = relationship("Borrower")
 

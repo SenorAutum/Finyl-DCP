@@ -189,13 +189,36 @@ def seed(db):
         db.flush()
         return loan
 
+    def make_kyc_ready(b=None):
+        """WP6: give a client the evidence the default KYC settings require
+        (adult DOB, M-Pesa name confirmed for the current number, an ID document
+        read by OCR whose number matches, a next of kin)."""
+        from datetime import date as _date
+        from app.models import ClientDocument, ClientNextOfKin
+        from app.services.sms import normalise_phone
+        b = b or borrower
+        b.date_of_birth = _date(1990, 1, 1)
+        b.mpesa_validated = True
+        b.mpesa_validation_method = "manual"
+        b.mpesa_validation_phone = normalise_phone(b.phone)
+        b.mpesa_validation_name = f"{b.first_name} {b.last_name}".upper()
+        db.add(ClientDocument(tenant_id=b.tenant_id, client_id=b.id,
+                              doc_type="national_id_front", file_name="id.jpg",
+                              ocr_applied=True,
+                              ocr_field_mapping={"national_id": b.national_id}))
+        db.add(ClientNextOfKin(tenant_id=b.tenant_id, client_id=b.id, full_name="Kin Person",
+                               relationship_type="Spouse", mobile_number="0700000002",
+                               active=True))
+        db.commit()
+        return b
+
     db.commit()
 
     return SimpleNamespace(
         db=db, tenant=tenant, region=region, branch=branch, staff=staff,
         product=product, borrower=borrower,
         maker=maker, checker=checker, recon=recon,
-        make_user=make_user, make_loan=make_loan,
+        make_user=make_user, make_loan=make_loan, make_kyc_ready=make_kyc_ready,
     )
 
 

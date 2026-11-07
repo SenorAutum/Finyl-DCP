@@ -8,7 +8,6 @@ from __future__ import annotations
 from fastapi import HTTPException
 
 from app.core.permissions import OFFICER_SCOPE_ROLES
-from app.services.authz import user_can
 
 # Front-line originators: they own what they create and cannot approve it.
 _ORIGINATOR_ROLES = ("relationship_officer", "loan_officer")
@@ -22,8 +21,11 @@ def initial_profile_state(db, user) -> tuple[str, int | None]:
         owned by that officer. An officer with NO staff linkage is refused -
         previously such a user fell through and produced an already-approved,
         unowned profile.
-      * Anyone else is only auto-approved when they could approve it anyway
-        (``clients.approve``). Without that permission the profile is queued.
+      * Everyone else's profile also starts ``pending_approval``. WP6 (F20):
+        a profile is approved only through the Approvals inbox, by someone
+        other than its creator, after the central KYC decision - previously a
+        creator holding ``clients.approve`` produced an already-approved
+        profile with no KYC decision at all.
     """
     if user.role in _ORIGINATOR_ROLES or user.role in OFFICER_SCOPE_ROLES:
         if not user.staff_id:
@@ -31,6 +33,4 @@ def initial_profile_state(db, user) -> tuple[str, int | None]:
                 403, "Your account is not linked to a staff record, so you cannot "
                      "onboard clients. Ask an administrator to link it.")
         return "pending_approval", user.staff_id
-    if user_can(db, user, "clients.approve"):
-        return "approved", None
     return "pending_approval", None

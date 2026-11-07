@@ -27,7 +27,7 @@ export default function Admin() {
   const [msg, setMsg] = useState("");
 
   const load = () => api("/api/v1/admin/module-matrix").then(setMatrix).catch((e) => setErr(e.detail));
-  useEffect(load, []);
+  useEffect(() => { load(); }, []);
 
   const toggle = async (tenant, key) => {
     const enabled = !tenant.modules[key];

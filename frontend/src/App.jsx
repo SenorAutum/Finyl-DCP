@@ -206,7 +206,7 @@ export default function App() {
             <Route path="/ratiba" element={<Guard module="lending"><PermGuard perms={["collections.ptp_manage"]}><Ratiba /></PermGuard></Guard>} />
             <Route path="/search" element={<PermGuard perms={["search.global"]}><SearchResults /></PermGuard>} />
             <Route path="/security-config" element={<AdminGuard><SecurityConfig /></AdminGuard>} />
-            <Route path="/validation-preferences" element={<AdminGuard><ValidationPrefs /></AdminGuard>} />
+            <Route path="/validation-preferences" element={<PermGuard perms={["security.manage"]}><ValidationPrefs /></PermGuard>} />
             <Route path="/devices" element={<AdminGuard><DeviceManagement /></AdminGuard>} />
             <Route path="/otp-history" element={<AdminGuard><OtpHistory /></AdminGuard>} />
             {/* RBAC: approvals, administration & reporting (permission-gated) */}

@@ -26,7 +26,7 @@ from app.services.authz import effective_permissions
 from app.core.obs import log_auth_event, log_cbk_event
 from app.core import obs
 from app.services import otp as otp_svc, geo_fence, device_binding
-from app.models import ApprovalThreshold, MODULE_KEYS, Tenant, TenantModule, User
+from app.models import ApprovalThreshold, MODULE_KEYS, OtpToken, Tenant, TenantModule, User
 from app.schemas import LoginRequest, ChangePasswordRequest, SignupRequest
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
@@ -148,13 +148,31 @@ def _login(db: Session, email: str, password: str, request: Request = None) -> d
     if cfg and cfg.require_otp and user.role != "super_admin":
         code = otp_svc.generate(db, user, purpose="login", ip=ip)
         delivery = otp_svc.deliver(db, user, code, channels=cfg.otp_channels or ["sms"])
+        if not delivery.get("delivered"):
+            # WP6 (F21): fail closed AND say why. Previously the caller was told
+            # to enter a code that had not been sent anywhere.
+            (db.query(OtpToken)
+               .filter(OtpToken.user_id == user.id, OtpToken.purpose == "login",
+                       OtpToken.consumed == False)  # noqa: E712
+               .update({OtpToken.consumed: True}))
+            db.commit()
+            log_cbk_event(obs.CBK_OTP_ISSUED, tenant_id=user.tenant_id, user_id=user.id,
+                          entity_type="user", entity_id=user.id, outcome="not_delivered",
+                          detail=f"login otp channels={delivery.get('channels')}")
+            log_auth_event("login_otp_undeliverable", email=user.email, user_id=user.id, ip=ip)
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "Your sign-in code could not be sent. Your account needs a mobile number "
+                "(or the SMS / e-mail service is down). Ask your administrator to add "
+                "your phone number in User & Access Management.")
         log_cbk_event(obs.CBK_OTP_ISSUED, tenant_id=user.tenant_id, user_id=user.id,
                       entity_type="user", entity_id=user.id, outcome="sent",
                       detail="login step-up otp")
         log_auth_event("login_otp_issued", email=user.email, user_id=user.id, ip=ip)
+        sent_to = [k for k, v in (delivery.get("channels") or {}).items() if v]
         return {"otp_required": True, "user_id": user.id,
                 "detail": "Enter the verification code sent to you to finish signing in.",
-                "delivery": delivery}
+                "delivery": {"channels": sent_to}}
 
     return _issue_login_token(db, user, request, ip)
 
@@ -256,6 +274,9 @@ def login_otp(email: str = Body(..., embed=True), code: str = Body(..., embed=Tr
         log_auth_event("login_otp_failed", email=email,
                        user_id=getattr(user, "id", None), ip=ip)
         raise invalid
+    # The second leg must meet the same time / location / device rules as the
+    # first: a code obtained in-policy must not complete a sign-in from outside.
+    _enforce_login_fences(db, user, request, ip)
     ok, reason = otp_svc.verify(db, user, code, purpose="login")
     if not ok:
         log_cbk_event(obs.CBK_LOGIN_FAILED, tenant_id=user.tenant_id, user_id=user.id,

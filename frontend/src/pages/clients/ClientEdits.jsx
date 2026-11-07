@@ -1,6 +1,7 @@
-// Client-edit approval queue (maker-checker). Edits to borrowers with active
-// loans are tiered (secondary / primary) and must be approved or rejected by a
-// user holding the matching approval permission.
+// Client-edit approval queue (maker-checker). Edits to borrowers with open
+// loans are tiered: secondary = one approval; primary (identity fields) = a first
+// approval and a final approval by two different people. Nobody can decide a
+// request they raised (WP6).
 import { useEffect, useState } from "react";
 import { api, fmtDate } from "../../lib/api";
 import { Badge, Empty, Modal, PageHeader, Spinner } from "../../components/ui";
@@ -30,7 +31,7 @@ function FieldChanges({ changes }) {
 }
 
 export default function ClientEdits() {
-  const { can } = useAuth();
+  const { can, user } = useAuth();
   const [status, setStatus] = useState("pending");
   const [data, setData] = useState(null);
   const [rejecting, setRejecting] = useState(null); // { id, reason }
@@ -42,7 +43,7 @@ export default function ClientEdits() {
     setData(null);
     api(`/api/v1/clients/edit-requests?status=${status}`).then(setData).catch((e) => setErr(e.detail));
   };
-  useEffect(load, [status]);
+  useEffect(() => { load(); }, [status]);
 
   const approve = async (id) => {
     setBusy(id); setErr("");
@@ -89,14 +90,30 @@ export default function ClientEdits() {
                       {r.edit_tier} tier
                     </span>
                     <Badge value={r.status === "pending" ? "pending" : r.status === "approved" ? "approved" : "rejected"}>{r.status}</Badge>
+                    {r.status === "pending" && r.approvals_required >= 2 && (
+                      <span className="text-[11px] text-gray-500">
+                        {r.next_stage === "final" ? "Step 2 of 2 · final approval" : "Step 1 of 2 · first approval"}
+                      </span>
+                    )}
                   </div>
-                  <p className="text-xs text-gray-400 mt-1">Requested by user {r.requested_by} · {fmtDate(r.requested_at)}</p>
+                  <p className="text-xs text-gray-400 mt-1">
+                    Requested by user {r.requested_by} · {fmtDate(r.requested_at)}
+                    {r.first_approved_by && <> · first approval by user {r.first_approved_by} ({fmtDate(r.first_approved_at)})</>}
+                  </p>
                 </div>
                 {r.status === "pending" && canApprove && (
+                  r.requested_by === user?.id || r.first_approved_by === user?.id ? (
+                    <span className="text-xs text-gray-400 self-center">
+                      {r.requested_by === user?.id ? "You raised this request" : "Waiting for a different approver"}
+                    </span>
+                  ) : (
                   <div className="flex gap-2">
-                    <button className="btn-primary !py-1.5" disabled={busy === r.id} onClick={() => approve(r.id)}>{busy === r.id ? "…" : "Approve"}</button>
+                    <button className="btn-primary !py-1.5" disabled={busy === r.id} onClick={() => approve(r.id)}>
+                      {busy === r.id ? "…" : r.next_stage === "first" ? "Give first approval" : "Approve"}
+                    </button>
                     <button className="btn-ghost !py-1.5 text-red-600" onClick={() => setRejecting({ id: r.id, reason: "" })}>Reject</button>
                   </div>
+                  )
                 )}
               </div>
 

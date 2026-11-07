@@ -110,7 +110,7 @@ def update_task(task_id: int, body: DailyTaskUpdate,
 
 # --- Client home geo + business photos -------------------------------------
 @router.post("/client-home-geo")
-def capture_home_geo(body: ClientHomeGeoIn, tenant_id: int = Depends(require_module("clients")),
+def capture_home_geo(body: ClientHomeGeoIn, tenant_id: int = Depends(require_module("lending")),
                      user=Depends(get_current_user), db: Session = Depends(get_db)):
     if not db.query(Borrower).filter(Borrower.id == body.client_id,
                                      Borrower.tenant_id == tenant_id).first():
@@ -125,7 +125,7 @@ def capture_home_geo(body: ClientHomeGeoIn, tenant_id: int = Depends(require_mod
 
 
 @router.post("/business-photos")
-def upload_business_photo(body: BusinessPhotoIn, tenant_id: int = Depends(require_module("clients")),
+def upload_business_photo(body: BusinessPhotoIn, tenant_id: int = Depends(require_module("lending")),
                           user=Depends(get_current_user), db: Session = Depends(get_db)):
     if not db.query(Borrower).filter(Borrower.id == body.client_id,
                                      Borrower.tenant_id == tenant_id).first():

@@ -39,7 +39,7 @@ function PtpTab({ staffMap }) {
     setData(null);
     api(`/api/v1/collections/ptp?status=${status}`).then(setData).catch((e) => setErr(e.detail));
   };
-  useEffect(load, [status]);
+  useEffect(() => { load(); }, [status]);
 
   const set = (k) => (e) => setForm((p) => ({ ...p, [k]: e.target.value }));
 

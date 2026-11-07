@@ -43,7 +43,7 @@ export default function FaceValidation() {
     setStatus(null); setErr("");
     api(`/api/v1/clients/${clientId}/face-validation-status`).then(setStatus).catch((e) => setErr(e.detail));
   };
-  useEffect(load, [clientId]);
+  useEffect(() => { load(); }, [clientId]);
 
   const runValidation = async () => {
     if (!clientId) return;

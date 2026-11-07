@@ -611,35 +611,38 @@ def normalise_msisdn(phone: str) -> str:
 def validate_mobile_number(phone: str, national_id: str, expected_name: str,
                            creds: DarajaCreds | None = None) -> dict:
     """
-    Safaricom subscriber name-lookup check.
+    Check a client's M-Pesa number.
 
-    Daraja does not expose a public KYC name-verification product to ordinary
-    partners; registered-name lookup is a bank-grade/operator API. This performs
-    the format + registration sanity check that IS available (MSISDN validity +
-    ID presence) and is structured so a real name-lookup response slots straight
-    in when a partner API is provisioned (see annotations)."""
+    WP6 (F15): Daraja gives ordinary partners NO registered-name lookup, so this
+    can only check that the number is a well-formed Kenyan mobile number. It
+    used to report ``Matched=true`` and return the officer's own typed name as
+    the "registered name"; it now says plainly that the name was NOT verified.
+    Ownership is confirmed either by a real name-lookup provider (none is wired
+    yet) or by a second staff member through POST /clients/{id}/confirm-mpesa.
+    ``expected_name`` is accepted for compatibility and never echoed back.
+    """
     creds = creds or _settings_creds()
     msisdn = normalise_msisdn(phone)
     valid_prefix = msisdn.startswith("2547") or msisdn.startswith("2541")
-    ok = bool(msisdn) and len(msisdn) == 12 and valid_prefix and bool(national_id)
-    registered_name = (expected_name or "").upper() if ok else None
+    format_ok = bool(msisdn) and len(msisdn) == 12 and valid_prefix
     return {
-        "request": {
-            "CommandID": "CheckIdentity",
-            "PartyA": creds.shortcode,
-            "PartyB": msisdn,
-            "IdentityNumber": national_id,
-            "Initiator": creds.initiator_name,
-        },
+        "request": {"MSISDN": msisdn, "IdentityNumber": national_id,
+                    "PartyA": creds.shortcode},
         "response": {
-            "ResultCode": 0 if ok else 1,
-            "ResultDesc": ("The service request is processed successfully."
-                           if ok else "Subscriber not found or number not registered."),
+            "ResultCode": 0 if format_ok else 1,
+            "ResultDesc": ("The number is a valid Kenyan mobile number. The registered "
+                           "name has NOT been checked: no name-lookup provider is "
+                           "configured, so a staff member must confirm it on the "
+                           "client page."
+                           if format_ok else
+                           "Not a valid Kenyan mobile number."),
             "MSISDN": msisdn,
-            "RegisteredName": registered_name,
+            "FormatValid": format_ok,
+            "Verification": "unverified",
+            "RegisteredName": None,
             "IdentityNumber": national_id,
-            "Matched": ok,
-            "ConversationID": f"AG_{datetime.utcnow():%Y%m%d}_{uuid.uuid4().hex[:16]}",
+            "Matched": False,
+            "ConversationID": None,
             "CheckedAt": datetime.utcnow().isoformat() + "Z",
         },
     }

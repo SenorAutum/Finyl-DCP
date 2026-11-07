@@ -25,7 +25,7 @@ export default function Efficiency() {
     setData(null);
     api(`/api/v1/collections/efficiency?period_month=${month}`).then(setData).catch((e) => setErr(e.detail));
   };
-  useEffect(load, [month]);
+  useEffect(() => { load(); }, [month]);
 
   const rows = useMemo(() => {
     const items = (data?.items || []).slice();

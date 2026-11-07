@@ -26,7 +26,7 @@ export default function SiteVisits() {
     setData(null);
     api(`/api/v1/field/daily-tasks${userId ? `?user_id=${userId}` : ""}`).then(setData).catch((e) => setErr(e.detail));
   };
-  useEffect(load, [userId]);
+  useEffect(() => { load(); }, [userId]);
 
   const create = async (e) => {
     e.preventDefault();

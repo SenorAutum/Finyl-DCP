@@ -25,7 +25,7 @@ from app.routers.clients import (_client_dict as _borrower_dict, LOCKED_FIELDS,
 from app.core.ownership import get_owned_optional, require_client, resolve_loan_officer
 from app.services.authz import user_can
 from app.services.onboarding import initial_profile_state
-from app.services import mpesa, sms, client_edit
+from app.services import mpesa, sms, client_edit, eligibility, kyc_decisions
 from datetime import datetime, timezone
 from fastapi import Request
 
@@ -119,7 +119,7 @@ def create_borrower(body: BorrowerCreate, tenant_id: int = Depends(require_modul
     # INPUT-02: never mass-assign trust/lifecycle fields from client input.
     b = Borrower(tenant_id=tenant_id, **body.model_dump(exclude={"kyc_status"}),
                  profile_status=profile_status, officer_staff_id=officer_staff_id,
-                 onboarded_by=user.full_name)
+                 onboarded_by=user.full_name, created_by_user_id=user.id)
     if age is not None:
         b.date_of_birth_verified = True
         b.age_verified_at = datetime.utcnow()
@@ -210,6 +210,8 @@ def list_products(tenant_id: int = Depends(require_module("lending")),
 def create_product(body: ProductCreate, tenant_id: int = Depends(require_module("lending")),
                    _: User = Depends(require_role("super_admin")),
                    db: Session = Depends(get_db)):
+    if body.min_age < 18:
+        raise HTTPException(422, "Minimum age cannot be below 18")
     p = Product(tenant_id=tenant_id, **body.model_dump())
     db.add(p)
     db.commit()
@@ -224,7 +226,11 @@ def update_product(product_id: int, body: ProductCreate,
     p = db.query(Product).filter(Product.id == product_id, Product.tenant_id == tenant_id).first()
     if not p:
         raise HTTPException(404, "Product not found")
-    for k, v in body.model_dump().items():
+    if body.min_age < 18:
+        raise HTTPException(422, "Minimum age cannot be below 18")
+    # Only the fields the caller sent: an older screen that does not know the
+    # eligibility switches must not reset them to their defaults.
+    for k, v in body.model_dump(exclude_unset=True).items():
         setattr(p, k, v)
     db.commit()
     return {"ok": True}
@@ -345,6 +351,14 @@ def apply_for_loan(body: LoanApplication, tenant_id: int = Depends(require_modul
         raise HTTPException(404, "Product not found or inactive")
     if not (float(product.min_amount) <= body.principal <= float(product.max_amount)):
         raise HTTPException(400, f"Amount must be between {product.min_amount} and {product.max_amount}")
+    # WP6 (F20): an approved profile is not enough. The client must pass the
+    # central KYC decision NOW and meet the product's own rules. ("escalate"
+    # may apply; it is decided by a person at loan approval.)
+    d = kyc_decisions.evaluate(db, tenant_id=tenant_id, client_id=borrower.id)
+    if d.decision == kyc_decisions.DECISION_FAIL:
+        raise HTTPException(409, "KYC check failed, so this client cannot apply. "
+                                 + " ".join(kyc_decisions.explain(d.reasons)))
+    eligibility.require_product_rules(db, tenant_id=tenant_id, client=borrower, product=product)
 
     prior = db.query(Loan).filter(Loan.borrower_id == borrower.id).count()
     cycle = prior + 1

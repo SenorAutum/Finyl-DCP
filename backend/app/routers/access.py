@@ -184,7 +184,23 @@ def _user_dict(u: User, db: Session) -> dict:
         "branch_id": u.branch_id, "branch_name": branch.name if branch else None,
         "region_id": u.region_id, "region_name": region.name if region else None,
         "created_at": u.created_at.isoformat() if u.created_at else None,
+        "phone": u.phone,
     }
+
+
+def _clean_staff_phone(phone):
+    """WP6 (F21): a staff phone receives sign-in codes, so it must be a valid
+    Kenyan mobile number (stored as 07XXXXXXXX / 01XXXXXXXX)."""
+    if phone is None:
+        return None
+    digits = "".join(c for c in phone if c.isdigit())
+    if not digits:
+        return ""
+    if digits.startswith("254"):
+        digits = "0" + digits[3:]
+    if len(digits) != 10 or digits[:2] not in ("07", "01"):
+        raise HTTPException(422, "Phone must be a Kenyan mobile number, e.g. 0712345678")
+    return digits
 
 
 @router.get("/users")
@@ -211,6 +227,7 @@ def create_user(body: UserCreate, request: Request,
         tenant_id=tenant_id, staff_id=body.staff_id,
         branch_id=body.branch_id, region_id=body.region_id,
         active=body.active, force_password_reset=body.password is None,
+        phone=_clean_staff_phone(body.phone) or None,
     )
     db.add(u); db.flush()
     write_audit(db, tenant_id=tenant_id, user=actor, action="user.create",
@@ -244,6 +261,8 @@ def update_user(user_id: int, body: UserUpdate, request: Request,
         v = getattr(body, f)
         if v is not None:
             setattr(u, f, v)
+    if body.phone is not None:
+        u.phone = _clean_staff_phone(body.phone) or None
     db.flush()
     write_audit(db, tenant_id=tenant_id, user=actor, action="user.edit",
                 entity_type="user", entity_id=u.id,

@@ -11,7 +11,7 @@ export default function Backups() {
   const [msg, setMsg] = useState("");
 
   const loadIntegrity = () => api("/api/v1/access/integrity").then(setIntegrity).catch((e) => setMsg(e.detail));
-  useEffect(loadIntegrity, []);
+  useEffect(() => { loadIntegrity(); }, []);
 
   const runBackup = async () => {
     setBusy(true); setMsg("");

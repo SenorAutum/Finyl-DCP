@@ -77,6 +77,8 @@ const NAV = [
   ]},
   { group: "Settings", items: [
     { to: "/settings", label: "DCP Configuration", icon: "🛠", anyPerm: ["thresholds.manage"] },
+    // WP6: each DCP's own admin decides which KYC checks apply and how strict they are.
+    { to: "/validation-preferences", label: "KYC Settings", icon: "☑", anyPerm: ["security.manage"] },
   ]},
   { group: "Administration", superOnly: true, items: [
     { to: "/access/users", label: "Users & Access", icon: "👤" },
@@ -89,7 +91,6 @@ const NAV = [
     { to: "/access/api-clients", label: "API Clients", icon: "🔑" },
     { to: "/messaging", label: "SMS Messaging", icon: "✉" },
     { to: "/security-config", label: "Security Config", icon: "🛡" },
-    { to: "/validation-preferences", label: "Validation Preferences", icon: "☑" },
     { to: "/devices", label: "Device Management", icon: "📱" },
     { to: "/otp-history", label: "OTP History", icon: "🔐" },
   ]},
