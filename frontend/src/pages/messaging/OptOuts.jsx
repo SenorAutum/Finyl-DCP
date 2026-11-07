@@ -21,7 +21,7 @@ export default function OptOuts() {
     api(`/api/v1/messaging/opt-outs?active_only=${activeOnly}`)
       .then(setList).catch((e) => { setMsg(e.detail || "Failed to load opt-outs."); setList({ items: [], count: 0 }); });
   };
-  useEffect(loadStatus, []);
+  useEffect(() => { loadStatus(); }, []);
   useEffect(loadList, [activeOnly]);
 
   const add = async (e) => {

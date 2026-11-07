@@ -86,7 +86,7 @@ function AmlExports() {
   const [busy, setBusy] = useState(false);
 
   const load = () => api(`/api/v1/cbk/aml/flags?reviewed=${reviewed}`).then(setFlags).catch(() => {});
-  useEffect(load, [reviewed]);
+  useEffect(() => { load(); }, [reviewed]);
 
   const runScan = async () => {
     setBusy(true); setMsg("");
@@ -181,7 +181,7 @@ function GdiSubmissions() {
   const [nilDs, setNilDs] = useState("customer");
 
   const load = () => api("/api/v1/cbk/gdi/submissions").then(setSubs).catch(() => setSubs([]));
-  useEffect(load, []);
+  useEffect(() => { load(); }, []);
 
   // Latest log row for each dataset within the selected month (progress view).
   const progress = GDI_DATASETS.map((ds) => {

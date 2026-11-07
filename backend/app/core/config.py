@@ -185,6 +185,17 @@ class Settings(BaseSettings):
     EKYC_STRATEGY_ID: str = ""
     EKYC_MOCK: bool = False
 
+    # --- Outgoing e-mail (WP6, F21) ---------------------------------------------
+    # Used for staff sign-in codes when the DCP enables the "email" OTP channel.
+    # Any SMTP relay works (on AWS: Amazon SES SMTP credentials). While SMTP_HOST
+    # is empty no e-mail is sent and the e-mail channel reports "not configured".
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM: str = ""                   # e.g. "Finyl <no-reply@yourdomain.co.ke>"
+    SMTP_STARTTLS: bool = True
+
     # --- CBK GDI Submission ---------------------------------------------------
     # Central Bank of Kenya Granular Data Interface (GDI) monthly submission.
     # Credential-gated: while CLIENT_ID/TOKEN_URL are empty the service reports
@@ -262,6 +273,14 @@ class Settings(BaseSettings):
             raise ValueError(
                 "Refusing to start: DB_SCHEMA is not a valid SQL identifier "
                 "(must match ^[A-Za-z_][A-Za-z0-9_]*$)."
+            )
+        # WP6 (F19): the mock eKYC provider invents "verified" results. It must
+        # never run against live money.
+        if self.EKYC_MOCK and (self.DARAJA_ENVIRONMENT or "").strip().lower() == "production":
+            raise ValueError(
+                "Refusing to start: EKYC_MOCK=true with DARAJA_ENVIRONMENT=production. "
+                "The mock eKYC provider fakes identity checks; set EKYC_MOCK=false and "
+                "configure the real EKYC_* credentials."
             )
         return self
 

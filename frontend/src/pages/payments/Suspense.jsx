@@ -136,7 +136,7 @@ export default function Suspense() {
     api(`/api/v1/payments/suspense?status=${status}&page=${page}&page_size=50`)
       .then(setData).catch((e) => { setMsg(e.detail || "Failed to load suspense entries."); setData({ items: [], total: 0 }); });
   };
-  useEffect(load, [status, page]);
+  useEffect(() => { load(); }, [status, page]);
 
   const allocate = async (row) => {
     const hint = row.suggested_loan_id ? ` (suggested: #${row.suggested_loan_id})` : "";

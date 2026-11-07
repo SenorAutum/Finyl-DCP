@@ -53,7 +53,7 @@ function ExportTab() {
 function SchedulesTab({ canManage }) {
   const [rows, setRows] = useState(null); const [modal, setModal] = useState(false); const [msg, setMsg] = useState("");
   const load = () => api("/api/v1/reporting/schedules").then(setRows).catch((e) => { setMsg(e.detail); setRows([]); });
-  useEffect(load, []);
+  useEffect(() => { load(); }, []);
   const del = async (id) => { try { await api(`/api/v1/reporting/schedules/${id}`, { method: "DELETE" }); load(); } catch (e) { setMsg(e.detail); } };
   if (!rows) return <Spinner />;
   return (
@@ -104,7 +104,7 @@ function ScheduleModal({ onClose, onDone }) {
 function TemplatesTab({ canManage }) {
   const [rows, setRows] = useState(null); const [modal, setModal] = useState(false); const [msg, setMsg] = useState("");
   const load = () => api("/api/v1/reporting/templates").then(setRows).catch((e) => { setMsg(e.detail); setRows([]); });
-  useEffect(load, []);
+  useEffect(() => { load(); }, []);
   if (!rows) return <Spinner />;
   return (
     <div>
@@ -147,7 +147,7 @@ function TemplateModal({ onClose, onDone }) {
 function AnomaliesTab({ canFlag }) {
   const [rows, setRows] = useState(null); const [modal, setModal] = useState(false); const [msg, setMsg] = useState("");
   const load = () => api("/api/v1/reporting/anomalies").then(setRows).catch((e) => { setMsg(e.detail); setRows([]); });
-  useEffect(load, []);
+  useEffect(() => { load(); }, []);
   if (!rows) return <Spinner />;
   return (
     <div>

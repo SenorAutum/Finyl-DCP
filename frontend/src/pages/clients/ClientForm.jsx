@@ -129,9 +129,9 @@ export default function ClientForm({ clientId, onClose, onSaved }) {
         next.approved_by_user_id = c.approved_by_user_id || "";
         setForm(next);
         setSaved(c.documents || []);
-        if (c.mpesa_validated) {
+        if (c.mpesa_confirmation_current) {
           setMpesa({ matched: true, msisdn: c.phone, registered_name: c.mpesa_validation_name,
-                     result_desc: "Previously validated" });
+                     result_desc: "Name confirmed" });
         }
         if (c.ekyc_status) setEkyc({ status: c.ekyc_status, reference: c.ekyc_reference });
       })
@@ -243,9 +243,6 @@ export default function ClientForm({ clientId, onClose, onSaved }) {
         },
       });
       setEkyc(res);
-      if (res.status === "verified" && form.kyc_status === "draft") {
-        setForm((s) => ({ ...s, kyc_status: "validated" }));
-      }
     } catch (e) { setErr(e.detail); } finally { setEkycBusy(false); }
   };
 
@@ -347,16 +344,18 @@ export default function ClientForm({ clientId, onClose, onSaved }) {
       const res = clientId
         ? await api(`/api/v1/clients/${clientId}`, { method: "PUT", body })
         : await api("/api/v1/clients", { method: "POST", body });
-      if (queue.length) await uploadQueue(res.id);
-      // Validations run while the client was still a draft could not be stored
-      // against a row that did not exist yet — replay them now so the badges,
-      // audit trail and eKYC reference are persisted. Failures are non-fatal.
-      if (!clientId) {
-        if (mpesa?.matched) {
-          await api("/api/v1/clients/validate-mpesa", {
-            method: "POST", body: { client_id: res.id },
-          }).catch(() => {});
+      const uploaded = queue.length ? await uploadQueue(res.id) : [];
+      // Read every uploaded ID document on the server and record the result on
+      // that document: this is the OCR evidence the KYC check uses. Non-fatal.
+      for (const d of uploaded) {
+        if (["national_id_front", "national_id_back", "passport"].includes(d.doc_type)) {
+          await api(`/api/v1/clients/${res.id}/documents/${d.id}/ocr`, { method: "POST", body: {} })
+            .catch(() => {});
         }
+      }
+      // eKYC run while the client was still a draft could not be stored against
+      // a row that did not exist yet — replay it now. Failures are non-fatal.
+      if (!clientId) {
         if (ekyc?.status) {
           await api("/api/v1/clients/ekyc/verify", {
             method: "POST", body: { client_id: res.id },
@@ -588,15 +587,23 @@ export default function ClientForm({ clientId, onClose, onSaved }) {
             <input className="input max-w-[200px] bg-white" placeholder="2547XXXXXXXX" disabled={locked}
               value={form.phone} onChange={set("phone")} />
             <button type="button" className="btn-primary" onClick={validateMpesa} disabled={mpesaBusy}>
-              {mpesaBusy ? "Checking…" : "Validate M-Pesa"}
+              {mpesaBusy ? "Checking…" : "Check number"}
             </button>
-            {mpesa && (
-              <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold ${
-                mpesa.matched ? "bg-accent text-white" : "bg-red-100 text-red-700"}`}>
-                {mpesa.matched ? "✓" : "✕"} {mpesa.registered_name || mpesa.result_desc}
+            {mpesa && (mpesa.matched || mpesa.already_confirmed ? (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold bg-accent text-white">
+                ✓ Name confirmed{mpesa.registered_name ? `: ${mpesa.registered_name}` : ""}
                 {mpesa.msisdn && <span className="opacity-80">· {mpesa.msisdn}</span>}
               </span>
-            )}
+            ) : mpesa.format_valid ? (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-800"
+                title={mpesa.result_desc}>
+                Number OK · name not confirmed yet — confirm it on the client page after saving
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold bg-red-100 text-red-700">
+                ✕ {mpesa.result_desc}
+              </span>
+            ))}
           </div>
 
           {/* ---------------- Client ID Details ---------------- */}

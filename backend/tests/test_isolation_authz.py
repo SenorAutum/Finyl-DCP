@@ -307,6 +307,7 @@ APPLY = "/api/v1/lending/loans/apply"
 
 
 def _apply(world, user, borrower, **over):
+    world.seed.make_kyc_ready(borrower)      # WP6: applying now needs passing KYC
     body = {"borrower_id": borrower.id, "product_id": world.seed.product.id,
             "principal": 5000}
     body.update(over)

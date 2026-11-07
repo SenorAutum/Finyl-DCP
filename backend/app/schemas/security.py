@@ -2,7 +2,7 @@
 from decimal import Decimal
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class SecurityConfigUpdate(BaseModel):
@@ -23,12 +23,13 @@ class SecurityConfigUpdate(BaseModel):
 
 
 class OtpRequestIn(BaseModel):
-    purpose: str = "login"
+    # "login" and "consent" have their own flows and are refused here (WP6).
+    purpose: str = Field("step_up", max_length=30)
 
 
 class OtpVerifyIn(BaseModel):
     code: str
-    purpose: str = "login"
+    purpose: str = Field("step_up", max_length=30)
 
 
 class DeviceRegisterIn(BaseModel):

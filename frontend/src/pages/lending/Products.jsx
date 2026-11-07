@@ -10,8 +10,17 @@ const EMPTY = {
   // Fees live in product.rules (WP5): processing %, flat facility fee, and how
   // they are collected — deducted from the payout or added to the balance.
   processing_fee_rate: 0, facility_fee: 0, fee_collection: "deduct",
+  // Eligibility (WP6): checked at application and at loan approval.
+  requires_guarantor: false, requires_next_of_kin: true, business_op_age_required: false,
+  max_open_loans: 1, min_business_age_months: 6,
 };
-const FEE_KEYS = ["processing_fee_rate", "facility_fee", "fee_collection"];
+// Settings kept inside product.rules rather than as their own columns.
+const FEE_KEYS = ["processing_fee_rate", "facility_fee", "fee_collection",
+  "max_open_loans", "min_business_age_months"];
+const openLoansText = (r) => {
+  const n = r?.max_open_loans ?? (r?.allow_concurrent_loans ? 0 : 1);
+  return Number(n) === 0 ? "no limit" : `${n} at a time`;
+};
 
 export default function Products() {
   const [products, setProducts] = useState(null);
@@ -19,7 +28,7 @@ export default function Products() {
   const [err, setErr] = useState("");
 
   const load = () => api("/api/v1/lending/products").then(setProducts).catch(() => {});
-  useEffect(load, []);
+  useEffect(() => { load(); }, []);  // an effect must not return the fetch promise
 
   const set = (k) => (e) => setEditing((s) => ({ ...s, form: { ...s.form, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.value } }));
 
@@ -34,9 +43,14 @@ export default function Products() {
       // Keep any other rules the product already has (this used to send {} and
       // wipe the product's fee settings on every edit).
       rules: { ...(editing.rules || {}), processing_fee_rate: Number(f.processing_fee_rate) || 0,
-               facility_fee: Number(f.facility_fee) || 0, fee_collection: f.fee_collection || "deduct" },
+               facility_fee: Number(f.facility_fee) || 0, fee_collection: f.fee_collection || "deduct",
+               max_open_loans: Math.max(0, parseInt(f.max_open_loans, 10) || 0),
+               min_business_age_months: Math.max(0, parseInt(f.min_business_age_months, 10) || 0) },
       active: !!f.active,
+      requires_guarantor: !!f.requires_guarantor, requires_next_of_kin: !!f.requires_next_of_kin,
+      business_op_age_required: !!f.business_op_age_required,
     };
+    delete body.rules.allow_concurrent_loans;     // replaced by max_open_loans
     for (const k of FEE_KEYS) delete body[k];
     try {
       if (editing.id) await api(`/api/v1/lending/products/${editing.id}`, { method: "PUT", body });
@@ -70,11 +84,17 @@ export default function Products() {
                 <div className="flex justify-between"><span className="text-gray-400">Fees</span><span className="font-semibold">
                   {(p.rules?.processing_fee_rate || 0)}% + {fmtKES(p.rules?.facility_fee || 0)} · {p.rules?.fee_collection === "add_to_balance" ? "added to balance" : "deducted from payout"}
                 </span></div>
+                <div className="flex justify-between"><span className="text-gray-400">Open loans per client</span><span className="font-semibold">{openLoansText(p.rules)}</span></div>
+                <div className="flex justify-between"><span className="text-gray-400">Needs</span><span className="font-semibold text-right">
+                  {[p.requires_next_of_kin && "next of kin", p.requires_guarantor && "guarantor",
+                    p.business_op_age_required && `business ${p.rules?.min_business_age_months ?? 6}+ months`].filter(Boolean).join(", ") || "—"}
+                </span></div>
               </div>
               <button className="btn-ghost w-full mt-4 !py-1.5 text-sm"
                 onClick={() => setEditing({ id: p.id, rules: p.rules || {}, form: {
                   ...EMPTY, ...Object.fromEntries(Object.entries(p).filter(([k]) => k in EMPTY)),
                   ...Object.fromEntries(FEE_KEYS.filter((k) => (p.rules || {})[k] != null).map((k) => [k, p.rules[k]])),
+                  ...((p.rules || {}).max_open_loans == null && (p.rules || {}).allow_concurrent_loans ? { max_open_loans: 0 } : {}),
                 } })}>
                 Edit
               </button>
@@ -120,6 +140,25 @@ export default function Products() {
               </select></div>
             <div><label className="label">Min age</label><input type="number" className="input" value={editing.form.min_age} onChange={set("min_age")} /></div>
             <div><label className="label">Max age</label><input type="number" className="input" value={editing.form.max_age} onChange={set("max_age")} /></div>
+            <div className="col-span-full border-t border-border pt-3 mt-1 text-sm font-bold">Who can borrow</div>
+            <div><label className="label">Open loans a client may hold</label>
+              <input type="number" min="0" className="input" value={editing.form.max_open_loans} onChange={set("max_open_loans")} />
+              <div className="text-[11px] text-gray-400 mt-0.5">1 = one at a time · 0 = no limit</div></div>
+            <div className="flex items-end pb-2">
+              <label className="flex items-center gap-2 text-sm font-medium">
+                <input type="checkbox" checked={!!editing.form.requires_next_of_kin} onChange={set("requires_next_of_kin")} /> Needs a next of kin
+              </label></div>
+            <div className="flex items-end pb-2">
+              <label className="flex items-center gap-2 text-sm font-medium">
+                <input type="checkbox" checked={!!editing.form.requires_guarantor} onChange={set("requires_guarantor")} /> Needs a validated guarantor
+              </label></div>
+            <div className="flex items-end pb-2">
+              <label className="flex items-center gap-2 text-sm font-medium">
+                <input type="checkbox" checked={!!editing.form.business_op_age_required} onChange={set("business_op_age_required")} /> Check how long the business has run
+              </label></div>
+            <div><label className="label">Minimum months in business</label>
+              <input type="number" min="0" className="input" value={editing.form.min_business_age_months}
+                disabled={!editing.form.business_op_age_required} onChange={set("min_business_age_months")} /></div>
             <div className="col-span-full flex justify-end gap-2 pt-2">
               <button type="button" className="btn-ghost" onClick={() => setEditing(null)}>Cancel</button>
               <button className="btn-primary">{editing.id ? "Save changes" : "Create product"}</button>

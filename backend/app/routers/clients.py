@@ -36,10 +36,11 @@ from app.models import (Borrower, ClientDocument, ClientMobileWallet,
                         PaymentTransaction, User, WALLET_OPERATORS)
 from app.models import KycConsent, ClientConsentLog, CrmLead, OtpToken
 from app.schemas import (ClientCreate, EkycVerifyRequest, ValidateMpesaRequest,
-                         ConsentIn, RequestConsentOtpIn, VerifyConsentOtpIn)
+                         ConsentIn, RequestConsentOtpIn, VerifyConsentOtpIn, ConfirmMpesaIn)
 from app.services import crb, ekyc, mpesa, storage, otp, sms
-from app.services import alt_phone_validation, client_edit
+from app.services import alt_phone_validation, client_edit, kyc_decisions, mpesa_confirmation
 from app.services.onboarding import initial_profile_state
+from app.services.authz import user_can
 from app.services.mpesa_statement import StatementError, analyze_statement
 from app.services.ocr import OcrUnavailable, process_id_files, extract_fields_structured
 from app.core import obs
@@ -64,6 +65,9 @@ def _age_years(dob) -> int | None:
 
 # Primary identity fields locked from relationship officers (field-level lock).
 LOCKED_FIELDS = ("phone", "national_id", "date_of_birth")
+# WP6: while a client has an open loan, these identity fields are frozen for
+# everyone and can only change through an approved edit request.
+RECORD_LOCKED_FIELDS = LOCKED_FIELDS + ("first_name", "middle_name", "last_name")
 
 MAX_BYTES = storage.MAX_BYTES
 OCR_MIMES = ("image/jpeg", "image/jpg", "image/png", "image/webp", "application/pdf")
@@ -135,8 +139,13 @@ def _client_dict(b: Borrower, loan_count: int | None = None, nested: bool = Fals
         "mpesa_validated": bool(b.mpesa_validated),
         "mpesa_validation_name": b.mpesa_validation_name,
         "mpesa_validated_at": b.mpesa_validated_at,
+        # WP6 (F15): how the name was confirmed, and whether it still applies
+        # to the client's current number.
+        "mpesa_validation_method": b.mpesa_validation_method,
+        "mpesa_confirmation_current": kyc_decisions.mpesa_evidence_current(b),
         "ekyc_status": b.ekyc_status, "ekyc_reference": b.ekyc_reference,
         "ekyc_checked_at": b.ekyc_checked_at,
+        "created_by_user_id": b.created_by_user_id,
     }
     if loan_count is not None:
         out["loan_count"] = loan_count
@@ -161,22 +170,63 @@ def _get_client(db: Session, tenant_id: int, client_id: int) -> Borrower:
     return c
 
 
+def _same_number(a, b) -> bool:
+    return sms.normalise_phone(a or "") == sms.normalise_phone(b or "")
+
+
+def assert_wallet_unlocked(wallet: ClientMobileWallet) -> None:
+    if getattr(wallet, "wallet_locked", False):
+        raise HTTPException(
+            409, f"Wallet {wallet.mobile_number or wallet.wallet_number} is locked because "
+                 "its number was confirmed for payouts. It cannot be changed or removed; "
+                 "change the client's phone through an approved edit request instead.")
+
+
+def check_wallet_locks(client: Borrower, body: ClientCreate) -> None:
+    """Refuse (409) before anything is written if the payload would remove or
+    change a locked wallet. _sync_nested repeats the check as a backstop."""
+    sent = {w.id: w for w in body.wallets if w.id}
+    for existing in client.wallets:
+        if not existing.wallet_locked:
+            continue
+        row = sent.get(existing.id)
+        if row is None or not (
+                _same_number(existing.mobile_number, row.mobile_number)
+                and _same_number(existing.wallet_number, row.wallet_number)
+                and (existing.operator or "") == (row.operator or "")
+                and bool(existing.active) == bool(row.active)):
+            assert_wallet_unlocked(existing)
+
+
 def _sync_nested(db: Session, client: Borrower, tenant_id: int, body: ClientCreate) -> None:
     """Replace-in-place sync of the wallet / next-of-kin sub-grids: rows with an
     id are updated, new rows inserted, missing ids deleted."""
-    # Mobile wallets
+    # Mobile wallets. WP6 (F14): a LOCKED wallet (its number was confirmed) can
+    # be neither removed nor changed through this shared path; every write path
+    # (create, update, delete) goes through the same check.
     keep_w = {w.id for w in body.wallets if w.id}
     for existing in list(client.wallets):
         if existing.id not in keep_w:
+            assert_wallet_unlocked(existing)
             db.delete(existing)
     by_id = {w.id: w for w in client.wallets if w.id}
     for row in body.wallets:
         if not any([row.mobile_number, row.wallet_number, row.operator]):
             continue  # ignore blank "+ Add row" placeholders
         target = by_id.get(row.id) if row.id else None
+        if row.id and target is None:
+            raise HTTPException(404, f"Wallet {row.id} does not belong to this client")
         if target is None:
             target = ClientMobileWallet(tenant_id=tenant_id, client_id=client.id)
             db.add(target)
+        elif target.wallet_locked:
+            same = (_same_number(target.mobile_number, row.mobile_number)
+                    and _same_number(target.wallet_number, row.wallet_number)
+                    and (target.operator or "") == (row.operator or "")
+                    and bool(target.active) == bool(row.active))
+            if not same:
+                assert_wallet_unlocked(target)
+            continue
         target.mobile_number = row.mobile_number
         target.wallet_number = row.wallet_number
         target.operator = row.operator
@@ -323,12 +373,12 @@ def build_router(prefix: str, tag: str) -> APIRouter:
             client.age_verified_at = datetime.utcnow()
         if not client.onboarded_by:
             client.onboarded_by = user.full_name
-        # Shared maker-checker rules (same helper as the legacy alias): officers
-        # own what they create and start pending; an officer with no staff
-        # linkage is refused instead of being auto-approved; everyone else is
-        # auto-approved only if they could approve it themselves.
+        # Shared maker-checker rules (same helper as the legacy alias): every
+        # new profile starts pending and is approved by someone else after the
+        # KYC decision (WP6, F20); an officer with no staff linkage is refused.
         profile_status, officer_staff_id = initial_profile_state(db, user)
         client.profile_status = profile_status
+        client.created_by_user_id = user.id
         if officer_staff_id is not None:
             client.officer_staff_id = officer_staff_id
         db.add(client)
@@ -354,33 +404,46 @@ def build_router(prefix: str, tag: str) -> APIRouter:
         # Field-level lock: primary identity fields can only be changed by users
         # with clients.edit_locked (branch/regional managers, admins).
         may_edit_locked = has_permission(user.role, "clients.edit_locked")
-        changed_locked = []
-        for f in LOCKED_FIELDS:
-            new_val = getattr(body, f, None)
-            old_val = getattr(client, f, None)
+
+        def _changed(f):
             # normalise for comparison
-            if str(new_val or "") != str(old_val or ""):
-                changed_locked.append(f)
+            return str(getattr(body, f, None) or "") != str(getattr(client, f, None) or "")
+        changed_locked = [f for f in LOCKED_FIELDS if _changed(f)]
+        changed_record_locked = [f for f in RECORD_LOCKED_FIELDS if _changed(f)]
+        changed_evidence = {f for f in ("phone", "alt_phone") + tuple(client_edit.IDENTITY_FIELDS)
+                            if _changed(f)}
         # Record-level lock (Phase 2): once a client has an active loan (or has been
         # explicitly edit-locked) their locked identity fields are frozen for
         # EVERYONE — even users with clients.edit_locked. Such changes must go
         # through the maker-checker edit-request workflow (routers/client_edits.py).
         record_locked = bool(getattr(client, "edit_locked", False)) or \
             client_edit.has_active_loan(db, tenant_id=tenant_id, client_id=client.id)
-        if changed_locked and record_locked:
+        if changed_record_locked and record_locked:
             obs.log_cbk_event(obs.CBK_EDIT_LOCK_ENFORCED, tenant_id=tenant_id,
                               user_id=user.id, entity_type="client", entity_id=client.id,
-                              outcome="blocked", detail=",".join(changed_locked))
+                              outcome="blocked", detail=",".join(changed_record_locked))
             raise HTTPException(
-                409, "This client is edit-locked (active loan). Locked field(s) "
-                     f"{', '.join(changed_locked)} must be changed via an approved "
+                409, "This client is edit-locked (open loan). Locked field(s) "
+                     f"{', '.join(changed_record_locked)} must be changed via an approved "
                      "edit request (POST /clients/{id}/edit-request).")
         if changed_locked and not may_edit_locked:
             raise HTTPException(
                 422, f"You are not permitted to change locked field(s): "
                      f"{', '.join(changed_locked)}. Ask a branch manager.")
+        if "date_of_birth" in changed_evidence:
+            age = _age_years(getattr(body, "date_of_birth", None))
+            if age is not None and age < MIN_ONBOARDING_AGE:
+                raise HTTPException(422, f"Applicant must be at least {MIN_ONBOARDING_AGE} "
+                                         f"years old (computed age: {age}).")
+        check_wallet_locks(client, body)
         _apply_scalars(client, body)
         _sync_nested(db, client, tenant_id, body)
+        # WP6: checks made against the old phone / identity do not carry over.
+        if changed_evidence:
+            client_edit.invalidate_checks(client, changed_evidence)
+            if "date_of_birth" in changed_evidence and client.date_of_birth:
+                client.date_of_birth_verified = True
+                client.age_verified_at = datetime.utcnow()
         # Advance a CRM-converted draft to pending_approval when the RO saves the record.
         # This is the trigger that surfaces the client in the BM's Approvals queue.
         if (getattr(client, "profile_status", None) == "draft"
@@ -471,6 +534,7 @@ def build_router(prefix: str, tag: str) -> APIRouter:
     def delete_document(client_id: int, doc_id: int,
                         tenant_id: int = Depends(require_module("lending")),
                         db: Session = Depends(get_db),
+                        user: User = Depends(require_permission("docs.upload")),
                         scope: UserScope = Depends(get_scope)):
         client = _get_client(db, tenant_id, client_id)
         if not scope.can_see_client(client):
@@ -489,9 +553,11 @@ def build_router(prefix: str, tag: str) -> APIRouter:
     # ---- Process ID (OCR) --------------------------------------------------
     @router.post("/ocr/process-id")
     async def process_id(files: list[UploadFile] = File(...),
-                         client_id: int | None = Query(None, description="Persist OCR text against a saved client"),
+                         client_id: int | None = Query(None, description="Ignored since WP6: "
+                                                       "use POST /{client_id}/documents/{doc_id}/ocr"),
                          tenant_id: int = Depends(require_module("lending")),
-                         db: Session = Depends(get_db)):
+                         db: Session = Depends(get_db),
+                         user: User = Depends(require_permission("docs.upload"))):
         """Runs OCR over every queued image/PDF (e.g. ID front + back) and returns
         merged National-ID fields with per-field confidence + the raw text."""
         payload = []
@@ -509,22 +575,12 @@ def build_router(prefix: str, tag: str) -> APIRouter:
             payload.append((upload.filename or "file", mime, data))
         if not payload:
             raise HTTPException(400, "Queue no OCR-able file — add a JPEG, PNG or PDF of the ID.")
-        # Locate the client's latest document up-front so the structured field
-        # map can be persisted onto it (ocr_field_mapping / ocr_confidence /
-        # ocr_version) when a client_id is supplied.
-        doc = None
-        if client_id:
-            client = _get_client(db, tenant_id, client_id)
-            doc = (db.query(ClientDocument)
-                   .filter(ClientDocument.client_id == client.id,
-                           ClientDocument.tenant_id == tenant_id)
-                   .order_by(ClientDocument.id.desc()).first())
+        # WP6 (F18): this is a PREVIEW that fills the form. It no longer writes
+        # its result onto "the client's latest document" (which could be any
+        # file, not the ID that was read). OCR evidence is recorded only by
+        # POST /{client_id}/documents/{doc_id}/ocr, which reads the stored ID.
         try:
-            # Phase 2: return the validated 1:1 canonical field map and persist it
-            # onto the document when one exists. Falls back cleanly for anonymous
-            # (no client_id) OCR previews.
-            result = extract_fields_structured(payload, db=db if doc else None,
-                                               document=doc)
+            result = extract_fields_structured(payload)
         except OcrUnavailable as exc:
             # Never hard-block onboarding: when NO OCR engine can run, return an
             # empty-but-valid canonical field map (HTTP 200) with a clear note so
@@ -547,12 +603,72 @@ def build_router(prefix: str, tag: str) -> APIRouter:
             }
         return result
 
+    @router.post("/{client_id}/documents/{doc_id}/ocr")
+    def ocr_saved_document(client_id: int, doc_id: int,
+                           tenant_id: int = Depends(require_module("lending")),
+                           db: Session = Depends(get_db),
+                           user: User = Depends(require_permission("docs.upload")),
+                           scope: UserScope = Depends(get_scope),
+                           request: Request = None):
+        """WP6 (F18): read a STORED ID document and record the result on that
+        document. This is the evidence the KYC decision uses when OCR is
+        mandatory (the number read must match the client's National ID)."""
+        client = _get_client(db, tenant_id, client_id)
+        if not scope.can_see_client(client):
+            raise HTTPException(403, "Client is outside your data scope")
+        doc = (db.query(ClientDocument)
+               .filter(ClientDocument.id == doc_id, ClientDocument.client_id == client_id,
+                       ClientDocument.tenant_id == tenant_id).first())
+        if not doc:
+            raise HTTPException(404, "Document not found")
+        if doc.doc_type not in kyc_decisions.ID_DOC_TYPES:
+            raise HTTPException(422, "Only an ID document (national ID front/back or "
+                                     "passport) can be read for the ID check.")
+        if not doc.storage_path or not os.path.exists(doc.storage_path):
+            raise HTTPException(404, "The stored file is missing")
+        data = storage.read_bytes(doc.storage_path)
+        try:
+            result = extract_fields_structured(
+                [(doc.original_name or doc.file_name or "id", doc.mime_type or "", data)],
+                db=db, document=doc)
+        except OcrUnavailable as exc:
+            raise HTTPException(503, f"Automatic ID reading is not available on this "
+                                     f"server ({exc}). If OCR is mandatory for your DCP, "
+                                     "install an OCR engine or switch the OCR requirement "
+                                     "off in KYC validation settings.")
+        read = kyc_decisions._digits((result.get("fields") or {}).get("national_id"))
+        want = kyc_decisions._digits(client.national_id)
+        write_audit(db, tenant_id=tenant_id, user=user, action="client.document_ocr",
+                    entity_type="client", entity_id=client.id,
+                    details={"doc_id": doc.id, "id_number_read": bool(read),
+                             "matches": bool(read) and read == want}, request=request)
+        db.commit()
+        return {"document_id": doc.id, "engine": result.get("engine"),
+                "fields": result.get("fields"), "confidence": result.get("confidence"),
+                "id_number_read": bool(read),
+                "id_number_matches": bool(read) and read == want}
+
     # ---- eKYC --------------------------------------------------------------
     @router.post("/ekyc/verify")
     def ekyc_verify(body: EkycVerifyRequest,
                     tenant_id: int = Depends(require_module("lending")),
-                    db: Session = Depends(get_db)):
+                    db: Session = Depends(get_db),
+                    user: User = Depends(require_permission("clients.create", "clients.edit",
+                                                            mode="any")),
+                    scope: UserScope = Depends(get_scope),
+                    request: Request = None):
         client = _get_client(db, tenant_id, body.client_id) if body.client_id else None
+        if client is not None and not scope.can_see_client(client):
+            raise HTTPException(403, "Client is outside your data scope")
+        if client is not None:
+            # WP6 (F19): the stored result is about the client's OWN record, so a
+            # check against other typed-in values must not be saved against it.
+            for f in ("national_id", "first_name", "last_name"):
+                v = getattr(body, f, None)
+                if v and str(v).strip() != str(getattr(client, f) or "").strip():
+                    raise HTTPException(
+                        422, f"The {f.replace('_', ' ')} sent differs from the saved "
+                             "client. Save the client first, then run eKYC.")
         national_id = body.national_id or (client.national_id if client else None)
         first = body.first_name or (client.first_name if client else None)
         last = body.last_name or (client.last_name if client else None)
@@ -560,12 +676,16 @@ def build_router(prefix: str, tag: str) -> APIRouter:
             raise HTTPException(400, "National ID, first name and last name are required for eKYC")
 
         try:
-            result = ekyc.verify_identity(
-                national_id=national_id, first_name=first, last_name=last,
-                middle_name=body.middle_name or (client.middle_name if client else None),
-                date_of_birth=body.date_of_birth or (client.date_of_birth if client else None),
-                phone=body.phone or (client.phone if client else None),
-            )
+            if client is not None:      # a saved client is checked as saved
+                result = ekyc.verify_identity(
+                    national_id=client.national_id, first_name=client.first_name,
+                    last_name=client.last_name, middle_name=client.middle_name,
+                    date_of_birth=client.date_of_birth, phone=client.phone)
+            else:
+                result = ekyc.verify_identity(
+                    national_id=national_id, first_name=first, last_name=last,
+                    middle_name=body.middle_name, date_of_birth=body.date_of_birth,
+                    phone=body.phone)
         except ekyc.EkycNotConfigured as exc:
             raise HTTPException(422, str(exc))
         except Exception as exc:
@@ -576,6 +696,11 @@ def build_router(prefix: str, tag: str) -> APIRouter:
             client.ekyc_status = status_map.get(result.get("status"), "error")
             client.ekyc_reference = result.get("reference")
             client.ekyc_checked_at = datetime.utcnow()
+            write_audit(db, tenant_id=tenant_id, user=user, action="client.ekyc",
+                        entity_type="client", entity_id=client.id,
+                        details={"status": client.ekyc_status,
+                                 "reference": client.ekyc_reference,
+                                 "provider": result.get("provider")}, request=request)
             # Phase 2: the eKYC provider result is ONE input, not the verdict. The
             # authoritative pass/fail/escalate comes from the centralised decision
             # engine, which enforces every check the tenant marked mandatory. We no
@@ -604,58 +729,110 @@ def build_router(prefix: str, tag: str) -> APIRouter:
     @router.post("/validate-mpesa")
     def validate_mpesa(body: ValidateMpesaRequest,
                        tenant_id: int = Depends(require_module("lending")),
-                       db: Session = Depends(get_db)):
+                       db: Session = Depends(get_db),
+                       user: User = Depends(require_permission("clients.create", "clients.edit",
+                                                               mode="any")),
+                       scope: UserScope = Depends(get_scope)):
+        """Check the client's M-Pesa number. WP6 (F15): only the number's format
+        can be checked here; the registered name is NOT verified and nothing is
+        marked validated. Ownership is confirmed by a second staff member with
+        POST /clients/{id}/confirm-mpesa."""
         client = _get_client(db, tenant_id, body.client_id) if body.client_id else None
+        if client is not None and not scope.can_see_client(client):
+            raise HTTPException(403, "Client is outside your data scope")
         phone = body.phone or (client.phone if client else None)
         national_id = body.national_id or (client.national_id if client else None)
-        expected = body.expected_name or (client.full_name if client else None)
         if not phone or not national_id:
             raise HTTPException(400, "Both a mobile number and a National ID are required")
 
-        payload = mpesa.validate_mobile_number(phone, national_id, expected or "")
+        payload = mpesa.validate_mobile_number(phone, national_id, "")
         resp = payload["response"]
-        matched = bool(resp["Matched"])
-
-        # Audit trail — same log the Daraja B2C/STK/C2B calls write to.
-        db.add(PaymentTransaction(
-            tenant_id=tenant_id, type="validation", amount=0, phone=resp["MSISDN"],
-            mpesa_ref=resp.get("ConversationID"),
-            status="success" if matched else "failed", raw_payload=payload,
-        ))
-        locked_wallets = []
-        if client:
-            client.mpesa_validated = matched
-            client.mpesa_validation_name = resp.get("RegisteredName")
-            client.mpesa_validated_at = datetime.utcnow()
-            # Auto-lock the validated wallet(s): once the M-Pesa name check passes,
-            # the client's payout number is frozen so it cannot be silently swapped
-            # after underwriting. Matching is by the validated MSISDN; if none match
-            # (e.g. formatting), lock all of the client's wallets defensively.
-            if matched:
-                msisdn = str(resp.get("MSISDN") or "")
-                tail = msisdn[-9:]
-                for w in client.wallets:
-                    num = str(w.mobile_number or w.wallet_number or "")
-                    if not w.wallet_locked and (not tail or tail in num or num[-9:] == tail):
-                        w.wallet_locked = True
-                        w.locked_at = datetime.utcnow()
-                        w.locked_by = "system"
-                        locked_wallets.append(w.id)
-                if locked_wallets:
-                    obs.log_cbk_event(obs.CBK_WALLET_LOCKED, tenant_id=tenant_id,
-                                      entity_type="client", entity_id=client.id,
-                                      outcome="locked", detail=str(locked_wallets))
-        db.commit()
         return {
-            "matched": matched,
+            "matched": False,
+            "verified": False,
+            "verification": resp.get("Verification", "unverified"),
+            "format_valid": bool(resp.get("FormatValid")),
             "msisdn": resp["MSISDN"],
-            "registered_name": resp.get("RegisteredName"),
+            "registered_name": None,
             "national_id": national_id,
             "result_desc": resp["ResultDesc"],
             "checked_at": resp["CheckedAt"],
-            "wallets_locked": locked_wallets,
-            "raw": payload,
+            "wallets_locked": [],
+            "already_confirmed": bool(client and kyc_decisions.mpesa_evidence_current(client)),
         }
+
+    @router.post("/{client_id}/confirm-mpesa")
+    def confirm_mpesa(client_id: int, body: ConfirmMpesaIn,
+                      tenant_id: int = Depends(require_module("lending")),
+                      db: Session = Depends(get_db),
+                      user: User = Depends(require_permission("clients.approve", "clients.edit",
+                                                              mode="any")),
+                      scope: UserScope = Depends(get_scope),
+                      request: Request = None):
+        """WP6 (F15): a staff member confirms the name M-Pesa holds for the
+        client's number, with the evidence. Locks the matching wallet(s).
+        Who may confirm is the DCP's choice (Validation Preferences):
+        ``second_person`` (default) - someone with client-approval rights who did
+        not capture the client and does not own its portfolio;
+        ``single_person`` - any staff member who can edit clients."""
+        client = _get_client(db, tenant_id, client_id)
+        if not scope.can_see_client(client):
+            raise HTTPException(403, "Client is outside your data scope")
+        mode = kyc_decisions.settings(db, tenant_id).mpesa_confirmation_mode
+        if mode != "single_person":
+            if not user_can(db, user, "clients.approve"):
+                raise HTTPException(403, "Your organisation requires a second staff member "
+                                         "with client-approval rights to confirm M-Pesa names.")
+            mpesa_confirmation.check_confirmer(user,
+                                               created_by_user_id=client.created_by_user_id,
+                                               officer_staff_id=client.officer_staff_id)
+        if body.phone and not _same_number(body.phone, client.phone):
+            raise HTTPException(409, "The number being confirmed is not the client's "
+                                     "current phone. Reload the client and try again.")
+        reg, evidence = mpesa_confirmation.check_name_and_evidence(
+            expected_name=client.full_name, registered_name=body.registered_name,
+            evidence=body.evidence)
+        mpesa_confirmation.apply_to_client(client, user=user, registered_name=reg,
+                                           evidence=evidence)
+        locked = []
+        for w in client.wallets:
+            if not w.wallet_locked and (_same_number(w.mobile_number, client.phone)
+                                        or _same_number(w.wallet_number, client.phone)):
+                w.wallet_locked = True
+                w.locked_at = datetime.utcnow()
+                w.locked_by = user.full_name
+                locked.append(w.id)
+        if locked:
+            obs.log_cbk_event(obs.CBK_WALLET_LOCKED, tenant_id=tenant_id, user_id=user.id,
+                              entity_type="client", entity_id=client.id,
+                              outcome="locked", detail=str(locked))
+        write_audit(db, tenant_id=tenant_id, user=user, action="client.mpesa_confirmed",
+                    entity_type="client", entity_id=client.id,
+                    details={"registered_name": reg, "phone_last4": (client.phone or "")[-4:],
+                             "evidence": evidence[:300], "wallets_locked": locked,
+                             "mode": mode},
+                    request=request)
+        db.commit()
+        db.refresh(client)
+        return {"client_id": client.id, "mpesa_validated": True,
+                "method": client.mpesa_validation_method,
+                "registered_name": client.mpesa_validation_name,
+                "confirmed_by": user.full_name, "wallets_locked": locked}
+
+    @router.get("/{client_id}/kyc-decision")
+    def kyc_decision(client_id: int, tenant_id: int = Depends(require_module("lending")),
+                     db: Session = Depends(get_db),
+                     scope: UserScope = Depends(get_scope)):
+        """The central KYC decision for this client, as approval will see it."""
+        client = _get_client(db, tenant_id, client_id)
+        if not scope.can_see_client(client):
+            raise HTTPException(403, "Client is outside your data scope")
+        d = kyc_decisions.evaluate(db, tenant_id=tenant_id, client_id=client.id)
+        st = kyc_decisions.settings(db, tenant_id)
+        return d.as_dict() | {"explained": kyc_decisions.explain(d.reasons),
+                              # tells the screen who may press "Confirm M-Pesa name"
+                              "mpesa_confirmation_mode": st.mpesa_confirmation_mode,
+                              "allow_review_override": st.allow_review_override}
 
     # ---- alternate-phone validation ---------------------------------------
     @router.post("/{client_id}/validate-alt-phone")
@@ -674,11 +851,11 @@ def build_router(prefix: str, tag: str) -> APIRouter:
         result = alt_phone_validation.validate(
             db, tenant_id=tenant_id, phone=client.alt_phone,
             expected_name=client.full_name)
-        ok = result.get("status") == "validated"
+        # WP6 (F16): only a provider-verified name match counts as validated.
+        ok = bool(result.get("verified")) and result.get("status") == "validated"
         client.alt_phone_operator = result.get("operator")
         client.alt_phone_validated = ok
-        if ok:
-            client.alt_phone_validated_at = datetime.utcnow()
+        client.alt_phone_validated_at = datetime.utcnow() if ok else None
         write_audit(db, tenant_id=tenant_id, user=user, action="client.validate_alt_phone",
                     entity_type="client", entity_id=client.id,
                     details={"operator": result.get("operator"),
@@ -691,21 +868,36 @@ def build_router(prefix: str, tag: str) -> APIRouter:
     @router.delete("/{client_id}/wallets/{wallet_id}")
     def delete_wallet(client_id: int, wallet_id: int,
                       tenant_id: int = Depends(require_module("lending")),
-                      db: Session = Depends(get_db)):
+                      db: Session = Depends(get_db),
+                      user: User = Depends(require_permission("clients.edit")),
+                      scope: UserScope = Depends(get_scope),
+                      request: Request = None):
+        client = _get_client(db, tenant_id, client_id)
+        if not scope.can_see_client(client):
+            raise HTTPException(403, "Client is outside your data scope")
         row = (db.query(ClientMobileWallet)
                .filter(ClientMobileWallet.id == wallet_id,
                        ClientMobileWallet.client_id == client_id,
                        ClientMobileWallet.tenant_id == tenant_id).first())
         if not row:
             raise HTTPException(404, "Wallet not found")
+        assert_wallet_unlocked(row)          # WP6 (F14)
         db.delete(row)
+        write_audit(db, tenant_id=tenant_id, user=user, action="client.wallet_delete",
+                    entity_type="client", entity_id=client_id,
+                    details={"wallet_id": wallet_id}, request=request)
         db.commit()
         return {"ok": True}
 
     @router.delete("/{client_id}/next-of-kin/{nok_id}")
     def delete_nok(client_id: int, nok_id: int,
                    tenant_id: int = Depends(require_module("lending")),
-                   db: Session = Depends(get_db)):
+                   db: Session = Depends(get_db),
+                   user: User = Depends(require_permission("clients.edit")),
+                   scope: UserScope = Depends(get_scope)):
+        client = _get_client(db, tenant_id, client_id)
+        if not scope.can_see_client(client):
+            raise HTTPException(403, "Client is outside your data scope")
         row = (db.query(ClientNextOfKin)
                .filter(ClientNextOfKin.id == nok_id,
                        ClientNextOfKin.client_id == client_id,
@@ -921,31 +1113,69 @@ def build_router(prefix: str, tag: str) -> APIRouter:
     # -------------------------------------------------------------------------
     DEFAULT_CONSENT_TEXT = ("Finyl-DCP processing your personal data for a loan "
                             "application.")
+    # Bump when DEFAULT_CONSENT_TEXT changes; recorded on every consent.
+    CONSENT_VERSION = "otp_v2"
 
     def _valid_ke_phone(phone: str) -> bool:
         normalised = sms.normalise_phone(phone)
         return bool(re.fullmatch(r"254(7|1)\d{8}", normalised))
 
+    def _consent_target(db, tenant_id, scope, client_id, lead_id, phone):
+        """WP6 (F22): the consent code may only go to a number on file for the
+        client or lead it is for (any valid number only for an unsaved draft)."""
+        if client_id and lead_id:
+            raise HTTPException(422, "Give either a client or a lead, not both")
+        if client_id:
+            client = _get_client(db, tenant_id, client_id)
+            if not scope.can_see_client(client):
+                raise HTTPException(403, "Client is outside your data scope")
+            if not any(_same_number(phone, n) for n in (client.phone, client.alt_phone) if n):
+                raise HTTPException(422, detail="phone_not_on_record")
+            return client
+        if lead_id:
+            lead = (db.query(CrmLead)
+                    .filter(CrmLead.id == lead_id, CrmLead.tenant_id == tenant_id).first())
+            if not lead:
+                raise HTTPException(404, "Lead not found")
+            if lead.phone and not _same_number(phone, lead.phone):
+                raise HTTPException(422, detail="phone_not_on_record")
+        return None
+
+    def _consent_context(tenant_id, client_id, lead_id, text, version):
+        return {"tenant_id": tenant_id, "client_id": client_id or None,
+                "lead_id": lead_id or None, "purpose": "data_processing_consent",
+                "consent_text": text, "consent_version": version}
+
     @router.post("/request-consent-otp")
     def request_consent_otp(body: RequestConsentOtpIn,
                             tenant_id: int = Depends(require_module("lending")),
                             db: Session = Depends(get_db),
-                            user: User = Depends(get_current_user),
+                            user: User = Depends(require_permission("clients.create",
+                                                                    "clients.edit", mode="any")),
+                            scope: UserScope = Depends(get_scope),
                             request: Request = None):
         phone = (body.phone or "").strip()
         if not _valid_ke_phone(phone):
             raise HTTPException(422, detail="invalid_phone")
+        _consent_target(db, tenant_id, scope, body.client_id, body.lead_id, phone)
         ip = request.client.host if (request and request.client) else None
-        code = otp.generate(db, user, purpose="consent", ip=ip)
-        consent_text = (body.consent_text or "").strip() or DEFAULT_CONSENT_TEXT
-        message = (f"Share code {code} with your Finyl officer to consent to: "
-                   f"{consent_text} Do not share with anyone else. Valid 5 mins.")
-        log = sms.send_sms(db, tenant_id, phone, message, trigger_type="consent")
+        consent_text = (body.consent_text or "").strip()[:300] or DEFAULT_CONSENT_TEXT
+        ctx = _consent_context(tenant_id, body.client_id, body.lead_id, consent_text,
+                               CONSENT_VERSION)
+        # WP6 (F22): the code is bound to this number and this consent.
+        code = otp.generate(db, user, purpose="consent", ip=ip, recipient=phone,
+                            context=ctx, tenant_id=tenant_id)
+        template = ("Share code {code} with your Finyl officer to consent to: "
+                    f"{consent_text} Do not share with anyone else. Valid 5 mins.")
+        log = sms.send_sms(db, tenant_id, phone, template.format(code=code),
+                           trigger_type="consent",
+                           log_message=template.format(code="******"))
         sent = bool(log and getattr(log, "status", None) == "sent")
         write_audit(db, tenant_id=tenant_id, user=user, action="client.consent.otp_sent",
                     entity_type="consent", entity_id=None,
                     details={"phone_last4": phone[-4:], "client_id": body.client_id,
                              "lead_id": body.lead_id, "sent": sent,
+                             "consent_version": CONSENT_VERSION,
                              "sms_status": getattr(log, "status", None)},
                     request=request)
         db.commit()
@@ -955,26 +1185,38 @@ def build_router(prefix: str, tag: str) -> APIRouter:
     def verify_consent_otp(body: VerifyConsentOtpIn,
                            tenant_id: int = Depends(require_module("lending")),
                            db: Session = Depends(get_db),
-                           user: User = Depends(get_current_user),
+                           user: User = Depends(require_permission("clients.create",
+                                                                   "clients.edit", mode="any")),
+                           scope: UserScope = Depends(get_scope),
                            request: Request = None):
         code = (body.code or "").strip()
         phone = (body.phone or "").strip()
-        ok, reason = otp.verify(db, user, code, purpose="consent")
+        if not _valid_ke_phone(phone):
+            raise HTTPException(422, detail="invalid_phone")
+        client = _consent_target(db, tenant_id, scope, body.client_id, body.lead_id, phone)
+        tok = otp.active_token(db, user, "consent")
+        issued = (tok.context or {}) if tok else {}
+        # WP6 (F22): the code verifies only for the SAME number, tenant, client or
+        # lead, consent wording and version it was sent for.
+        ctx = _consent_context(tenant_id, body.client_id, body.lead_id,
+                               issued.get("consent_text"), issued.get("consent_version"))
+        ok, reason = otp.verify(db, user, code, purpose="consent", recipient=phone, context=ctx,
+                                require_bound=True)
         if not ok:
+            write_audit(db, tenant_id=tenant_id, user=user,
+                        action="client.consent.otp_failed", entity_type="consent",
+                        entity_id=None, details={"reason": reason,
+                                                 "phone_last4": phone[-4:],
+                                                 "client_id": body.client_id},
+                        request=request)
+            db.commit()
             raise HTTPException(422, detail="invalid_or_expired_otp")
-        # The verify() call has just marked the officer's consent token consumed;
-        # grab it for the FK on the audit log row.
-        tok = (db.query(OtpToken)
-               .filter(OtpToken.user_id == user.id, OtpToken.purpose == "consent")
-               .order_by(OtpToken.created_at.desc()).first())
         ip = request.client.host if (request and request.client) else None
-        client = None
-        if body.client_id:
-            client = _get_client(db, tenant_id, body.client_id)
         log = ClientConsentLog(
             tenant_id=tenant_id, client_id=body.client_id, lead_id=body.lead_id,
             phone=phone, otp_token_id=tok.id if tok else None,
-            officer_id=user.id, consent_text=DEFAULT_CONSENT_TEXT, ip=ip,
+            officer_id=user.id, consent_text=issued.get("consent_text"),
+            consent_version=issued.get("consent_version"), ip=ip,
         )
         db.add(log)
         db.flush()
@@ -986,22 +1228,25 @@ def build_router(prefix: str, tag: str) -> APIRouter:
                         .order_by(KycConsent.id.desc()).first())
             if existing:
                 existing.consent_data_processing = True
-                existing.consent_version = "otp_v1"
+                existing.consent_version = issued.get("consent_version")
             else:
                 db.add(KycConsent(
                     tenant_id=tenant_id, borrower_id=client.id,
-                    consent_data_processing=True, consent_version="otp_v1",
-                    ip_address=ip,
+                    consent_data_processing=True,
+                    consent_version=issued.get("consent_version"), ip_address=ip,
                 ))
         write_audit(db, tenant_id=tenant_id, user=user,
                     action="client.consent.otp_verified", entity_type="consent",
                     entity_id=log.id,
                     details={"phone_last4": phone[-4:], "client_id": body.client_id,
-                             "lead_id": body.lead_id}, request=request)
+                             "lead_id": body.lead_id,
+                             "consent_version": issued.get("consent_version")},
+                    request=request)
         db.commit()
         db.refresh(log)
         return {
             "verified": True, "consent_log_id": log.id,
+            "consent_text": log.consent_text, "consent_version": log.consent_version,
             "consented_at": log.consented_at.isoformat() if log.consented_at else None,
         }
 

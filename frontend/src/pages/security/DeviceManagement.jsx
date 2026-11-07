@@ -23,7 +23,7 @@ export default function DeviceManagement() {
     setData(null); setErr("");
     api(`/api/v1/users/${userId}/devices`).then(setData).catch((e) => setErr(e.detail));
   };
-  useEffect(load, [userId]);
+  useEffect(() => { load(); }, [userId]);
 
   const revoke = async (deviceId) => {
     setBusy(deviceId); setErr("");

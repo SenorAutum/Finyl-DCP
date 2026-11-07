@@ -36,7 +36,9 @@ export default function Login() {
     try {
       const res = await login(email, password);
       if (res?.otp_required) {
-        setOtpInfo({ detail: res.detail, delivery: res.delivery });
+        // delivery.channels lists where the code actually went, e.g. ["sms"].
+        const via = (res.delivery?.channels || []).map((c) => (c === "sms" ? "SMS" : c === "email" ? "e-mail" : c));
+        setOtpInfo({ detail: res.detail, delivery: via.join(" and ") });
         setOtp("");
         setStep("otp");
         return;

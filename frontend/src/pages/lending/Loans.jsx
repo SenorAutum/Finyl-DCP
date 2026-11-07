@@ -239,7 +239,7 @@ export default function Loans() {
     api(`/api/v1/lending/loans?status=${status}&search=${encodeURIComponent(search)}&page=${page}`)
       .then(setData).catch(() => {});
   };
-  useEffect(load, [status, search, page]);
+  useEffect(() => { load(); }, [status, search, page]);
 
   return (
     <div>

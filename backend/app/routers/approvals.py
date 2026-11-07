@@ -11,9 +11,9 @@ from sqlalchemy.orm import Session, joinedload
 from app.core.database import get_db
 from app.core.deps import (get_tenant_id, require_permission, get_scope, UserScope,
                            write_audit)
-from app.models import Loan, Borrower, User, Staff, PendingApproval
+from app.models import Loan, Borrower, User, Staff, PendingApproval, Product
 from app.schemas import LoanDecision, ClientProfileDecision, ApprovalDecision
-from app.services import rbac, sms
+from app.services import eligibility, rbac, sms
 from app.services import payment_approvals as pay_appr
 from app.services.disbursement import execute_disbursement, execute_refund
 
@@ -91,6 +91,16 @@ def decide_loan(loan_id: int, body: LoanDecision, request: Request,
                 "message": f"Escalated to {level.upper()}"}
 
     # --- approve --------------------------------------------------------------
+    # WP6 (F20): KYC and the product's rules are checked again at approval -
+    # evidence can lapse (a phone change, an out-of-date CRB report) between
+    # application and approval.
+    if loan.borrower is not None:
+        eligibility.require_kyc(db, tenant_id=tenant_id, client=loan.borrower, user=user,
+                                note=body.note, stage="loan approval")
+        product = db.get(Product, loan.product_id)
+        if product is not None:
+            eligibility.require_product_rules(db, tenant_id=tenant_id, client=loan.borrower,
+                                              product=product, exclude_loan_id=loan.id)
     limit = rbac.loan_approval_limit(db, tenant_id, user)
     if limit is not None and float(loan.principal) > limit:
         level = rbac.next_escalation_level_for_tenant(db, tenant_id, user.role) or "hq"
@@ -157,13 +167,30 @@ def decide_client(client_id: int, body: ClientProfileDecision, request: Request,
     if user.role != "super_admin" and not rbac.approver_enabled(db, tenant_id, "client", user.role):
         raise HTTPException(
             403, "Your role is not configured as an approver for client-profile approvals at this DCP")
-    c.profile_status = "approved" if body.action == "approve" else "rejected"
+    if body.action not in ("approve", "reject"):
+        raise HTTPException(422, "action must be 'approve' or 'reject'")
+    # WP6 (F20): maker-checker - whoever captured or owns the profile cannot decide it.
+    if c.created_by_user_id and c.created_by_user_id == user.id:
+        raise HTTPException(403, "You captured this client, so someone else must decide it.")
+    if user.staff_id and c.officer_staff_id == user.staff_id:
+        raise HTTPException(403, "You are this client's relationship officer, so someone "
+                                 "else must decide it.")
+    details = {"note": body.note}
     if body.action == "approve":
+        if c.profile_status == "approved":
+            raise HTTPException(409, "Client is already approved")
+        # WP6 (F20): the central KYC decision is enforced here, not just shown.
+        d = eligibility.require_kyc(db, tenant_id=tenant_id, client=c, user=user,
+                                    note=body.note, stage="approval")
+        c.kyc_status = "validated"
         c.approved_by_user_id = user.id
+        details |= {"kyc_decision": d.decision, "kyc_reasons": d.reasons,
+                    "manual_review": d.decision == "escalate"}
+    c.profile_status = "approved" if body.action == "approve" else "rejected"
     write_audit(db, tenant_id=tenant_id, user=user, action=f"client.{body.action}",
-                entity_type="client", entity_id=c.id, details={"note": body.note}, request=request)
+                entity_type="client", entity_id=c.id, details=details, request=request)
     db.commit()
-    return {"id": c.id, "profile_status": c.profile_status}
+    return {"id": c.id, "profile_status": c.profile_status, "kyc_status": c.kyc_status}
 
 
 # ---------------------------------------------------------------------------

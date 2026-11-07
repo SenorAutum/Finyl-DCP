@@ -47,6 +47,13 @@ class TenantValidationPrefs(Base):
     crb_check_mandatory = Column(Boolean, nullable=False, default=False)
     guarantor_validation_mandatory = Column(Boolean, nullable=False, default=False)
     ocr_mandatory = Column(Boolean, nullable=False, default=True)
+    ekyc_mandatory = Column(Boolean, nullable=False, default=False)   # WP6 (F19)
+    # WP6: per-DCP strictness choices (see migration 035).
+    mpesa_confirmation_mode = Column(String(20), nullable=False, default="second_person")
+    identity_edit_approvals = Column(Integer, nullable=False, default=2)
+    allow_review_override = Column(Boolean, nullable=False, default=True)
+    crb_max_age_days = Column(Integer, nullable=False, default=90)
+    min_credit_score = Column(Integer)
     custom_rules = Column(JSONB)
     updated_at = Column(DateTime(timezone=True), default=datetime.utcnow)
     updated_by = Column(Integer, ForeignKey("users.id"))

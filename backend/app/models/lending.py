@@ -74,12 +74,18 @@ class Borrower(Base):
     onboarded_by = Column(String(120))          # staff/user name that captured the record
     officer_staff_id = Column(Integer, ForeignKey("staff.id"))  # owning relationship officer (portfolio scope)
     approved_by_user_id = Column(Integer, ForeignKey("users.id"))
+    created_by_user_id = Column(Integer, ForeignKey("users.id"))   # WP6 (F20): maker != checker
     profile_status = Column(String(20), default="approved")  # draft | pending_approval | approved | rejected
 
     # --- M-Pesa name-lookup validation ---------------------------------------
     mpesa_validated = Column(Boolean, default=False)
     mpesa_validation_name = Column(String(120))
     mpesa_validated_at = Column(DateTime)
+    # WP6 (F15): how the name was confirmed, for which number, by whom, on what.
+    mpesa_validation_method = Column(String(20))      # provider | manual
+    mpesa_validation_phone = Column(String(20))
+    mpesa_validated_by = Column(Integer, ForeignKey("users.id"))
+    mpesa_validation_evidence = Column(Text)
 
     # --- External eKYC provider verification ---------------------------------
     ekyc_status = Column(String(20))            # verified | not_verified | error | pending

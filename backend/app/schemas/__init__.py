@@ -128,6 +128,13 @@ class ValidateMpesaRequest(BaseModel):
     expected_name: Optional[str] = None
 
 
+class ConfirmMpesaIn(BaseModel):
+    """WP6 (F15): a second staff member confirms the name M-Pesa holds."""
+    registered_name: str
+    evidence: str
+    phone: Optional[str] = None        # the number the confirmer looked at
+
+
 class EkycVerifyRequest(BaseModel):
     client_id: Optional[int] = None
     national_id: Optional[str] = None
@@ -153,6 +160,10 @@ class ProductCreate(BaseModel):
     penalty_rate: float = 1.0
     rules: dict = {}
     active: bool = True
+    # Eligibility switches checked at application and approval (WP6).
+    requires_guarantor: bool = False
+    requires_next_of_kin: bool = True
+    business_op_age_required: bool = False
 
 
 class LoanApplication(BaseModel):
@@ -308,6 +319,7 @@ class UserCreate(BaseModel):
     region_id: Optional[int] = None
     staff_id: Optional[int] = None
     active: bool = True
+    phone: Optional[str] = None             # WP6 (F21): sign-in codes are sent here
 
 
 class UserUpdate(BaseModel):
@@ -317,6 +329,7 @@ class UserUpdate(BaseModel):
     region_id: Optional[int] = None
     staff_id: Optional[int] = None
     active: Optional[bool] = None
+    phone: Optional[str] = None             # "" clears it
 
 
 class RoleAssign(BaseModel):

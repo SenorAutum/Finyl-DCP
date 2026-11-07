@@ -266,17 +266,19 @@ def _extract_ref(data) -> str | None:
 
 
 def send_sms(db: Session, tenant_id: int, phone: str, message: str,
-             trigger_type: str = "manual") -> SmsLog:
+             trigger_type: str = "manual", log_message: str | None = None) -> SmsLog:
     """Dispatch an SMS via Uwazii and record it in sms_logs.
 
     Always returns a persisted SmsLog (never raises), so trigger actions such as
     loan approval or ticket resolution are never rolled back by an SMS failure.
+    ``log_message`` (WP6): what to store instead of the sent text - used for
+    one-time codes, which must never sit in plain text in the SMS log.
     """
     result = _dispatch_to_provider(phone, message)
     log = SmsLog(
         tenant_id=tenant_id,
         recipient_phone=normalise_phone(phone) or phone,
-        message=message,
+        message=log_message if log_message is not None else message,
         trigger_type=trigger_type,
         status=result["status"],
         provider=result.get("provider"),

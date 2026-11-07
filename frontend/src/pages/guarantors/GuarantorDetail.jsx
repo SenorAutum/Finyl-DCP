@@ -29,7 +29,7 @@ export default function GuarantorDetail() {
   const load = useCallback(() => {
     api(`/api/v1/guarantors/${id}`).then(setG).catch((e) => setErr(e.detail));
   }, [id]);
-  useEffect(load, [load]);
+  useEffect(() => { load(); }, [load]);
 
   const validate = async () => {
     setBusy(true); setErr("");

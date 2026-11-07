@@ -13,7 +13,7 @@ router = APIRouter(prefix="/api/v1/clients", tags=["face-validation"])
 
 @router.post("/{client_id}/face-validate")
 def face_validate(client_id: int, body: FaceValidateIn | None = None,
-                  tenant_id: int = Depends(require_module("clients")),
+                  tenant_id: int = Depends(require_module("lending")),
                   user=Depends(require_permission("clients.create", "clients.edit", mode="any")),
                   db: Session = Depends(get_db), request: Request = None):
     body = body or FaceValidateIn()
@@ -35,7 +35,7 @@ def face_validate(client_id: int, body: FaceValidateIn | None = None,
 
 
 @router.get("/{client_id}/face-validation-status")
-def face_status(client_id: int, tenant_id: int = Depends(require_module("clients")),
+def face_status(client_id: int, tenant_id: int = Depends(require_module("lending")),
                 db: Session = Depends(get_db)):
     if not db.query(Borrower).filter(Borrower.id == client_id,
                                      Borrower.tenant_id == tenant_id).first():

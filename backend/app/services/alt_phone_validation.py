@@ -1,8 +1,8 @@
 """Alternate-phone validation (Phase 2).
 
-Detects the operator (Safaricom / Airtel / Telkom) from the MSISDN prefix and,
-for M-Pesa (Safaricom) numbers, runs a name check against the registered account
-holder via the existing M-Pesa validation path. Mirrors the primary-phone flow.
+Detects the operator (Safaricom / Airtel / Telkom) from the MSISDN prefix. A
+name check against the registered account holder needs a name-lookup provider;
+until one is configured the result is honestly "format_valid", not "validated".
 """
 from __future__ import annotations
 
@@ -47,26 +47,48 @@ def detect_operator(phone: str) -> str:
 
 
 def validate(db, *, tenant_id: int, phone: str, expected_name: str | None = None) -> dict:
-    """Validate an alternate phone. For Safaricom numbers, attempt an M-Pesa name check."""
+    """Check an alternate phone.
+
+    WP6 (F16): without a name-lookup provider the only thing that can be checked
+    is the number's format and operator, so the result is ``format_valid`` -
+    never ``validated``. ``validated`` is returned only when a provider returns
+    a registered name that matches the client (none is wired yet)."""
     p = normalise(phone)
     operator = detect_operator(p)
-    valid_format = bool(re.fullmatch(r"0\d{9}", p))
+    valid_format = bool(re.fullmatch(r"0(7|1)\d{8}", p))
     result = {"phone": p, "operator": operator, "valid_format": valid_format,
-              "name_match": None, "registered_name": None}
+              "name_match": None, "registered_name": None, "verified": False}
     if not valid_format:
         result["status"] = "invalid_format"
         return result
-    if operator == "safaricom":
-        try:
-            from app.services import mpesa
-            name_fn = getattr(mpesa, "validate_name", None) or getattr(mpesa, "name_check", None)
-            if callable(name_fn):
-                nc = name_fn(db, tenant_id, p) if name_fn.__code__.co_argcount >= 3 else name_fn(p)
-                reg = (nc or {}).get("name") if isinstance(nc, dict) else None
-                result["registered_name"] = reg
-                if reg and expected_name:
-                    result["name_match"] = expected_name.strip().lower() in reg.strip().lower()
-        except Exception:
-            pass
-    result["status"] = "validated"
+    lookup = name_lookup_provider()
+    if lookup is None:
+        result["status"] = "format_valid"
+        result["detail"] = ("Number format and operator checked. The registered name "
+                            "was not checked: no name-lookup provider is configured.")
+        return result
+    reg = lookup(p)
+    result["registered_name"] = reg
+    if reg and expected_name:
+        result["name_match"] = names_match(expected_name, reg)
+    if result["name_match"]:
+        result["status"] = "validated"
+        result["verified"] = True
+    else:
+        result["status"] = "name_mismatch" if reg else "not_found"
     return result
+
+
+def name_lookup_provider():
+    """Return a callable phone -> registered name, or None when no provider is
+    configured. The integration point for a real MNO/aggregator lookup."""
+    return None
+
+
+def names_match(expected: str, registered: str) -> bool:
+    """At least two of the client's names appear in the registered name (or
+    every name, when the client has fewer than two)."""
+    want = [t for t in re.split(r"\s+", (expected or "").lower()) if len(t) > 1]
+    got = set(re.split(r"\s+", (registered or "").lower()))
+    hits = sum(1 for t in want if t in got)
+    return bool(want) and hits >= min(2, len(want))

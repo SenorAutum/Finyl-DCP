@@ -152,7 +152,7 @@ function AutomationSection({ tenantId, ready, qs }) {
       .then((d) => { setCfg(d); setEnabled(d.automation_enabled); setHour(d.send_hour); })
       .catch((e) => setErr(e.detail));
   };
-  useEffect(load, [tenantId, ready]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [tenantId, ready]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const dirty = cfg && (enabled !== cfg.automation_enabled || hour !== cfg.send_hour);
 
