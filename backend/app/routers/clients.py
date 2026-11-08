@@ -29,7 +29,6 @@ from app.core.crypto import pii_hash
 from app.core.database import get_db
 from app.core.deps import (get_current_user, require_module, require_permission,
                            get_scope, UserScope, write_audit)
-from app.core.permissions import has_permission
 from app.models import (Borrower, ClientDocument, ClientMobileWallet,
                         ClientNextOfKin, CrbCheck, DOC_TYPES, Loan, ImpactSurvey,
                         MpesaStatementAnalysis, NEXT_OF_KIN_RELATIONSHIPS,
@@ -287,9 +286,18 @@ def build_router(prefix: str, tag: str) -> APIRouter:
         # Only surface real client-profile approvers: users whose role holds
         # clients.approve and is not the front-line originator. This keeps
         # relationship_officer (and other non-approver roles) out of the picker.
-        from app.core.permissions import has_permission
+        # WP7 (7.6): the DCP's EFFECTIVE grants, so a permission revoked or
+        # granted on the Roles screen is honoured here too.
+        from app.services.authz import effective_permissions
+        _perm_cache: dict = {}
+
+        def _can_approve(role):
+            if role not in _perm_cache:
+                _perm_cache[role] = "clients.approve" in effective_permissions(db, tenant_id, role)
+            return _perm_cache[role]
         approvers = [u for u in users
-                     if u.role != "relationship_officer" and has_permission(u.role, "clients.approve")]
+                     if u.role not in ("relationship_officer", "super_admin")
+                     and _can_approve(u.role)]
         return {
             "wallet_operators": WALLET_OPERATORS,
             "relationships": NEXT_OF_KIN_RELATIONSHIPS,
@@ -403,7 +411,7 @@ def build_router(prefix: str, tag: str) -> APIRouter:
             raise HTTPException(403, "Client is outside your data scope")
         # Field-level lock: primary identity fields can only be changed by users
         # with clients.edit_locked (branch/regional managers, admins).
-        may_edit_locked = has_permission(user.role, "clients.edit_locked")
+        may_edit_locked = user_can(db, user, "clients.edit_locked")
 
         def _changed(f):
             # normalise for comparison
@@ -447,7 +455,7 @@ def build_router(prefix: str, tag: str) -> APIRouter:
         # Advance a CRM-converted draft to pending_approval when the RO saves the record.
         # This is the trigger that surfaces the client in the BM's Approvals queue.
         if (getattr(client, "profile_status", None) == "draft"
-                and has_permission(user.role, "clients.create")):
+                and user_can(db, user, "clients.create")):
             client.profile_status = "pending_approval"
         write_audit(db, tenant_id=tenant_id, user=user, action="client.edit",
                     entity_type="client", entity_id=client.id,

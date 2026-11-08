@@ -147,6 +147,8 @@ def _kyc_ready(w):
                             ocr_field_mapping={"national_id": b.national_id}))
     w.db.add(ClientNextOfKin(tenant_id=w.A.id, client_id=b.id, full_name="Kin",
                              relationship_type="Spouse", active=True))
+    from app.models import KycConsent            # required since WP7
+    w.db.add(KycConsent(tenant_id=w.A.id, borrower_id=b.id, consent_data_processing=True))
     w.db.commit()
 
 

@@ -82,6 +82,15 @@ class Settings(BaseSettings):
     # report NOT CONFIGURED and refuse to fake a success. Add real sandbox creds
     # + restart and the same code flips to LIVE (SANDBOX) with zero changes.
     DARAJA_ENVIRONMENT: str = "sandbox"            # sandbox | production
+    # WP7 (review 7.10): may a DCP without its own M-Pesa setup borrow Finyl's
+    # platform credentials above? "auto" = only while those are SANDBOX
+    # credentials (demos, testing); "true" = always; "false" = never. A DCP that
+    # has SWITCHED OFF its own M-Pesa setup never falls back, whatever this says.
+    DARAJA_PLATFORM_FALLBACK: str = "auto"
+    # WP7 (review 7.7): proxies in front of the app that append to
+    # X-Forwarded-For (nginx or the AWS load balancer = 1; none = 0). See
+    # app/core/net.py.
+    TRUSTED_PROXY_HOPS: int = 1
     DARAJA_CONSUMER_KEY: str = "placeholder"
     DARAJA_CONSUMER_SECRET: str = "placeholder"
     DARAJA_SHORTCODE: str = "placeholder"

@@ -17,7 +17,8 @@ export default function GpsTracker() {
   const [err, setErr] = useState("");
 
   useEffect(() => {
-    api("/api/v1/lending/org").then((org) => setStaff(org.staff || [])).catch(() => {});
+    // WP7: trails are keyed by USER id (not staff-record id).
+    api("/api/v1/lending/org").then((org) => setStaff(org.users || [])).catch(() => {});
   }, []);
 
   useEffect(() => {

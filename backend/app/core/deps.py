@@ -22,14 +22,13 @@ from app.models import AuditLog, Branch, Staff, TenantModule, User
 
 
 def _req_ip(request: Request | None):
-    if request is None:
-        return None
-    xff = request.headers.get("x-forwarded-for")
-    if xff:
-        return xff.split(",")[0].strip()
-    return request.client.host if request.client else None
+    from app.core.net import client_ip          # WP7: trusted-proxy aware
+    return client_ip(request)
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
+
+TENANT_INACTIVE_MESSAGE = ("Your organisation's Finyl account is deactivated. "
+                           "Contact Finyl support.")
 
 ROLE_HIERARCHY = {"super_admin": 4, "tenant_admin": 3, "loan_officer": 2, "call_agent": 1}
 
@@ -50,6 +49,13 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Token has been revoked")
     if getattr(user, "is_locked", False):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Account is locked")
+    # WP7 (review 7.10): a deactivated DCP is switched off for all its staff,
+    # including sessions that were already open.
+    if user.role != "super_admin" and user.tenant_id is not None:
+        from app.models import Tenant
+        tenant = db.get(Tenant, user.tenant_id)
+        if tenant is None or tenant.active is False:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, TENANT_INACTIVE_MESSAGE)
     # AUTH-02: honor an active temporary auto-lock window.
     locked_until = getattr(user, "locked_until", None)
     if locked_until is not None:
@@ -339,7 +345,7 @@ def write_audit(db: Session, *, tenant_id, user, action, entity_type=None,
     ip = None
     try:
         if request is not None:
-            ip = request.headers.get("x-forwarded-for") or (request.client.host if request.client else None)
+            ip = _req_ip(request)
     except Exception:  # noqa: BLE001
         ip = None
     try:

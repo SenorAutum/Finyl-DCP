@@ -39,12 +39,27 @@ export default function Admin() {
     } catch (e) { setErr(e.detail); load(); }
   };
 
+  // WP7: switch a whole DCP off (its staff can no longer sign in) or back on.
+  const setTenantState = async (t) => {
+    let reason = "";
+    if (t.active) {
+      reason = prompt(`Deactivate ${t.name}? None of its staff will be able to sign in.\n\nReason (recorded in the audit trail):`);
+      if (!reason) return;
+    }
+    setErr(""); setMsg("");
+    try {
+      await api(`/api/v1/admin/tenants/${t.id}/state`, { method: "POST", body: { active: !t.active, reason } });
+      setMsg(`${t.name} ${t.active ? "deactivated" : "reactivated"}.`);
+      load();
+    } catch (e) { setErr(e.detail); }
+  };
+
   const createTenant = async (e) => {
     e.preventDefault(); setErr("");
     try {
       await api("/api/v1/admin/tenants", { method: "POST", body: { ...form, active: true } });
       setCreating(false); setForm({ name: "", code: "", logo_color: "#10B981" });
-      setMsg("Tenant created with all modules enabled.");
+      setMsg("Tenant created with the core modules (lending, payments, dashboard, complaints). Switch on others below when the DCP is ready.");
       load();
     } catch (e2) { setErr(e2.detail); }
   };
@@ -83,6 +98,21 @@ export default function Admin() {
                       <div>
                         <div className="font-semibold whitespace-nowrap">{t.name}</div>
                         <div className="text-[10px] text-gray-400 font-mono">{t.code}</div>
+                        {/* WP7: DCP on/off switch and product proposals waiting */}
+                        <div className="flex items-center gap-1.5 mt-1">
+                          <span className={`text-[10px] font-semibold rounded-full px-1.5 py-0.5 ${t.active ? "bg-emerald-100 text-emerald-700" : "bg-red-100 text-red-700"}`}>
+                            {t.active ? "active" : "deactivated"}
+                          </span>
+                          <button className="text-[10px] underline text-gray-500" onClick={() => setTenantState(t)}>
+                            {t.active ? "Deactivate" : "Reactivate"}
+                          </button>
+                          {t.pending_product_requests > 0 && (
+                            <span className="text-[10px] font-semibold rounded-full px-1.5 py-0.5 bg-amber-100 text-amber-800"
+                              title="Open Loan Products for this DCP to review">
+                              {t.pending_product_requests} product proposal{t.pending_product_requests > 1 ? "s" : ""}
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </td>

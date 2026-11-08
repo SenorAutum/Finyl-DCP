@@ -16,7 +16,7 @@ export default function Efficiency() {
   useEffect(() => {
     api("/api/v1/lending/org").then((org) => {
       const m = {};
-      (org.staff || []).forEach((s) => { m[s.id] = s.name; });
+      (org.users || []).forEach((s) => { m[s.id] = s.name; });   // WP7: officer_user_id is a user id
       setStaffMap(m);
     }).catch(() => {});
   }, []);

@@ -19,14 +19,15 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.deps import get_current_user, get_tenant_id, get_scope, UserScope, write_audit
+from app.core.deps import (get_current_user, get_tenant_id, get_scope, UserScope, write_audit,
+                           TENANT_INACTIVE_MESSAGE)
 from app.core.security import create_access_token, verify_password, hash_password
 from app.core.permissions import permissions_for, ROLE_LABELS
 from app.services.authz import effective_permissions
 from app.core.obs import log_auth_event, log_cbk_event
 from app.core import obs
 from app.services import otp as otp_svc, geo_fence, device_binding
-from app.models import ApprovalThreshold, MODULE_KEYS, OtpToken, Tenant, TenantModule, User
+from app.models import ApprovalThreshold, CORE_MODULE_KEYS, MODULE_KEYS, OtpToken, Tenant, TenantModule, User
 from app.schemas import LoginRequest, ChangePasswordRequest, SignupRequest
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
@@ -46,12 +47,8 @@ _rl_hits: dict[str, deque] = defaultdict(deque)
 
 
 def _client_ip(request: Request | None) -> str:
-    if request is None:
-        return "unknown"
-    xff = request.headers.get("x-forwarded-for")
-    if xff:
-        return xff.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    from app.core.net import client_ip          # WP7: trusted-proxy aware
+    return client_ip(request) or "unknown"
 
 
 def rate_limit_login(request: Request = None):
@@ -195,6 +192,11 @@ def _enforce_login_fences(db: Session, user: User, request: Request, ip: str) ->
     independent and skipped when disabled; super_admin bypasses entirely."""
     if user.role == "super_admin":
         return
+    # WP7 (review 7.10): staff of a deactivated DCP cannot sign in.
+    tenant = db.get(Tenant, user.tenant_id) if user.tenant_id else None
+    if tenant is None or tenant.active is False:
+        log_auth_event("login_blocked_tenant_inactive", email=user.email, user_id=user.id, ip=ip)
+        raise HTTPException(status.HTTP_403_FORBIDDEN, TENANT_INACTIVE_MESSAGE)
     cfg = geo_fence.get_config(db, user.tenant_id)
     if not cfg:
         return
@@ -209,6 +211,15 @@ def _enforce_login_fences(db: Session, user: User, request: Request, ip: str) ->
     # Geo-fence: caller coordinates outside the permitted radius.
     if cfg.geofence_enabled:
         lat, lng = _geo_from_request(request)
+        # WP7 (review 7.7): the browser never sent a location, so every sign-in
+        # was refused as "outside". Ask for it instead (428); the login screen
+        # requests the location and tries again.
+        fence_set = (cfg.geofence_center_lat is not None and cfg.geofence_center_lng
+                     is not None and cfg.geofence_radius_km is not None)
+        if (lat is None or lng is None) and fence_set:
+            raise HTTPException(status.HTTP_428_PRECONDITION_REQUIRED,
+                                "Your organisation needs your location to sign you in. "
+                                "Allow location access in your browser and try again.")
         if geo_fence.evaluate_geofence(db, user.tenant_id, lat, lng) == "outside":
             log_cbk_event(obs.CBK_GEOFENCE_BLOCK, tenant_id=user.tenant_id, user_id=user.id,
                           entity_type="user", entity_id=user.id, outcome="blocked",
@@ -224,8 +235,21 @@ def _enforce_login_fences(db: Session, user: User, request: Request, ip: str) ->
                           entity_type="user", entity_id=user.id, outcome="blocked",
                           detail="login from unrecognised device")
             log_auth_event("login_blocked_device", email=user.email, user_id=user.id, ip=ip)
+            # WP7 (review 7.7): leave a request the administrator can approve in
+            # Device Management, and tell the person the code to quote.
+            req = device_binding.request_approval(
+                db, user_id=user.id, fingerprint=fp or "", ip=ip,
+                user_agent=request.headers.get("user-agent") if request else None)
+            if req is None:
+                raise HTTPException(status.HTTP_403_FORBIDDEN,
+                                    "Your organisation only allows registered devices, and "
+                                    "this browser did not identify itself. Reload the page "
+                                    "and try again.")
             raise HTTPException(status.HTTP_403_FORBIDDEN,
-                                "This device is not registered. Register it before signing in.")
+                                "This device is not registered yet. A request has been sent "
+                                "to your administrator: ask them to approve device "
+                                f"{device_binding.device_code(fp)} in Device Management, "
+                                "then sign in again.")
 
 
 def _issue_login_token(db: Session, user: User, request: Request, ip: str) -> dict:
@@ -377,8 +401,11 @@ def signup(body: SignupRequest, db: Session = Depends(get_db), request: Request 
         db.add(tenant)
         db.flush()  # assign tenant.id
 
+        # WP7: core modules on, the rest stored as off (visible to the Finyl
+        # super admin, who switches them on when the DCP is ready).
         for key in MODULE_KEYS:
-            db.add(TenantModule(tenant_id=tenant.id, module_key=key, enabled=True))
+            db.add(TenantModule(tenant_id=tenant.id, module_key=key,
+                                enabled=key in CORE_MODULE_KEYS))
 
         for scope_type, scope_key, threshold_type, amount in _DEFAULT_THRESHOLDS:
             db.add(ApprovalThreshold(tenant_id=tenant.id, scope_type=scope_type,

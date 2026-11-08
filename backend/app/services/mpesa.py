@@ -102,13 +102,37 @@ def _clean(v):
     return v
 
 
+def platform_fallback_allowed() -> bool:
+    """Whether a DCP may use Finyl's platform Daraja credentials (see
+    settings.DARAJA_PLATFORM_FALLBACK)."""
+    mode = (getattr(settings, "DARAJA_PLATFORM_FALLBACK", "auto") or "auto").strip().lower()
+    if mode in ("true", "1", "yes", "always"):
+        return True
+    if mode in ("false", "0", "no", "never"):
+        return False
+    return not _settings_creds().is_production          # auto: sandbox only
+
+
+def _switched_off(environment: str) -> DarajaCreds:
+    """No usable credentials: every M-Pesa call reports NOT CONFIGURED."""
+    return DarajaCreds(consumer_key="", consumer_secret="", shortcode="", passkey="",
+                       initiator_name="", security_credential="",
+                       environment=environment or "sandbox")
+
+
 def resolve_creds(db, tenant_id: int | None) -> DarajaCreds:
     """Resolve the effective Daraja credentials for a tenant.
 
     Reads the tenant's own saved Daraja config (integration='daraja') and
-    decrypts its secrets, falling back FIELD BY FIELD to the platform .env
-    defaults for anything the DCP has not set. A DCP that has configured nothing
-    resolves to exactly the .env defaults (identical to the historic behaviour).
+    decrypts its secrets.
+
+    WP7 (review 7.10): money must move through the DCP's OWN M-Pesa account.
+      * A DCP that switched its M-Pesa setup OFF gets no credentials at all:
+        payouts and prompts fail closed instead of quietly running through
+        Finyl's platform account.
+      * A DCP with no setup, or with fields missing, borrows the platform
+        values only when platform_fallback_allowed() (by default only while the
+        platform credentials are sandbox ones, i.e. demos and tests).
     """
     base = _settings_creds()
     if not tenant_id:
@@ -121,8 +145,13 @@ def resolve_creds(db, tenant_id: int | None) -> DarajaCreds:
            .filter(TenantIntegrationConfig.tenant_id == tenant_id,
                    TenantIntegrationConfig.integration == "daraja")
            .first())
-    if row is None or not row.enabled:
-        return base
+    fallback = platform_fallback_allowed()
+    if row is not None and not row.enabled:
+        return _switched_off(_clean((row.config or {}).get("environment")) or base.environment)
+    if row is None:
+        return base if fallback else _switched_off(base.environment)
+    if not fallback:
+        base = _switched_off(base.environment)
     cfg = row.config or {}
     sec = row.secrets or {}
 

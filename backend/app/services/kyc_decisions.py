@@ -152,6 +152,19 @@ def evaluate(db: Session, *, tenant_id: int, client_id: int) -> KycDecision:
     if not isinstance(custom, dict):
         custom = {"<invalid>": custom}
 
+    # --- Data-processing consent: always required (WP7, review 7.8) ---------
+    # Kenya's Data Protection Act needs a lawful basis to process the client's
+    # data; the form asked for it but the server never checked. Not a DCP
+    # setting: like the age and ID floor, it cannot be switched off.
+    from app.models import KycConsent
+    consent = (db.query(KycConsent.id)
+               .filter(KycConsent.tenant_id == tenant_id,
+                       KycConsent.borrower_id == client_id,
+                       KycConsent.consent_data_processing.is_(True)).first())
+    checks["consent"] = {"pass": consent is not None}
+    if consent is None:
+        fails.append("consent_missing")
+
     # --- custom rules the engine cannot enforce: say so, never ignore (F18) --
     for key in custom:
         if key not in SUPPORTED_CUSTOM_RULES:
@@ -298,6 +311,8 @@ def evaluate(db: Session, *, tenant_id: int, client_id: int) -> KycDecision:
 # Plain-language explanations for the reasons above (shown to approvers).
 _EXPLAIN = {
     "client_not_found": "Client not found.",
+    "consent_missing": "The client's consent to process their data is not on file. "
+                       "Record it on the client page (consent form or SMS code).",
     "age_below_18_or_unknown": "Date of birth missing or the client is under 18.",
     "age_outside_allowed_range": "Age is outside the range this DCP allows.",
     "mpesa_not_validated": "M-Pesa name not confirmed for the client's current number. "

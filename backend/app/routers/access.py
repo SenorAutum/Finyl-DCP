@@ -3,6 +3,12 @@ System Administrator surface — user & access management, org structure,
 approval thresholds, audit trail, bulk payment upload and backup / data-integrity
 checks. Every endpoint is permission-gated (see app.core.permissions) and
 tenant-scoped; privileged mutations are written to the audit trail.
+
+WP7: each DCP's own administrator (users.manage / roles.assign / org.manage /
+thresholds.manage / audit.view) manages their own DCP here; a DCP user can only
+ever reach their own tenant (get_tenant_id). Platform-level tools stay with the
+Finyl super admin and say so on the endpoint: bulk payment upload, backups and
+the data-integrity check, and the cross-DCP approver configuration.
 """
 import csv
 import io
@@ -30,8 +36,9 @@ from app.models import RolePermissionOverride, CustomRole
 from app.services import rbac
 from app.services import authz
 
-router = APIRouter(prefix="/api/v1/access", tags=["access"],
-                   dependencies=[Depends(require_role("super_admin"))])
+router = APIRouter(prefix="/api/v1/access", tags=["access"])
+# Finyl platform-only tools (not delegated to DCP administrators).
+_platform_only = Depends(require_role("super_admin"))
 
 DEFAULT_PW = "Finyl@2026"
 
@@ -40,12 +47,41 @@ DEFAULT_PW = "Finyl@2026"
 # Roles & permissions reference
 # ---------------------------------------------------------------------------
 @router.get("/permissions")
-def list_permissions(user: User = Depends(require_permission("roles.view"))):
+def list_permissions(tenant_id: int = Depends(get_tenant_id),
+                     db: Session = Depends(get_db),
+                     user: User = Depends(require_permission("roles.view"))):
     return {
         "permissions": [{"key": k, "description": v} for k, v in PERMISSIONS.items()],
-        "assignable_roles": [{"role": r, "label": ROLE_LABELS.get(r, r)} for r in ASSIGNABLE_ROLES],
+        "assignable_roles": _assignable_roles(db, tenant_id),
         "matrix": role_matrix(),
     }
+
+
+def _assignable_roles(db: Session, tenant_id: int) -> list[dict]:
+    """Built-in assignable roles plus this DCP's own custom roles (WP7: custom
+    roles could be created but never given to anyone)."""
+    out = [{"role": r, "label": ROLE_LABELS.get(r, r), "custom": False}
+           for r in ASSIGNABLE_ROLES]
+    for c in (db.query(CustomRole).filter(CustomRole.tenant_id == tenant_id)
+              .order_by(CustomRole.role_key)):
+        if c.role_key not in authz.RESERVED_ROLE_KEYS:
+            out.append({"role": c.role_key, "label": c.label or c.role_key, "custom": True})
+    return out
+
+
+def _check_assignable(db: Session, tenant_id: int, role: str) -> None:
+    if role in ASSIGNABLE_ROLES:
+        return
+    if role not in authz.RESERVED_ROLE_KEYS and db.query(CustomRole).filter(
+            CustomRole.tenant_id == tenant_id, CustomRole.role_key == role).first():
+        return
+    raise HTTPException(400, "Unknown role. Choose a built-in role or one of your custom roles.")
+
+
+def _not_self(actor: User, target: User, what: str) -> None:
+    """A DCP administrator cannot lock themselves out or change their own access."""
+    if actor.role != "super_admin" and actor.id == target.id:
+        raise HTTPException(403, f"You cannot {what} your own account. Ask another administrator.")
 
 
 # ---------------------------------------------------------------------------
@@ -205,9 +241,13 @@ def _clean_staff_phone(phone):
 
 @router.get("/users")
 def list_users(tenant_id: int = Depends(get_tenant_id),
-               _: User = Depends(require_permission("users.view")),
+               actor: User = Depends(require_permission("users.view")),
                db: Session = Depends(get_db)):
-    rows = db.query(User).filter(User.tenant_id == tenant_id).order_by(User.id).all()
+    q = db.query(User).filter(User.tenant_id == tenant_id)
+    if actor.role != "super_admin":
+        # WP7: Finyl's own platform accounts are not a DCP's staff to manage.
+        q = q.filter(User.role != "super_admin")
+    rows = q.order_by(User.id).all()
     return [_user_dict(u, db) for u in rows]
 
 
@@ -219,8 +259,7 @@ def create_user(body: UserCreate, request: Request,
     email = body.email.lower().strip()
     if db.query(User).filter(User.email == email).first():
         raise HTTPException(409, "A user with that email already exists")
-    if body.role not in ASSIGNABLE_ROLES:
-        raise HTTPException(400, f"Role must be one of {ASSIGNABLE_ROLES}")
+    _check_assignable(db, tenant_id, body.role)
     u = User(
         email=email, full_name=body.full_name, role=body.role,
         hashed_password=hash_password(body.password or DEFAULT_PW),
@@ -253,10 +292,12 @@ def update_user(user_id: int, body: UserUpdate, request: Request,
                 db: Session = Depends(get_db)):
     u = _get_user(db, tenant_id, user_id)
     before = _user_dict(u, db)
-    if body.role is not None:
-        if body.role not in ASSIGNABLE_ROLES:
-            raise HTTPException(400, "Invalid role")
+    if body.role is not None and body.role != u.role:
+        _not_self(actor, u, "change the role of")
+        _check_assignable(db, tenant_id, body.role)
         u.role = body.role
+    if body.active is False:
+        _not_self(actor, u, "deactivate")
     for f in ("full_name", "branch_id", "region_id", "staff_id", "active"):
         v = getattr(body, f)
         if v is not None:
@@ -277,8 +318,8 @@ def assign_role(user_id: int, body: RoleAssign, request: Request,
                 actor: User = Depends(require_permission("roles.assign")),
                 db: Session = Depends(get_db)):
     u = _get_user(db, tenant_id, user_id)
-    if body.role not in ASSIGNABLE_ROLES:
-        raise HTTPException(400, "Invalid role")
+    _not_self(actor, u, "change the role of")
+    _check_assignable(db, tenant_id, body.role)
     old = u.role
     u.role = body.role
     db.flush()
@@ -297,6 +338,8 @@ def set_user_state(user_id: int, request: Request,
                    db: Session = Depends(get_db)):
     """Activate/deactivate and lock/unlock in one place (query params)."""
     u = _get_user(db, tenant_id, user_id)
+    if activate is False or lock is True:
+        _not_self(actor, u, "deactivate or lock")
     action = []
     if activate is not None:
         u.active = activate
@@ -555,7 +598,7 @@ def _parse_upload_date(value: str):
     raise ValueError(f"unrecognised date '{v}' (use YYYY-MM-DD or YYYY-MM-DD HH:MM)")
 
 
-@router.post("/payment-upload")
+@router.post("/payment-upload", dependencies=[_platform_only])
 async def payment_upload(request: Request, file: UploadFile = File(...),
                          tenant_id: int = Depends(get_tenant_id),
                          actor: User = Depends(require_permission("payments.upload")),
@@ -666,27 +709,37 @@ async def payment_upload(request: Request, file: UploadFile = File(...),
 
 
 # ---------------------------------------------------------------------------
-# Backups & data-integrity checks (mock)
+# Record counts (NOT a backup) & data-integrity checks
 # ---------------------------------------------------------------------------
-@router.post("/backup")
-def trigger_backup(request: Request, tenant_id: int = Depends(get_tenant_id),
-                   actor: User = Depends(require_permission("backups.manage")),
-                   db: Session = Depends(get_db)):
-    ref = "BKP-" + datetime.utcnow().strftime("%Y%m%d%H%M%S")
+@router.post("/backup", dependencies=[_platform_only])
+def record_counts(request: Request, tenant_id: int = Depends(get_tenant_id),
+                  actor: User = Depends(require_permission("backups.manage")),
+                  db: Session = Depends(get_db)):
+    """Record how many clients, loans and repayments this DCP has right now, in
+    the audit trail.
+
+    WP7 (review 7.2): this used to answer ``"status": "completed"`` as if a backup
+    had been taken. It never was one: nothing is copied anywhere and nothing can
+    be restored from it. Real backups are taken by the database service (AWS RDS
+    automated backups and snapshots) or by deploy/backup_db.sh; this only leaves
+    a dated count to compare against after a restore."""
+    ref = "CNT-" + datetime.utcnow().strftime("%Y%m%d%H%M%S")
     counts = {
         "borrowers": db.query(Borrower).filter(Borrower.tenant_id == tenant_id).count(),
         "loans": db.query(Loan).filter(Loan.tenant_id == tenant_id).count(),
         "repayments": db.query(Repayment).filter(Repayment.tenant_id == tenant_id).count(),
     }
-    write_audit(db, tenant_id=tenant_id, user=actor, action="backup.run",
+    write_audit(db, tenant_id=tenant_id, user=actor, action="backup.counts_recorded",
                 entity_type="backup", entity_id=ref, details=counts, request=request)
     db.commit()
-    return {"reference": ref, "status": "completed", "snapshot_counts": counts,
-            "created_at": datetime.utcnow().isoformat(),
-            "note": "Mock logical snapshot — records the row counts captured at backup time."}
+    return {"reference": ref, "status": "counts_recorded", "is_backup": False,
+            "snapshot_counts": counts, "created_at": datetime.utcnow().isoformat(),
+            "note": ("These counts are a reference point, not a backup: no data was "
+                     "copied. Backups are taken by the database service (AWS RDS "
+                     "automated backups) or deploy/backup_db.sh.")}
 
 
-@router.get("/integrity")
+@router.get("/integrity", dependencies=[_platform_only])
 def integrity_check(tenant_id: int = Depends(get_tenant_id),
                     actor: User = Depends(require_permission("backups.manage")),
                     db: Session = Depends(get_db)):

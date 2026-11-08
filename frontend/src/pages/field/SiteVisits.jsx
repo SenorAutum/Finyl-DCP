@@ -19,7 +19,8 @@ export default function SiteVisits() {
   const [err, setErr] = useState("");
 
   useEffect(() => {
-    api("/api/v1/lending/org").then((org) => setStaff(org.staff || [])).catch(() => {});
+    // WP7: tasks are keyed by USER id (not staff-record id).
+    api("/api/v1/lending/org").then((org) => setStaff(org.users || [])).catch(() => {});
   }, []);
 
   const load = () => {

@@ -8,6 +8,42 @@ export function setToken(t) { t ? localStorage.setItem("finyl_token", t) : local
 export function getTenantOverride() { return localStorage.getItem("finyl_tenant"); }
 export function setTenantOverride(id) { id ? localStorage.setItem("finyl_tenant", id) : localStorage.removeItem("finyl_tenant"); }
 
+// WP7 (review 7.7): the security checks a DCP can switch on need two things the
+// browser never sent. A stable id for this browser (device registration) and,
+// when the DCP limits where staff may sign in from, the location.
+export function getDeviceId() {
+  try {
+    let id = localStorage.getItem("finyl_device_id");
+    if (!id) {
+      id = (crypto.randomUUID ? crypto.randomUUID()
+        : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`).replace(/-/g, "");
+      localStorage.setItem("finyl_device_id", id);
+    }
+    return id;
+  } catch { return ""; }
+}
+export function deviceCode() {
+  const id = getDeviceId().toUpperCase().replace(/[^A-Z0-9]/g, "");
+  return id ? `${id.slice(0, 4)}-${id.slice(4, 8)}` : "";
+}
+let geo = null; // { lat, lng } once the person allowed location access
+export function setGeo(g) { geo = g; }
+// Ask the browser for the location (only when the DCP requires it).
+export function requestLocation() {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) { reject(new Error("This browser cannot share its location.")); return; }
+    navigator.geolocation.getCurrentPosition(
+      (p) => { setGeo({ lat: p.coords.latitude, lng: p.coords.longitude }); resolve(geo); },
+      () => reject(new Error("Location access was not allowed. Allow it in the browser and try again.")),
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 });
+  });
+}
+function securityHeaders(headers) {
+  const dev = getDeviceId();
+  if (dev) headers["X-Device-Fingerprint"] = dev;
+  if (geo) { headers["X-Geo-Lat"] = String(geo.lat); headers["X-Geo-Lng"] = String(geo.lng); }
+}
+
 export class ApiError extends Error {
   constructor(status, detail) { super(detail); this.status = status; this.detail = detail; }
 }
@@ -29,6 +65,7 @@ export async function api(path, { method = "GET", body, raw } = {}) {
   const tenant = getTenantOverride();
   if (tenant) headers["X-Tenant-Id"] = tenant;
   if (body) headers["Content-Type"] = "application/json";
+  securityHeaders(headers);
 
   const res = await fetch(`${BASE}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined });
   if (res.status === 401 && !isAuthEndpoint(path)) { setToken(null); window.location.href = "/login"; throw new ApiError(401, "Session expired"); }
@@ -61,6 +98,7 @@ export async function upload(path, formData) {
   if (token) headers["Authorization"] = `Bearer ${token}`;
   const tenant = getTenantOverride();
   if (tenant) headers["X-Tenant-Id"] = tenant;
+  securityHeaders(headers);
 
   const res = await fetch(`${BASE}${path}`, { method: "POST", headers, body: formData });
   if (res.status === 401 && !isAuthEndpoint(path)) { setToken(null); window.location.href = "/login"; throw new ApiError(401, "Session expired"); }

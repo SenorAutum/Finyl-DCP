@@ -14,36 +14,49 @@ from sqlalchemy.orm import Session
 from app.core.crypto import pii_hash
 from app.models import Borrower, Loan, Staff, CrmLead, Product
 
-# keyword → frontend route (navigation commands)
+# keyword → frontend route (navigation commands). WP7 (review 7.11): half of
+# these pointed at pages that do not exist (/clients/new, /reports, /audit,
+# /field-ops ...); they now name real routes in frontend/src/App.jsx.
 _NAV_COMMANDS = {
-    "new client": "/clients/new", "add client": "/clients/new",
-    "new loan": "/loans/new", "add loan": "/loans/new",
+    "new client": "/clients", "add client": "/clients",
+    "new loan": "/loans", "add loan": "/loans",
     "leads": "/crm", "pipeline": "/crm",
-    "dashboard": "/dashboard", "reports": "/reports",
-    "settings": "/settings", "users": "/settings/users",
-    "collections": "/collections", "ptp": "/collections/ptp",
-    "field": "/field-ops", "gps": "/field-ops/gps",
-    "guarantors": "/guarantors", "audit": "/audit",
+    "dashboard": "/", "reports": "/reporting",
+    "settings": "/settings", "users": "/access/users",
+    "collections": "/collections", "ptp": "/collections",
+    "field": "/field", "gps": "/gps-tracking",
+    "guarantors": "/guarantors", "audit": "/access/audit",
+}
+# The permission a command's page needs; commands the caller cannot open are
+# not offered.
+_NAV_NEEDS = {
+    "/settings": "thresholds.manage", "/access/users": "users.view",
+    "/access/audit": "audit.view", "/reporting": "reports.export",
+    "/gps-tracking": "field_ops.gps_view", "/field": "field_ops.tasks_manage",
 }
 
 
-def _nav_hits(q: str) -> list[dict]:
+def _nav_hits(q: str, can=None) -> list[dict]:
     ql = q.lower().strip()
     out = []
     for kw, route in _NAV_COMMANDS.items():
+        need = _NAV_NEEDS.get(route)
+        if need and can is not None and not can(need):
+            continue
         if ql in kw or kw in ql:
             out.append({"entity_type": "command", "id": 0, "label": kw.title(),
                         "sublabel": "Go to", "route": route, "rank": 1.0})
     return out[:3]
 
 
-def search(db: Session, *, tenant_id: int, scope, q: str, limit: int = 20) -> dict:
+def search(db: Session, *, tenant_id: int, scope, q: str, limit: int = 20,
+           can=None) -> dict:
     q = (q or "").strip()
     if len(q) < 2:
         return {"query": q, "total": 0, "hits": []}
     like = f"%{q}%"
     hits: list[dict] = []
-    hits.extend(_nav_hits(q))
+    hits.extend(_nav_hits(q, can))
 
     # --- Clients -----------------------------------------------------------
     cq = db.query(Borrower).filter(Borrower.tenant_id == tenant_id)
@@ -70,7 +83,7 @@ def search(db: Session, *, tenant_id: int, scope, q: str, limit: int = 20) -> di
                        or_(CrmLead.name.ilike(like), CrmLead.phone.ilike(like)))
                .limit(limit).all()):
         hits.append({"entity_type": "lead", "id": ld.id, "label": ld.name,
-                     "sublabel": ld.phone, "route": f"/crm/{ld.id}", "rank": 0.7})
+                     "sublabel": ld.phone, "route": "/crm", "rank": 0.7})
 
     # --- Staff (company-scope roles only) ----------------------------------
     if getattr(scope, "company_wide", False):
@@ -79,7 +92,7 @@ def search(db: Session, *, tenant_id: int, scope, q: str, limit: int = 20) -> di
                            or_(Staff.name.ilike(like), Staff.phone.ilike(like)))
                    .limit(limit).all()):
             hits.append({"entity_type": "staff", "id": st.id, "label": st.name,
-                         "sublabel": st.phone, "route": f"/settings/staff/{st.id}",
+                         "sublabel": st.phone, "route": "/access/org",
                          "rank": 0.6})
 
     # --- Products ----------------------------------------------------------
@@ -87,7 +100,7 @@ def search(db: Session, *, tenant_id: int, scope, q: str, limit: int = 20) -> di
                .filter(Product.tenant_id == tenant_id, Product.name.ilike(like))
                .limit(limit).all()):
         hits.append({"entity_type": "product", "id": pr.id, "label": pr.name,
-                     "sublabel": "product", "route": f"/settings/products/{pr.id}",
+                     "sublabel": "product", "route": "/products",
                      "rank": 0.5})
 
     hits.sort(key=lambda h: h.get("rank", 0), reverse=True)

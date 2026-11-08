@@ -1,6 +1,11 @@
 // Loan product configuration: rates, tenure, eligibility rules per tenant.
+// WP7: a DCP administrator (products.manage) PROPOSES new products and changes;
+// they go live only when a Finyl super admin approves them (pricing changes need
+// CBK approval). Pausing a product needs no approval. Super admins see the
+// proposals for the selected DCP here and approve or reject them.
 import { useEffect, useState } from "react";
 import { api, fmtKES } from "../../lib/api";
+import { useAuth } from "../../hooks/useAuth";
 import { Badge, Empty, Modal, PageHeader, Spinner } from "../../components/ui";
 
 const EMPTY = {
@@ -17,18 +22,102 @@ const EMPTY = {
 // Settings kept inside product.rules rather than as their own columns.
 const FEE_KEYS = ["processing_fee_rate", "facility_fee", "fee_collection",
   "max_open_loans", "min_business_age_months"];
+const FIELD_LABEL = {
+  name: "Name", code: "Code", interest_rate: "Interest %", interest_method: "Interest method",
+  tenure_value: "Tenure", tenure_unit: "Tenure unit", repayment_frequency: "Repayment frequency",
+  min_amount: "Minimum amount", max_amount: "Maximum amount", min_age: "Minimum age",
+  max_age: "Maximum age", penalty_rate: "Penalty % / period", active: "Active",
+  requires_guarantor: "Needs a guarantor", requires_next_of_kin: "Needs a next of kin",
+  business_op_age_required: "Checks business age", rules: "Fees and borrowing rules",
+  loan_category: "Category",
+};
+const show = (v) => (v === true ? "Yes" : v === false ? "No" : v == null ? "—"
+  : typeof v === "object" ? (Object.entries(v).map(([k, x]) => `${k.replace(/_/g, " ")}: ${x}`).join(", ") || "—")
+  : String(v));
+const ORDER = Object.keys(FIELD_LABEL);
+
+function RequestCard({ r, isSuper, onDecide, busy }) {
+  const fields = Object.keys(r.proposed || {})
+    .sort((a, b) => (ORDER.indexOf(a) + 1 || 99) - (ORDER.indexOf(b) + 1 || 99));
+  return (
+    <div className="border border-border rounded-xl p-4">
+      <div className="flex items-start justify-between gap-2 flex-wrap">
+        <div>
+          <div className="font-semibold">{r.action === "create" ? "New product: " : "Change to "}{r.product_name}</div>
+          <div className="text-xs text-gray-400">Proposed by {r.requested_by} · {new Date(r.requested_at).toLocaleString("en-KE")}</div>
+        </div>
+        <div className="flex gap-1.5">
+          {isSuper ? (<>
+            <button className="btn-primary !py-1 !px-2.5 text-xs" disabled={busy} onClick={() => onDecide(r, "approve")}>Approve</button>
+            <button className="btn-ghost !py-1 !px-2.5 text-xs text-red-600" disabled={busy} onClick={() => onDecide(r, "reject")}>Reject</button>
+          </>) : (
+            <button className="btn-ghost !py-1 !px-2.5 text-xs" disabled={busy} onClick={() => onDecide(r, "withdraw")}>Withdraw</button>
+          )}
+        </div>
+      </div>
+      <table className="w-full text-xs mt-3">
+        <thead><tr><th className="th !py-1">Setting</th>{r.action === "update" && <th className="th !py-1">Now</th>}<th className="th !py-1">Proposed</th></tr></thead>
+        <tbody>
+          {fields.map((k) => (
+            <tr key={k} className="border-t border-border">
+              <td className="td !py-1">{FIELD_LABEL[k] || k}</td>
+              {r.action === "update" && <td className="td !py-1 text-gray-500">{show((r.current_values || {})[k])}</td>}
+              <td className="td !py-1 font-semibold">{show(r.proposed[k])}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 const openLoansText = (r) => {
   const n = r?.max_open_loans ?? (r?.allow_concurrent_loans ? 0 : 1);
   return Number(n) === 0 ? "no limit" : `${n} at a time`;
 };
 
 export default function Products() {
+  const { user } = useAuth();
+  const isSuper = user?.role === "super_admin";
   const [products, setProducts] = useState(null);
+  const [requests, setRequests] = useState([]);
   const [editing, setEditing] = useState(null);
   const [err, setErr] = useState("");
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
 
-  const load = () => api("/api/v1/lending/products").then(setProducts).catch(() => {});
+  const load = () => {
+    api("/api/v1/lending/products").then(setProducts)
+      .catch((e) => { setProducts([]); setErr(e.detail || "Could not load products"); });
+    api("/api/v1/lending/product-requests").then(setRequests).catch(() => setRequests([]));
+  };
   useEffect(() => { load(); }, []);  // an effect must not return the fetch promise
+
+  const decide = async (r, action) => {
+    let body = {};
+    if (action === "reject") {
+      const note = prompt("Why is this being rejected? The DCP will see this.");
+      if (!note) return;
+      body = { note };
+    }
+    setBusy(true); setErr(""); setMsg("");
+    try {
+      await api(`/api/v1/lending/product-requests/${r.id}/${action}`, { method: "POST", body });
+      setMsg(action === "approve" ? "Approved: the product is live with these settings."
+        : action === "reject" ? "Rejected. The DCP has been told why." : "Proposal withdrawn.");
+      load();
+    } catch (ex) { setErr(ex.detail || "Could not update the proposal"); }
+    finally { setBusy(false); }
+  };
+
+  const pause = async (p) => {
+    setErr(""); setMsg("");
+    try {
+      await api(`/api/v1/lending/products/${p.id}`, { method: "PUT", body: { name: p.name, code: p.code, active: false } });
+      setMsg(`${p.name} is paused: no new applications. Existing loans are not affected.`);
+      load();
+    } catch (ex) { setErr(ex.detail || "Could not pause the product"); }
+  };
 
   const set = (k) => (e) => setEditing((s) => ({ ...s, form: { ...s.form, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.value } }));
 
@@ -53,16 +142,37 @@ export default function Products() {
     delete body.rules.allow_concurrent_loans;     // replaced by max_open_loans
     for (const k of FEE_KEYS) delete body[k];
     try {
-      if (editing.id) await api(`/api/v1/lending/products/${editing.id}`, { method: "PUT", body });
-      else await api("/api/v1/lending/products", { method: "POST", body });
-      setEditing(null); load();
+      const r = editing.id
+        ? await api(`/api/v1/lending/products/${editing.id}`, { method: "PUT", body })
+        : await api("/api/v1/lending/products", { method: "POST", body });
+      setEditing(null);
+      setMsg(r?.status === "pending_approval" ? (r.message || "Sent to Finyl for approval.")
+        : r?.status === "unchanged" ? "Nothing changed." : "Saved.");
+      load();
     } catch (e2) { setErr(e2.detail); }
   };
 
   return (
     <div>
-      <PageHeader title="Loan Products" crumbs={["Configuration", "Products"]}
-        actions={<button className="btn-primary" onClick={() => setEditing({ form: { ...EMPTY } })}>+ New Product</button>} />
+      <PageHeader title="Loan Products" crumbs={["Settings", "Products"]}
+        actions={<button className="btn-primary" onClick={() => setEditing({ form: { ...EMPTY } })}>{isSuper ? "+ New Product" : "+ Propose a product"}</button>} />
+      {!isSuper && (
+        <div className="mb-4 text-sm bg-surface2 border border-border rounded-lg p-3">
+          New products and changes go live after Finyl approves them, because pricing changes need CBK approval. Pausing a product applies at once.
+        </div>
+      )}
+      {err && !editing && <div className="mb-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">{err}</div>}
+      {msg && <div className="mb-3 text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg p-3">{msg}</div>}
+
+      {requests.length > 0 && (
+        <div className="card p-5 mb-5">
+          <div className="font-bold text-base mb-1">{isSuper ? "Waiting for your approval" : "Waiting for Finyl approval"}</div>
+          <div className="text-xs text-gray-400 mb-3">{isSuper ? "Proposed by this DCP. Approving puts the settings live immediately." : "You can withdraw a proposal and send a new one."}</div>
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+            {requests.map((r) => <RequestCard key={r.id} r={r} isSuper={isSuper} onDecide={decide} busy={busy} />)}
+          </div>
+        </div>
+      )}
 
       {!products ? <Spinner /> : products.length === 0 ? <div className="card"><Empty /></div> : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -73,7 +183,10 @@ export default function Products() {
                   <div className="font-bold">{p.name}</div>
                   <div className="text-xs text-gray-400 font-mono">{p.code}</div>
                 </div>
-                <Badge value={p.active ? "active" : "closed"}>{p.active ? "active" : "inactive"}</Badge>
+                <div className="flex flex-col items-end gap-1">
+                  <Badge value={p.active ? "active" : "closed"}>{p.active ? "active" : "paused"}</Badge>
+                  {p.pending_change && <span className="text-[10px] font-semibold text-amber-700 bg-amber-100 rounded-full px-2 py-0.5">change waiting for approval</span>}
+                </div>
               </div>
               <div className="mt-3 space-y-1.5 text-sm">
                 <div className="flex justify-between"><span className="text-gray-400">Interest</span><span className="font-semibold">{p.interest_rate}% {p.interest_method}</span></div>
@@ -96,15 +209,18 @@ export default function Products() {
                   ...Object.fromEntries(FEE_KEYS.filter((k) => (p.rules || {})[k] != null).map((k) => [k, p.rules[k]])),
                   ...((p.rules || {}).max_open_loans == null && (p.rules || {}).allow_concurrent_loans ? { max_open_loans: 0 } : {}),
                 } })}>
-                Edit
+                {isSuper ? "Edit" : "Propose a change"}
               </button>
+              {p.active && !isSuper && (
+                <button className="btn-ghost w-full mt-1.5 !py-1 text-xs text-red-600" onClick={() => pause(p)}>Pause new applications</button>
+              )}
             </div>
           ))}
         </div>
       )}
 
       {editing && (
-        <Modal title={editing.id ? "Edit Product" : "New Product"} onClose={() => setEditing(null)} wide>
+        <Modal title={editing.id ? (isSuper ? "Edit Product" : "Propose a change") : (isSuper ? "New Product" : "Propose a new product")} onClose={() => setEditing(null)} wide>
           <form onSubmit={save} className="grid grid-cols-2 sm:grid-cols-3 gap-3">
             {err && <div className="col-span-full text-sm text-red-600 bg-red-50 rounded-lg p-2">{err}</div>}
             <div className="col-span-2"><label className="label">Name *</label><input className="input" required value={editing.form.name} onChange={set("name")} /></div>
@@ -161,7 +277,7 @@ export default function Products() {
                 disabled={!editing.form.business_op_age_required} onChange={set("min_business_age_months")} /></div>
             <div className="col-span-full flex justify-end gap-2 pt-2">
               <button type="button" className="btn-ghost" onClick={() => setEditing(null)}>Cancel</button>
-              <button className="btn-primary">{editing.id ? "Save changes" : "Create product"}</button>
+              <button className="btn-primary">{isSuper ? (editing.id ? "Save changes" : "Create product") : "Send to Finyl for approval"}</button>
             </div>
           </form>
         </Modal>

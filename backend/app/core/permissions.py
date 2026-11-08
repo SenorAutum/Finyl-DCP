@@ -33,6 +33,7 @@ PERMISSIONS = {
     "backups.manage": "Trigger backups and data-integrity checks",
     "payments.upload": "Upload payment files / reconciliation batches",
     "messaging.manage": "Customise per-DCP SMS message templates",
+    "products.manage": "Propose new loan products and product changes (go live after Finyl approval)",
     # Clients (origination)
     "clients.view_all": "View all clients in scope (branch / region / company)",
     "clients.view_portfolio": "View only own-portfolio clients",
@@ -113,7 +114,7 @@ ROLE_PERMISSIONS = {
         "org.view", "org.manage",
         "thresholds.view", "thresholds.manage",
         "audit.view", "backups.manage", "payments.upload",
-        "messaging.manage",
+        "messaging.manage", "products.manage",
         "accounting.export",
         "dashboard.company",  # read-only situational awareness
         # Phase 2 — configuration & platform-admin surfaces

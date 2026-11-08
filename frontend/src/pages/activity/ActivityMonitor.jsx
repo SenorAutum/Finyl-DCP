@@ -167,8 +167,9 @@ export default function ActivityMonitor() {
   const [staffMap, setStaffMap] = useState({});
 
   useEffect(() => {
+    // WP7: activity is keyed by USER id (not staff-record id).
     api("/api/v1/lending/org").then((org) => {
-      const list = org.staff || [];
+      const list = org.users || [];
       setStaff(list);
       const m = {}; list.forEach((s) => { m[s.id] = s.name; });
       setStaffMap(m);

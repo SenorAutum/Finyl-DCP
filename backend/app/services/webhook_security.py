@@ -52,19 +52,11 @@ def client_ip(request) -> str | None:
     a comma-separated chain; the FIRST entry is the original client) or X-Real-Ip.
     Falls back to the direct peer if no proxy header is present.
     """
-    if request is None:
-        return None
-    headers = request.headers
-    xff = headers.get("x-forwarded-for")
-    if xff:
-        first = xff.split(",")[0].strip()
-        if first:
-            return first
-    xri = headers.get("x-real-ip")
-    if xri and xri.strip():
-        return xri.strip()
-    client = getattr(request, "client", None)
-    return getattr(client, "host", None) if client else None
+    # WP7: the FIRST X-Forwarded-For entry is whatever the caller wrote, so it
+    # could be set to a Safaricom address to pass the allowlist. Use the entry
+    # the trusted proxy appended instead (app/core/net.py).
+    from app.core.net import client_ip as _trusted_client_ip
+    return _trusted_client_ip(request)
 
 
 def ip_allowed(ip: str | None) -> bool:

@@ -3,7 +3,8 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.deps import require_permission, get_scope
+from app.core.deps import require_permission, get_scope, get_tenant_id
+from app.services.authz import user_can
 from app.services import search as search_service
 
 router = APIRouter(prefix="/api/v1/search", tags=["search"])
@@ -12,6 +13,8 @@ router = APIRouter(prefix="/api/v1/search", tags=["search"])
 @router.get("")
 def global_search(q: str = "", limit: int = 20,
                   user=Depends(require_permission("search.global")),
+                  tenant_id: int = Depends(get_tenant_id),
                   scope=Depends(get_scope), db: Session = Depends(get_db)):
-    return search_service.search(db, tenant_id=user.tenant_id, scope=scope,
-                                 q=q, limit=min(max(limit, 1), 50))
+    return search_service.search(db, tenant_id=tenant_id, scope=scope,
+                                 q=q, limit=min(max(limit, 1), 50),
+                                 can=lambda perm: user_can(db, user, perm))

@@ -177,7 +177,7 @@ export default function App() {
             <Route path="/guarantors/:id" element={<Guard module="lending"><GuarantorDetail /></Guard>} />
             <Route path="/loans" element={<Guard module="lending"><Loans /></Guard>} />
             <Route path="/loans/:id" element={<Guard module="lending"><LoanDetail /></Guard>} />
-            <Route path="/products" element={<AdminGuard><Products /></AdminGuard>} />
+            <Route path="/products" element={<PermGuard perms={["products.manage"]}><Products /></PermGuard>} />
             <Route path="/payments" element={<Guard module="payments"><Payments /></Guard>} />
             <Route path="/payments/suspense" element={<Guard module="payments"><PermGuard perms={["reconcile.execute"]}><Suspense /></PermGuard></Guard>} />
             <Route path="/messaging/opt-outs" element={<PermGuard perms={["messaging.manage"]}><OptOuts /></PermGuard>} />
@@ -205,19 +205,19 @@ export default function App() {
             <Route path="/bank-statements" element={<Guard module="lending"><PermGuard perms={["collections.ptp_manage"]}><BankStatements /></PermGuard></Guard>} />
             <Route path="/ratiba" element={<Guard module="lending"><PermGuard perms={["collections.ptp_manage"]}><Ratiba /></PermGuard></Guard>} />
             <Route path="/search" element={<PermGuard perms={["search.global"]}><SearchResults /></PermGuard>} />
-            <Route path="/security-config" element={<AdminGuard><SecurityConfig /></AdminGuard>} />
+            <Route path="/security-config" element={<PermGuard perms={["security.manage"]}><SecurityConfig /></PermGuard>} />
             <Route path="/validation-preferences" element={<PermGuard perms={["security.manage"]}><ValidationPrefs /></PermGuard>} />
-            <Route path="/devices" element={<AdminGuard><DeviceManagement /></AdminGuard>} />
-            <Route path="/otp-history" element={<AdminGuard><OtpHistory /></AdminGuard>} />
+            <Route path="/devices" element={<PermGuard perms={["security.manage"]}><DeviceManagement /></PermGuard>} />
+            <Route path="/otp-history" element={<PermGuard perms={["security.manage"]}><OtpHistory /></PermGuard>} />
             {/* RBAC: approvals, administration & reporting (permission-gated) */}
             <Route path="/approvals" element={<PermGuard perms={["loans.approve", "clients.approve", "disburse.approve", "refund.approve", "reconcile.approve"]}><Approvals /></PermGuard>} />
-            <Route path="/access/users" element={<AdminGuard><Users /></AdminGuard>} />
-            <Route path="/access/roles" element={<AdminGuard><RolesPermissions /></AdminGuard>} />
-            <Route path="/access/org" element={<AdminGuard><BranchesRegions /></AdminGuard>} />
-            <Route path="/access/thresholds" element={<AdminGuard><Thresholds /></AdminGuard>} />
+            <Route path="/access/users" element={<PermGuard perms={["users.view"]}><Users /></PermGuard>} />
+            <Route path="/access/roles" element={<PermGuard perms={["roles.view"]}><RolesPermissions /></PermGuard>} />
+            <Route path="/access/org" element={<PermGuard perms={["org.view"]}><BranchesRegions /></PermGuard>} />
+            <Route path="/access/thresholds" element={<PermGuard perms={["thresholds.view"]}><Thresholds /></PermGuard>} />
             <Route path="/access/payments" element={<AdminGuard><PaymentUpload /></AdminGuard>} />
             <Route path="/access/backups" element={<AdminGuard><Backups /></AdminGuard>} />
-            <Route path="/access/audit" element={<AdminGuard><AuditLog /></AdminGuard>} />
+            <Route path="/access/audit" element={<PermGuard perms={["audit.view"]}><AuditLog /></PermGuard>} />
             <Route path="/reporting" element={<PermGuard perms={["reports.export", "reports.schedule", "reports.template", "reports.flag"]}><Reporting /></PermGuard>} />
             {/* Per-DCP configuration — DCP's own admin (system_admin holds thresholds.manage) */}
             <Route path="/settings" element={<PermGuard perms={["thresholds.manage"]}><Configuration /></PermGuard>} />
