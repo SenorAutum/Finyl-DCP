@@ -3,6 +3,12 @@ import { useState } from "react";
 import { useNavigate, useLocation, Link } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import OtpInput from "../components/OtpInput";
+import { requestLocation, deviceCode } from "../lib/api";
+
+// WP7: demo accounts (and their shared password) are listed only in a demo
+// build: set VITE_SHOW_DEMO_LOGINS=true, or run the dev server. A live login
+// page must not advertise accounts and a default password.
+const SHOW_DEMO = import.meta.env.DEV || import.meta.env.VITE_SHOW_DEMO_LOGINS === "true";
 
 const DEMO = [
   ["superadmin@finyl.app", "Super Admin (all tenants)"],
@@ -22,8 +28,8 @@ export default function Login() {
   const nav = useNavigate();
   const loc = useLocation();
   const signupSuccess = loc.state?.signupSuccess || "";
-  const [email, setEmail] = useState("admin@mularcredit.co.ke");
-  const [password, setPassword] = useState("Finyl@2026");
+  const [email, setEmail] = useState(SHOW_DEMO ? "admin@mularcredit.co.ke" : "");
+  const [password, setPassword] = useState(SHOW_DEMO ? "Finyl@2026" : "");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [step, setStep] = useState("password"); // "password" | "otp"
@@ -34,7 +40,17 @@ export default function Login() {
     e.preventDefault();
     setBusy(true); setErr("");
     try {
-      const res = await login(email, password);
+      let res;
+      try { res = await login(email, password); }
+      catch (ex) {
+        // WP7: the DCP only allows sign-in from set locations. Ask the browser
+        // for this one and try once more.
+        if (ex.status !== 428) throw ex;
+        setErr("Your organisation needs your location to sign you in. Allow location access when the browser asks.");
+        await requestLocation().catch((locErr) => { throw { detail: locErr.message }; });
+        setErr("");
+        res = await login(email, password);
+      }
       if (res?.otp_required) {
         // delivery.channels lists where the code actually went, e.g. ["sms"].
         const via = (res.delivery?.channels || []).map((c) => (c === "sms" ? "SMS" : c === "email" ? "e-mail" : c));
@@ -116,7 +132,9 @@ export default function Login() {
             <Link to="/signup" className="text-accent font-semibold hover:underline">Create your DCP account</Link>
           </p>
 
-          <div className="mt-6 card p-4">
+          <p className="text-[11px] text-gray-400 text-center mt-3">This device's code: <span className="font-mono">{deviceCode()}</span></p>
+
+          {SHOW_DEMO && <div className="mt-6 card p-4">
             <div className="text-xs font-bold uppercase tracking-wider text-gray-500 mb-2">Demo credentials · password <span className="text-accent">Finyl@2026</span></div>
             <div className="space-y-1.5">
               {DEMO.map(([em, label]) => (
@@ -127,7 +145,7 @@ export default function Login() {
                 </button>
               ))}
             </div>
-          </div>
+          </div>}
         </div>
       </div>
     </div>

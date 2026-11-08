@@ -15,7 +15,8 @@ from app.core.database import get_db
 from app.core.deps import (get_current_user, require_module, require_permission,
                            require_role, get_scope, UserScope, write_audit)
 from app.models import (Borrower, Branch, ImpactSurvey, Loan, LoanActiveLockLog,
-                        PaymentTransaction, Product, Region, Repayment, Staff, Tenant, User)
+                        PaymentTransaction, Product, ProductChangeRequest, Region, Repayment,
+                        Staff, Tenant, User)
 from app.schemas import (BorrowerCreate, LoanApplication, LoanStatusUpdate, ProductCreate,
                          ReassignRequest, QuoteRequest)
 from app.core.money import D, money
@@ -71,10 +72,16 @@ def org_reference(tenant_id: int = Depends(require_module("lending")), db: Sessi
     regions = db.query(Region).filter(Region.tenant_id == tenant_id).all()
     branches = db.query(Branch).filter(Branch.tenant_id == tenant_id).all()
     staff = db.query(Staff).filter(Staff.tenant_id == tenant_id, Staff.active).all()
+    # WP7 (review 7.11): people pickers for GPS trails, devices, field tasks and
+    # promises-to-pay need USER ids; they were being given staff-record ids.
+    users = (db.query(User).filter(User.tenant_id == tenant_id, User.active)
+             .order_by(User.full_name).all())
     return {
         "regions": [{"id": r.id, "name": r.name} for r in regions],
         "branches": [{"id": b.id, "name": b.name, "region_id": b.region_id} for b in branches],
         "staff": [{"id": s.id, "name": s.name, "role": s.role, "branch_id": s.branch_id} for s in staff],
+        "users": [{"id": u.id, "name": u.full_name or u.email, "role": u.role,
+                   "staff_id": u.staff_id, "branch_id": u.branch_id} for u in users],
     }
 
 
@@ -203,37 +210,246 @@ def list_products(tenant_id: int = Depends(require_module("lending")),
     if active_only:
         q = q.filter(Product.active.is_(True))
     rows = q.order_by(Product.id).all()
-    return [_product_dict(p) for p in rows]
+    # WP7: show a change waiting for Finyl approval on its product.
+    pending = {r.product_id: r for r in db.query(ProductChangeRequest).filter(
+        ProductChangeRequest.tenant_id == tenant_id,
+        ProductChangeRequest.status == "pending",
+        ProductChangeRequest.product_id.isnot(None))}
+    out = []
+    for p in rows:
+        d = _product_dict(p)
+        r = pending.get(p.id)
+        d["pending_change"] = ({"request_id": r.id, "proposed": r.proposed,
+                                "requested_at": r.requested_at} if r else None)
+        out.append(d)
+    return out
+
+
+# --- Products: the DCP proposes, Finyl approves (WP7) ----------------------------
+# A Finyl super admin changes products directly. A DCP administrator (with
+# products.manage) PROPOSES a new product or a change; it goes live only when a
+# Finyl super admin approves it, because pricing changes need CBK approval.
+# Pausing a product (switching it off) needs no approval: it only stops new
+# lending. Every change, direct or approved, is in the audit trail.
+_PRODUCT_FIELDS = set(ProductCreate.model_fields)
+
+
+def _check_product_values(values: dict) -> None:
+    if values.get("min_age") is not None and values["min_age"] < 18:
+        raise HTTPException(422, "Minimum age cannot be below 18")
+    lo, hi = values.get("min_amount"), values.get("max_amount")
+    if lo is not None and hi is not None and float(lo) > float(hi):
+        raise HTTPException(422, "Minimum amount cannot be above the maximum amount")
+    for k in ("interest_rate", "penalty_rate"):
+        if values.get(k) is not None and float(values[k]) < 0:
+            raise HTTPException(422, f"{k.replace('_', ' ')} cannot be negative")
+
+
+def _jsonable(v):
+    from decimal import Decimal
+    if isinstance(v, Decimal):
+        return float(v)
+    return v
+
+
+def _request_dict(r: ProductChangeRequest, db: Session) -> dict:
+    who = db.get(User, r.requested_by)
+    decider = db.get(User, r.decided_by) if r.decided_by else None
+    prod = db.get(Product, r.product_id) if r.product_id else None
+    return {"id": r.id, "action": r.action, "status": r.status,
+            "product_id": r.product_id,
+            "product_name": prod.name if prod else (r.proposed or {}).get("name"),
+            "proposed": r.proposed, "current_values": r.current_values,
+            "reason": r.reason,
+            "requested_by": who.full_name if who else r.requested_by,
+            "requested_at": r.requested_at,
+            "decided_by": decider.full_name if decider else None,
+            "decided_at": r.decided_at, "decision_note": r.decision_note}
+
+
+def _require_products_manage(db: Session, user: User) -> None:
+    if not user_can(db, user, "products.manage"):
+        raise HTTPException(403, "Missing required permission: products.manage")
 
 
 @router.post("/products")
 def create_product(body: ProductCreate, tenant_id: int = Depends(require_module("lending")),
-                   _: User = Depends(require_role("super_admin")),
-                   db: Session = Depends(get_db)):
-    if body.min_age < 18:
-        raise HTTPException(422, "Minimum age cannot be below 18")
-    p = Product(tenant_id=tenant_id, **body.model_dump())
-    db.add(p)
+                   user: User = Depends(get_current_user),
+                   db: Session = Depends(get_db), request: Request = None):
+    values = body.model_dump()
+    _check_product_values(values)
+    if user.role == "super_admin":
+        p = Product(tenant_id=tenant_id, **values)
+        db.add(p)
+        db.flush()
+        write_audit(db, tenant_id=tenant_id, user=user, action="product.create",
+                    entity_type="product", entity_id=p.id,
+                    details={k: _jsonable(v) for k, v in values.items()}, request=request)
+        db.commit()
+        return {"id": p.id, "status": "live"}
+    _require_products_manage(db, user)
+    r = ProductChangeRequest(tenant_id=tenant_id, action="create",
+                             proposed={k: _jsonable(v) for k, v in values.items()},
+                             requested_by=user.id, status="pending")
+    db.add(r)
+    db.flush()
+    write_audit(db, tenant_id=tenant_id, user=user, action="product.propose_create",
+                entity_type="product_request", entity_id=r.id,
+                details={"name": values.get("name")}, request=request)
     db.commit()
-    return {"id": p.id}
+    return {"status": "pending_approval", "request_id": r.id,
+            "message": "Sent to Finyl for approval. The product goes live once approved."}
 
 
 @router.put("/products/{product_id}")
 def update_product(product_id: int, body: ProductCreate,
                    tenant_id: int = Depends(require_module("lending")),
-                   _: User = Depends(require_role("super_admin")),
-                   db: Session = Depends(get_db)):
+                   user: User = Depends(get_current_user),
+                   db: Session = Depends(get_db), request: Request = None):
     p = db.query(Product).filter(Product.id == product_id, Product.tenant_id == tenant_id).first()
     if not p:
         raise HTTPException(404, "Product not found")
-    if body.min_age < 18:
-        raise HTTPException(422, "Minimum age cannot be below 18")
     # Only the fields the caller sent: an older screen that does not know the
     # eligibility switches must not reset them to their defaults.
-    for k, v in body.model_dump(exclude_unset=True).items():
-        setattr(p, k, v)
+    sent = body.model_dump(exclude_unset=True)
+    changes = {k: v for k, v in sent.items()
+               if _jsonable(getattr(p, k, None)) != _jsonable(v)}
+    _check_product_values({k: changes.get(k, getattr(p, k, None))
+                           for k in ("min_age", "min_amount", "max_amount",
+                                     "interest_rate", "penalty_rate")})
+    if not changes:
+        return {"ok": True, "status": "unchanged"}
+    before = {k: _jsonable(getattr(p, k, None)) for k in changes}
+
+    pause_only = set(changes) == {"active"} and changes["active"] is False
+    if user.role == "super_admin" or (pause_only and user_can(db, user, "products.manage")):
+        for k, v in changes.items():
+            setattr(p, k, v)
+        write_audit(db, tenant_id=tenant_id, user=user,
+                    action="product.pause" if pause_only else "product.update",
+                    entity_type="product", entity_id=p.id,
+                    details={"before": before,
+                             "after": {k: _jsonable(v) for k, v in changes.items()}},
+                    request=request)
+        db.commit()
+        return {"ok": True, "status": "live"}
+
+    _require_products_manage(db, user)
+    if db.query(ProductChangeRequest).filter(
+            ProductChangeRequest.product_id == p.id,
+            ProductChangeRequest.status == "pending").first():
+        raise HTTPException(409, "This product already has a change waiting for Finyl "
+                                 "approval. Withdraw it first, or wait for the decision.")
+    r = ProductChangeRequest(tenant_id=tenant_id, product_id=p.id, action="update",
+                             proposed={k: _jsonable(v) for k, v in changes.items()},
+                             current_values=before, requested_by=user.id, status="pending")
+    db.add(r)
+    db.flush()
+    write_audit(db, tenant_id=tenant_id, user=user, action="product.propose_update",
+                entity_type="product_request", entity_id=r.id,
+                details={"product_id": p.id, "fields": sorted(changes)}, request=request)
     db.commit()
-    return {"ok": True}
+    return {"status": "pending_approval", "request_id": r.id,
+            "message": "Sent to Finyl for approval. The change applies once approved."}
+
+
+@router.get("/product-requests")
+def list_product_requests(tenant_id: int = Depends(require_module("lending")),
+                          user: User = Depends(get_current_user),
+                          db: Session = Depends(get_db), status: str = "pending"):
+    if user.role != "super_admin":
+        _require_products_manage(db, user)
+    q = db.query(ProductChangeRequest).filter(ProductChangeRequest.tenant_id == tenant_id)
+    if status != "all":
+        q = q.filter(ProductChangeRequest.status == status)
+    rows = q.order_by(ProductChangeRequest.requested_at.desc()).limit(200).all()
+    return [_request_dict(r, db) for r in rows]
+
+
+def _open_request(db: Session, tenant_id: int, request_id: int) -> ProductChangeRequest:
+    r = (db.query(ProductChangeRequest)
+         .filter(ProductChangeRequest.id == request_id,
+                 ProductChangeRequest.tenant_id == tenant_id)
+         .with_for_update().first())
+    if not r:
+        raise HTTPException(404, "Request not found")
+    if r.status != "pending":
+        raise HTTPException(409, f"This request is already {r.status}")
+    return r
+
+
+@router.post("/product-requests/{request_id}/approve")
+def approve_product_request(request_id: int, body: dict | None = None,
+                            tenant_id: int = Depends(require_module("lending")),
+                            user: User = Depends(require_role("super_admin")),
+                            db: Session = Depends(get_db), request: Request = None):
+    r = _open_request(db, tenant_id, request_id)
+    values = dict(r.proposed or {})
+    unknown = set(values) - _PRODUCT_FIELDS
+    if unknown:
+        raise HTTPException(422, f"Unknown product fields: {sorted(unknown)}")
+    if r.action == "create":
+        _check_product_values(values)
+        p = Product(tenant_id=tenant_id, **ProductCreate(**values).model_dump())
+        db.add(p)
+        db.flush()
+        r.product_id = p.id
+    else:
+        p = db.query(Product).filter(Product.id == r.product_id,
+                                     Product.tenant_id == tenant_id).first()
+        if not p:
+            raise HTTPException(404, "The product no longer exists")
+        _check_product_values({k: values.get(k, getattr(p, k, None))
+                               for k in ("min_age", "min_amount", "max_amount",
+                                         "interest_rate", "penalty_rate")})
+        for k, v in values.items():
+            setattr(p, k, v)
+    r.status = "approved"
+    r.decided_by = user.id
+    r.decided_at = datetime.utcnow()
+    r.decision_note = ((body or {}).get("note") or "").strip()[:1000] or None
+    write_audit(db, tenant_id=tenant_id, user=user, action="product.approve_" + r.action,
+                entity_type="product", entity_id=p.id,
+                details={"request_id": r.id, "applied": values}, request=request)
+    db.commit()
+    return _request_dict(r, db)
+
+
+@router.post("/product-requests/{request_id}/reject")
+def reject_product_request(request_id: int, body: dict,
+                           tenant_id: int = Depends(require_module("lending")),
+                           user: User = Depends(require_role("super_admin")),
+                           db: Session = Depends(get_db), request: Request = None):
+    note = ((body or {}).get("note") or "").strip()
+    if not note:
+        raise HTTPException(422, "Give a reason so the DCP knows what to change")
+    r = _open_request(db, tenant_id, request_id)
+    r.status = "rejected"
+    r.decided_by = user.id
+    r.decided_at = datetime.utcnow()
+    r.decision_note = note[:1000]
+    write_audit(db, tenant_id=tenant_id, user=user, action="product.reject_" + r.action,
+                entity_type="product_request", entity_id=r.id,
+                details={"note": note[:300]}, request=request)
+    db.commit()
+    return _request_dict(r, db)
+
+
+@router.post("/product-requests/{request_id}/withdraw")
+def withdraw_product_request(request_id: int,
+                             tenant_id: int = Depends(require_module("lending")),
+                             user: User = Depends(get_current_user),
+                             db: Session = Depends(get_db), request: Request = None):
+    if user.role != "super_admin":
+        _require_products_manage(db, user)
+    r = _open_request(db, tenant_id, request_id)
+    r.status = "withdrawn"
+    r.decided_by = user.id
+    r.decided_at = datetime.utcnow()
+    write_audit(db, tenant_id=tenant_id, user=user, action="product.withdraw_" + r.action,
+                entity_type="product_request", entity_id=r.id, request=request)
+    db.commit()
+    return _request_dict(r, db)
 
 
 # ---------- Loans -------------------------------------------------------------------------

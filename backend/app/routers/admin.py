@@ -1,13 +1,13 @@
 """Super Admin: tenant management + module feature-flag matrix."""
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.deps import require_role
-from app.models import (MODULE_KEYS, Borrower, Loan, MpesaWebhookEvent, SmsLog,
+from app.core.deps import require_role, write_audit
+from app.models import (CORE_MODULE_KEYS, MODULE_KEYS, Borrower, Loan, MpesaWebhookEvent, SmsLog,
                         Staff, StaffDailyTask, Tenant, TenantModule, User)
 from app.schemas import ModuleToggle, TenantCreate
 from app.services import analytics
@@ -22,14 +22,43 @@ def module_matrix(db: Session = Depends(get_db)):
     tenants = db.query(Tenant).order_by(Tenant.id).all()
     flags = db.query(TenantModule).all()
     fmap = {(f.tenant_id, f.module_key): f.enabled for f in flags}
+    # WP7: product proposals from each DCP waiting for Finyl approval.
+    from app.models import ProductChangeRequest
+    pending = dict(db.query(ProductChangeRequest.tenant_id, func.count(ProductChangeRequest.id))
+                   .filter(ProductChangeRequest.status == "pending")
+                   .group_by(ProductChangeRequest.tenant_id).all())
     return {
         "module_keys": MODULE_KEYS,
+        "core_module_keys": CORE_MODULE_KEYS,
         "tenants": [{
             "id": t.id, "name": t.name, "code": t.code,
             "logo_color": t.logo_color, "active": t.active,
             "modules": {k: fmap.get((t.id, k), False) for k in MODULE_KEYS},
+            "pending_product_requests": int(pending.get(t.id, 0)),
         } for t in tenants],
     }
+
+
+@router.post("/tenants/{tenant_id}/state")
+def set_tenant_state(tenant_id: int, body: dict, request: Request,
+                     user=Depends(require_role("super_admin")),
+                     db: Session = Depends(get_db)):
+    """WP7 (review 7.10): switch a whole DCP off or on. When off, none of its
+    staff can sign in and open sessions stop working at their next request."""
+    tenant = db.get(Tenant, tenant_id)
+    if not tenant:
+        raise HTTPException(404, "Tenant not found")
+    active = bool((body or {}).get("active"))
+    reason = ((body or {}).get("reason") or "").strip()
+    if not active and not reason:
+        raise HTTPException(422, "Give a reason for deactivating this DCP")
+    tenant.active = active
+    write_audit(db, tenant_id=tenant.id, user=user,
+                action="tenant.activate" if active else "tenant.deactivate",
+                entity_type="tenant", entity_id=tenant.id,
+                details={"reason": reason[:500]}, request=request)
+    db.commit()
+    return {"id": tenant.id, "active": tenant.active}
 
 
 @router.post("/tenants")
@@ -37,8 +66,9 @@ def create_tenant(body: TenantCreate, db: Session = Depends(get_db)):
     tenant = Tenant(**body.model_dump())
     db.add(tenant)
     db.flush()
-    for key in MODULE_KEYS:  # new tenants start with all modules on
-        db.add(TenantModule(tenant_id=tenant.id, module_key=key, enabled=True))
+    for key in MODULE_KEYS:  # WP7: new DCPs start with the core modules only
+        db.add(TenantModule(tenant_id=tenant.id, module_key=key,
+                            enabled=key in CORE_MODULE_KEYS))
     db.commit()
     return {"id": tenant.id, "name": tenant.name}
 

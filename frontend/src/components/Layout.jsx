@@ -79,23 +79,26 @@ const NAV = [
     { to: "/settings", label: "DCP Configuration", icon: "🛠", anyPerm: ["thresholds.manage"] },
     // WP6: each DCP's own admin decides which KYC checks apply and how strict they are.
     { to: "/validation-preferences", label: "KYC Settings", icon: "☑", anyPerm: ["security.manage"] },
+    // WP7: DCP admins propose products; Finyl approves before they go live.
+    { to: "/products", label: "Loan Products", icon: "⚙", anyPerm: ["products.manage"] },
+    { to: "/security-config", label: "Security Config", icon: "🛡", anyPerm: ["security.manage"] },
+    { to: "/devices", label: "Device Management", icon: "📱", anyPerm: ["security.manage"] },
+    { to: "/otp-history", label: "Sign-in Codes", icon: "🔐", anyPerm: ["security.manage"] },
   ]},
+  // WP7: each DCP's own administrator manages its staff, roles and structure.
+  { group: "Staff & Access", items: [
+    { to: "/access/users", label: "Users & Access", icon: "👤", anyPerm: ["users.view"] },
+    { to: "/access/roles", label: "Roles & Permissions", icon: "🔑", anyPerm: ["roles.view"] },
+    { to: "/access/org", label: "Branches & Regions", icon: "🏢", anyPerm: ["org.view"] },
+    { to: "/access/thresholds", label: "Approval Thresholds", icon: "⚖", anyPerm: ["thresholds.view"] },
+    { to: "/access/audit", label: "Audit Trail", icon: "📜", anyPerm: ["audit.view"] },
+  ]},
+  // Finyl platform tools.
   { group: "Administration", superOnly: true, items: [
-    { to: "/access/users", label: "Users & Access", icon: "👤" },
-    { to: "/access/roles", label: "Roles & Permissions", icon: "🔑" },
-    { to: "/access/org", label: "Branches & Regions", icon: "🏢" },
-    { to: "/access/thresholds", label: "Approval Thresholds", icon: "⚖" },
     { to: "/access/payments", label: "Payment Upload", icon: "📥" },
     { to: "/access/backups", label: "Backups & Integrity", icon: "🗄" },
-    { to: "/access/audit", label: "Audit Trail", icon: "📜" },
     { to: "/access/api-clients", label: "API Clients", icon: "🔑" },
     { to: "/messaging", label: "SMS Messaging", icon: "✉" },
-    { to: "/security-config", label: "Security Config", icon: "🛡" },
-    { to: "/devices", label: "Device Management", icon: "📱" },
-    { to: "/otp-history", label: "OTP History", icon: "🔐" },
-  ]},
-  { group: "Configuration", superOnly: true, items: [
-    { to: "/products", label: "Loan Products", icon: "⚙" },
   ]},
 ];
 

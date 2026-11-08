@@ -73,6 +73,8 @@ class UserDevice(Base):
     last_seen_at = Column(DateTime(timezone=True))
     active = Column(Boolean, nullable=False, default=True)
     registered_by_ip = Column(String(45))
+    # WP7: requested from a blocked sign-in, waiting for an administrator.
+    pending = Column(Boolean, nullable=False, default=False)
 
 
 class TenantSecurityConfig(Base):

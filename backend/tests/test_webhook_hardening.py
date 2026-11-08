@@ -42,10 +42,23 @@ class _FakeRequest:
 # --------------------------------------------------------------------------- #
 # 1. Perimeter source-IP allowlist
 # --------------------------------------------------------------------------- #
-def test_client_ip_prefers_xforwardedfor_first_hop():
+def test_client_ip_uses_the_entry_the_proxy_appended():
+    # WP7: this test used to assert the FIRST X-Forwarded-For entry, which the
+    # caller writes. A caller could put a Safaricom address there and pass the
+    # allowlist. With one trusted proxy (the default) the real address is the
+    # one the proxy appended, i.e. the last entry.
     req = _FakeRequest({"x-forwarded-for": "196.201.214.10, 10.0.0.9",
                         "x-real-ip": "10.0.0.9"}, peer="127.0.0.1")
+    assert ws.client_ip(req) == "10.0.0.9"
+    # Safaricom calling through the proxy: the proxy appends Safaricom's address.
+    req = _FakeRequest({"x-forwarded-for": "196.201.214.10"}, peer="127.0.0.1")
     assert ws.client_ip(req) == "196.201.214.10"
+
+
+def test_client_ip_ignores_the_header_without_a_proxy(monkeypatch):
+    monkeypatch.setattr(settings, "TRUSTED_PROXY_HOPS", 0)
+    req = _FakeRequest({"x-forwarded-for": "196.201.214.10"}, peer="203.0.113.7")
+    assert ws.client_ip(req) == "203.0.113.7"
 
 
 def test_client_ip_falls_back_to_realip_then_peer():

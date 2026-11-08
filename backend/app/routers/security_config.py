@@ -8,7 +8,9 @@ from app.core.database import get_db
 from app.core.deps import (require_permission, get_current_user, get_tenant_id,
                            write_audit)
 from app.core.ownership import require_user_in_tenant
-from app.models import TenantSecurityConfig, User
+from app.core.net import client_ip
+from app.models import OtpToken, TenantSecurityConfig, User, UserDevice
+from app.services.authz import user_can
 from app.schemas import (SecurityConfigUpdate, OtpRequestIn, OtpVerifyIn,
                          DeviceRegisterIn)
 from app.services import otp as otp_svc, device_binding
@@ -78,6 +80,19 @@ def update_security(body: SecurityConfigUpdate, tenant_id: int = Depends(get_ten
                     user=Depends(require_permission("security.manage")),
                     db: Session = Depends(get_db), request: Request = None):
     c = _get_or_create(db, tenant_id)
+    turning_on_devices = bool(body.device_binding_enabled) and not c.device_binding_enabled
+    # WP7: switching on "registered devices only" must not lock out the person
+    # doing it. Their current browser is registered for them; everyone else
+    # asks for approval at their next sign-in (Device Management).
+    if turning_on_devices and user.role != "super_admin":
+        fp = request.headers.get("x-device-fingerprint") if request else None
+        if not fp:
+            raise HTTPException(422, "This browser did not identify itself, so switching on "
+                                     "registered devices would lock you out. Reload the page "
+                                     "and try again.")
+        device_binding.register(db, user_id=user.id, fingerprint=fp[:500],
+                                name=(request.headers.get("user-agent") or "Browser")[:200],
+                                platform="web", ip=client_ip(request))
     for f in _CFG_FIELDS:
         val = getattr(body, f, None)
         if val is not None:
@@ -105,7 +120,7 @@ def otp_request(body: OtpRequestIn, user=Depends(get_current_user),
     # unbound one, so those purposes are refused on this generic endpoint.
     if body.purpose in RESERVED_OTP_PURPOSES:
         raise HTTPException(422, f"Codes for '{body.purpose}' cannot be requested here")
-    ip = request.headers.get("x-forwarded-for") if request else None
+    ip = client_ip(request)
     code = otp_svc.generate(db, user, purpose=body.purpose, ip=ip)
     delivery = otp_svc.deliver(db, user, code)
     sent_to = [k for k, v in (delivery.get("channels") or {}).items() if v]
@@ -132,37 +147,132 @@ def _authorize_device_target(db: Session, actor: User, user_id: int, action: str
 
     The target MUST be in the actor's tenant (404 otherwise, so other tenants'
     user ids cannot be probed). Within the tenant a user manages their own
-    devices; tenant administrators may manage anyone's.
+    devices; holders of security.manage may manage anyone's (WP7: was a fixed
+    list of role names, so custom roles and per-DCP grants were ignored).
     """
     target = require_user_in_tenant(db, actor, user_id)
-    if actor.id == target.id or actor.role in ("super_admin", "system_admin", "tenant_admin"):
+    if actor.id == target.id or user_can(db, actor, "security.manage"):
         return target
     raise HTTPException(403, f"Cannot {action} another user's device")
+
+
+def _device_dict(d) -> dict:
+    return {"id": d.id, "device_name": d.device_name, "platform": d.platform,
+            "active": d.active, "pending": bool(getattr(d, "pending", False)),
+            "status": ("waiting for approval" if getattr(d, "pending", False)
+                       else "active" if d.active else "revoked"),
+            "code": device_binding.device_code(d.device_fingerprint),
+            "registered_at": d.registered_at, "last_seen_at": d.last_seen_at}
 
 
 @router.get("/users/{user_id}/devices")
 def list_devices(user_id: int, actor=Depends(get_current_user), db: Session = Depends(get_db)):
     _authorize_device_target(db, actor, user_id, "view")
     rows = device_binding.list_devices(db, user_id)
-    return {"items": [{"id": d.id, "device_name": d.device_name, "platform": d.platform,
-                       "active": d.active, "registered_at": d.registered_at,
-                       "last_seen_at": d.last_seen_at} for d in rows]}
+    return {"items": [_device_dict(d) for d in rows]}
+
+
+@router.get("/devices/pending")
+def pending_devices(tenant_id: int = Depends(get_tenant_id),
+                    _: User = Depends(require_permission("security.manage")),
+                    db: Session = Depends(get_db)):
+    """WP7: devices waiting for approval across this DCP (from blocked sign-ins)."""
+    rows = (db.query(UserDevice, User)
+            .join(User, User.id == UserDevice.user_id)
+            .filter(User.tenant_id == tenant_id, UserDevice.pending == True)  # noqa: E712
+            .order_by(UserDevice.last_seen_at.desc()).all())
+    return {"items": [_device_dict(d) | {"user_id": u.id, "user_name": u.full_name,
+                                         "user_email": u.email} for d, u in rows]}
 
 
 @router.post("/users/{user_id}/devices")
 def register_device(user_id: int, body: DeviceRegisterIn, actor=Depends(get_current_user),
                     db: Session = Depends(get_db), request: Request = None):
     _authorize_device_target(db, actor, user_id, "register")
-    ip = request.headers.get("x-forwarded-for") if request else None
+    ip = client_ip(request)
     d = device_binding.register(db, user_id=user_id, fingerprint=body.device_fingerprint,
                                 name=body.device_name, platform=body.platform, ip=ip)
     return {"id": d.id, "device_name": d.device_name, "active": d.active}
 
 
+@router.post("/users/{user_id}/devices/{device_id}/approve")
+def approve_device(user_id: int, device_id: int, request: Request,
+                   actor: User = Depends(require_permission("security.manage")),
+                   db: Session = Depends(get_db)):
+    """WP7: approve a device requested from a blocked sign-in. Someone else must
+    approve: a person cannot approve their own new device."""
+    target = require_user_in_tenant(db, actor, user_id)
+    if target.id == actor.id and actor.role != "super_admin":
+        raise HTTPException(403, "Another administrator must approve your own device.")
+    d = device_binding.approve(db, user_id=user_id, device_id=device_id)
+    if d is None:
+        raise HTTPException(404, "Device not found")
+    write_audit(db, tenant_id=target.tenant_id, user=actor, action="device.approve",
+                entity_type="user", entity_id=target.id,
+                details={"device_id": d.id, "code": device_binding.device_code(d.device_fingerprint)},
+                request=request)
+    db.commit()
+    return _device_dict(d)
+
+
 @router.delete("/users/{user_id}/devices/{device_id}")
 def revoke_device(user_id: int, device_id: int, actor=Depends(get_current_user),
-                  db: Session = Depends(get_db)):
-    _authorize_device_target(db, actor, user_id, "revoke")
+                  db: Session = Depends(get_db), request: Request = None):
+    target = _authorize_device_target(db, actor, user_id, "revoke")
     if not device_binding.revoke(db, user_id=user_id, device_id=device_id):
         raise HTTPException(404, "Device not found")
-    return {"status": "revoked"}
+    # WP7 (review 7.7): end the person's open sessions too. Device checks only
+    # run at sign-in, so a session opened on the revoked device would otherwise
+    # carry on until it expired.
+    target.token_version = int(target.token_version or 0) + 1
+    write_audit(db, tenant_id=target.tenant_id, user=actor, action="device.revoke",
+                entity_type="user", entity_id=target.id,
+                details={"device_id": device_id, "sessions_ended": True}, request=request)
+    db.commit()
+    return {"status": "revoked", "sessions_ended": True}
+
+
+# --- One-time code history ---------------------------------------------------
+@router.get("/security/otp-history")
+def otp_history(tenant_id: int = Depends(get_tenant_id),
+                _: User = Depends(require_permission("security.manage")),
+                db: Session = Depends(get_db),
+                purpose: str | None = None, page: int = 1, page_size: int = 50):
+    """WP7 (review 7.11): every one-time code issued in this DCP - who it was
+    for, what it was for, whether it was used, and how many wrong tries. The old
+    screen guessed at activity-log event names that were never recorded, so it
+    was always empty. Codes themselves are never shown (only a hash is kept)."""
+    page_size = max(1, min(page_size, 200))
+    q = (db.query(OtpToken, User)
+         .join(User, User.id == OtpToken.user_id)
+         .filter(User.tenant_id == tenant_id))
+    if purpose:
+        q = q.filter(OtpToken.purpose == purpose)
+    total = q.count()
+    rows = (q.order_by(OtpToken.created_at.desc(), OtpToken.id.desc())
+            .offset((max(page, 1) - 1) * page_size).limit(page_size).all())
+    now = datetime.now(timezone.utc)
+
+    def _state(t):
+        if t.consumed:
+            if t.attempts and t.attempts >= otp_svc.OTP_MAX_ATTEMPTS:
+                return "locked after wrong tries"
+            return "used or replaced"
+        exp = t.expires_at
+        if exp is not None and exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        return "expired" if exp is not None and exp < now else "waiting"
+    return {
+        "total": total, "page": page, "page_size": page_size,
+        "purposes": [p for (p,) in db.query(OtpToken.purpose).join(
+            User, User.id == OtpToken.user_id).filter(User.tenant_id == tenant_id)
+            .distinct().all()],
+        "items": [{
+            "id": t.id, "created_at": t.created_at, "expires_at": t.expires_at,
+            "purpose": t.purpose, "state": _state(t), "wrong_tries": t.attempts or 0,
+            "user_id": u.id, "user_name": u.full_name,
+            "recipient_last4": (t.recipient or "")[-4:] or None,
+            "client_id": (t.context or {}).get("client_id") if t.context else None,
+            "ip": t.ip,
+        } for t, u in rows],
+    }

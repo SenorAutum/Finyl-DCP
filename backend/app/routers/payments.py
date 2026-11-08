@@ -1014,7 +1014,7 @@ def resolve_payout(txn_id: int, body: PayoutResolveIn, request: Request,
     uncertain / timed out: `paid` (with the M-Pesa receipt) settles it exactly
     as Safaricom's result would; `not_paid` makes the loan retryable or re-opens
     the refunded receipt. The person who started the payout cannot resolve it."""
-    from app.core.permissions import has_permission
+    from app.services.authz import user_can
     from app.services import disbursement as disb
     txn = (db.query(PaymentTransaction)
            .filter(PaymentTransaction.id == txn_id, PaymentTransaction.tenant_id == tenant_id,
@@ -1023,7 +1023,7 @@ def resolve_payout(txn_id: int, body: PayoutResolveIn, request: Request,
     if not txn:
         raise HTTPException(404, "Payout not found")
     need = "disburse.approve" if txn.type == "b2c" else "refund.approve"
-    if not has_permission(user.role, need):
+    if not user_can(db, user, need):          # WP7: effective (per-DCP) grants
         raise HTTPException(403, f"Missing required permission: {need}")
     if (txn.raw_payload or {}).get("actor_user_id") == user.id:
         raise HTTPException(403, "The person who started this payout cannot resolve it")

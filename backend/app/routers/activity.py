@@ -28,10 +28,8 @@ def log_events(body: ActivityBulkIn,
                user=Depends(get_current_user),
                fingerprint: str | None = Depends(get_device_fingerprint),
                db: Session = Depends(get_db), request: Request = None):
-    ip = None
-    if request is not None:
-        ip = request.headers.get("x-forwarded-for") or (
-            request.client.host if request.client else None)
+    from app.core.net import client_ip     # WP7: trusted-proxy aware
+    ip = client_ip(request)
     stored = activity_service.log_events(
         db, tenant_id=tenant_id, user_id=user.id, events=body.events,
         ip=ip, device_fingerprint=fingerprint)

@@ -2,7 +2,8 @@
 from datetime import datetime
 
 from sqlalchemy import (Boolean, Column, Date, DateTime, Float, ForeignKey,
-                        Integer, Numeric, String, JSON)
+                        Integer, Numeric, String, JSON, Text)
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 
 from app.core.database import Base
@@ -75,3 +76,23 @@ class Product(Base):
     requires_next_of_kin = Column(Boolean, nullable=False, default=True)
     business_op_age_required = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ProductChangeRequest(Base):
+    """WP7: a DCP's proposed new product or product change, applied only when a
+    Finyl super admin approves it (see migration 036)."""
+    __tablename__ = "product_change_requests"
+
+    id = Column(Integer, primary_key=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
+    product_id = Column(Integer, ForeignKey("products.id"))
+    action = Column(String(10), nullable=False)            # create | update
+    proposed = Column(JSONB, nullable=False)
+    current_values = Column(JSONB)
+    reason = Column(Text)
+    status = Column(String(12), nullable=False, default="pending")
+    requested_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    requested_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    decided_by = Column(Integer, ForeignKey("users.id"))
+    decided_at = Column(DateTime(timezone=True))
+    decision_note = Column(Text)

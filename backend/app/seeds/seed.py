@@ -368,9 +368,23 @@ def seed_tenant(db, tenant, scale=1.0, disabled_modules=()):
     return {"staff": staff, "borrowers": borrowers, "loans": loans}
 
 
+def _apply_migrations() -> None:
+    """WP7 (review 7.12): build the schema with the numbered migrations, the
+    same way every real environment does, instead of SQLAlchemy create_all
+    (which made tables the migrations never recorded and hid missing ones)."""
+    import importlib.util
+    from pathlib import Path
+    path = Path(__file__).resolve().parents[2] / "scripts" / "run_migrations.py"
+    spec = importlib.util.spec_from_file_location("finyl_run_migrations", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    if mod.main() != 0:
+        raise SystemExit("Migrations failed; not seeding.")
+
+
 def main(force=False):
     ensure_schema()
-    Base.metadata.create_all(bind=engine)
+    _apply_migrations()
     db = SessionLocal()
     try:
         if db.query(Tenant).count() > 0:

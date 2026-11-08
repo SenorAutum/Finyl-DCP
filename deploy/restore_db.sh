@@ -74,7 +74,14 @@ import sys, urllib.parse as u
 print(u.urlparse(sys.argv[1]).path.lstrip('/'))
 PY
 )"
-    ADMIN_URL="${TARGET_URL}"
+    # Create the target from the server's maintenance database (the target does
+    # not exist yet, so it cannot be the connection used to create it).
+    ADMIN_URL="$(python3 - "$TARGET_URL" <<'PY'
+import sys, urllib.parse as u
+p = u.urlparse(sys.argv[1])
+print(u.urlunparse(p._replace(path='/postgres')))
+PY
+)"
 else
     TARGET_DB="${TARGET_ARG}"
     # Swap only the dbname in the base URL; keep an admin URL on the live db
@@ -109,11 +116,39 @@ if command -v createdb >/dev/null 2>&1; then
 fi
 
 # --- Restore ----------------------------------------------------------------
+# WP7 (review 7.12): this used to swallow every pg_restore error and still log
+# "complete", so a broken restore looked like a good one. Now any error stops
+# the restore (single transaction: all or nothing) unless you explicitly accept
+# warnings with ALLOW_RESTORE_ERRORS=1, and the result is checked afterwards.
 log "Restoring (pg_restore, this may take a while) ..."
-pg_restore --no-owner --no-privileges --clean --if-exists \
-    --dbname="${TARGET_URL}" "${LOCAL_DUMP}" || {
-        log "pg_restore reported warnings/errors (often benign for --clean on a fresh db)."
-    }
+RESTORE_FLAGS=(--no-owner --no-privileges --clean --if-exists)
+if [ "${ALLOW_RESTORE_ERRORS:-0}" = "1" ]; then
+    log "ALLOW_RESTORE_ERRORS=1: errors will be reported but will not stop the restore."
+else
+    RESTORE_FLAGS+=(--exit-on-error --single-transaction)
+fi
+if ! pg_restore "${RESTORE_FLAGS[@]}" --dbname="${TARGET_URL}" "${LOCAL_DUMP}"; then
+    if [ "${ALLOW_RESTORE_ERRORS:-0}" = "1" ]; then
+        log "WARNING: pg_restore reported errors (accepted because ALLOW_RESTORE_ERRORS=1)."
+    else
+        fail "pg_restore failed; nothing was restored into '${TARGET_DB}'. Re-run with ALLOW_RESTORE_ERRORS=1 only if you have read the errors above and accept them."
+    fi
+fi
 
-log "Restore into '${TARGET_DB}' complete."
-log "Verify with: psql \"<target-url>\" -c \"SELECT count(*) FROM finyl_dcp.borrowers;\""
+# --- Verify -------------------------------------------------------------------
+SCHEMA="$(grep -E '^DB_SCHEMA=' "${ENV_FILE}" | head -n1 | cut -d= -f2- || true)"
+SCHEMA="${SCHEMA//\"/}"; SCHEMA="${SCHEMA//\'/}"
+SCHEMA="${SCHEMA:-finyl_dcp}"
+log "Verifying the restored data (schema ${SCHEMA}) ..."
+VERIFY="$(psql "${TARGET_URL}" -v ON_ERROR_STOP=1 -At -c "
+    SELECT (SELECT count(*) FROM ${SCHEMA}.tenants) || ' tenants, ' ||
+           (SELECT count(*) FROM ${SCHEMA}.borrowers) || ' clients, ' ||
+           (SELECT count(*) FROM ${SCHEMA}.loans) || ' loans, ' ||
+           (SELECT count(*) FROM ${SCHEMA}.repayments) || ' repayments, last migration ' ||
+           COALESCE((SELECT max(filename) FROM ${SCHEMA}.schema_migrations), 'none')" 2>&1)" \
+    || fail "the restored database could not be read: ${VERIFY}"
+TENANTS="$(echo "${VERIFY}" | cut -d' ' -f1)"
+[ "${TENANTS:-0}" -gt 0 ] 2>/dev/null || fail "the restored database has no DCPs in it (${VERIFY})."
+
+log "Restore into '${TARGET_DB}' complete and verified: ${VERIFY}."
+log "Compare these counts with the latest 'Record counts' entry in the audit trail."

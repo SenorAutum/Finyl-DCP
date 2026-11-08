@@ -301,8 +301,10 @@ export default function FieldOps() {
   const [staffMap, setStaffMap] = useState({});
 
   useEffect(() => {
+    // WP7: GPS trails, tasks and alerts are keyed by USER id, so pick people from
+    // the user list (staff-record ids are different numbers).
     api("/api/v1/lending/org").then((org) => {
-      const list = org.staff || [];
+      const list = org.users || [];
       setStaff(list);
       const m = {}; list.forEach((s) => { m[s.id] = s.name; });
       setStaffMap(m);

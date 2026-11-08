@@ -343,7 +343,7 @@ export default function Collections() {
   useEffect(() => {
     api("/api/v1/lending/org").then((org) => {
       const m = {};
-      (org.staff || []).forEach((s) => { m[s.id] = s.name; });
+      (org.users || []).forEach((s) => { m[s.id] = s.name; });   // WP7: logged_by is a user id
       setStaffMap(m);
     }).catch(() => {});
   }, []);

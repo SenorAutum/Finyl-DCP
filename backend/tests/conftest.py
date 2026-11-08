@@ -209,6 +209,9 @@ def seed(db):
         db.add(ClientNextOfKin(tenant_id=b.tenant_id, client_id=b.id, full_name="Kin Person",
                                relationship_type="Spouse", mobile_number="0700000002",
                                active=True))
+        from app.models import KycConsent        # WP7: consent is always required
+        db.add(KycConsent(tenant_id=b.tenant_id, borrower_id=b.id,
+                          consent_data_processing=True, consent_version="test"))
         db.commit()
         return b
 

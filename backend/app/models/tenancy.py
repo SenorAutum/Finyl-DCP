@@ -12,6 +12,12 @@ MODULE_KEYS = [
     "call_center", "impact", "cbk_reporting", "ai_agent",
 ]
 
+# WP7 (review 7.10): what a new DCP starts with. Everything else (CRM, call
+# centre, impact, CBK reporting, AI) is switched on by the Finyl super admin in
+# Super Admin -> modules once that DCP is ready for it. Complaints handling is
+# core because CBK consumer-protection rules require it from day one.
+CORE_MODULE_KEYS = ["lending", "payments", "dashboard", "complaints"]
+
 
 class Tenant(Base):
     __tablename__ = "tenants"

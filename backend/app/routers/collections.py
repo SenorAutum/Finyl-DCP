@@ -147,10 +147,8 @@ def ratiba_consent(body: RatibaConsentIn,
                    tenant_id: int = Depends(require_module("lending")),
                    user=Depends(require_permission("collections.ptp_manage")),
                    db: Session = Depends(get_db), request: Request = None):
-    ip = None
-    if request is not None:
-        ip = request.headers.get("x-forwarded-for") or (
-            request.client.host if request.client else None)
+    from app.core.net import client_ip     # WP7: trusted-proxy aware
+    ip = client_ip(request)
     try:
         row = ratiba_service.record_consent(
             db, tenant_id=tenant_id, loan_id=body.loan_id, phone=body.phone,

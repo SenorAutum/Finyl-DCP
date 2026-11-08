@@ -14,6 +14,7 @@ from app.core.deps import (get_tenant_id, require_permission, get_scope, UserSco
 from app.models import Loan, Borrower, User, Staff, PendingApproval, Product
 from app.schemas import LoanDecision, ClientProfileDecision, ApprovalDecision
 from app.services import eligibility, rbac, sms
+from app.services.authz import user_can
 from app.services import payment_approvals as pay_appr
 from app.services.disbursement import execute_disbursement, execute_refund
 
@@ -203,7 +204,7 @@ _MONEY_APPROVE_PERMS = ("disburse.approve", "refund.approve", "reconcile.approve
 def pending_actions(tenant_id: int = Depends(get_tenant_id),
                     user: User = Depends(require_permission(*_MONEY_APPROVE_PERMS, mode="any")),
                     db: Session = Depends(get_db)):
-    from app.core.permissions import has_permission
+    from app.services.authz import user_can
     rows = (db.query(PendingApproval)
             .filter(PendingApproval.tenant_id == tenant_id,
                     PendingApproval.status == "pending_approval")
@@ -220,7 +221,7 @@ def pending_actions(tenant_id: int = Depends(get_tenant_id),
                     "maker_at": p.maker_at.isoformat() if p.maker_at else None,
                     "is_own": p.maker_user_id == user.id,
                     "can_approve": (p.maker_user_id != user.id
-                                    and has_permission(user.role, need)),
+                                    and user_can(db, user, need)),
                     # WP2: the evidence the checker needs for manual money.
                     "reference": d.get("reference"), "channel": d.get("channel"),
                     "paid_at": d.get("paid_at"), "payer_name": d.get("payer_name"),
@@ -251,8 +252,7 @@ def decide_pending_action(pid: int, body: ApprovalDecision, request: Request,
         raise HTTPException(400, f"Unsupported action type {p.action_type}")
     need, appr_type = rule
     # permission must match the action type
-    from app.core.permissions import has_permission
-    if not has_permission(user.role, need):
+    if not user_can(db, user, need):          # WP7: effective (per-DCP) grants
         raise HTTPException(403, f"Missing required permission: {need}")
     # Per-DCP approver gate for the money-movement action type.
     if user.role != "super_admin" and not rbac.approver_enabled(db, tenant_id, appr_type, user.role):

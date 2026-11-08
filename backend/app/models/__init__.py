@@ -1,6 +1,6 @@
 """Aggregate model imports so Base.metadata sees every table."""
-from app.models.tenancy import Tenant, TenantModule, User, MODULE_KEYS
-from app.models.org import Region, Branch, Staff, Product
+from app.models.tenancy import Tenant, TenantModule, User, MODULE_KEYS, CORE_MODULE_KEYS
+from app.models.org import Region, Branch, Staff, Product, ProductChangeRequest
 from app.models.lending import (Borrower, Loan, Repayment, PaymentTransaction, SmsLog,
                                 SmsTemplate, LOAN_STATUSES, WALLET_OPERATORS,
                                 NEXT_OF_KIN_RELATIONSHIPS, DOC_TYPES)

@@ -151,9 +151,8 @@ async def record_activity(request: Request, call_next):
                 user_id = int(payload.get("sub", 0))
                 tenant_id = payload.get("tenant_id")
                 if user_id and tenant_id:
-                    xff = request.headers.get("x-forwarded-for")
-                    ip = xff.split(",")[0].strip() if xff else (
-                        request.client.host if request.client else None)
+                    from app.core.net import client_ip
+                    ip = client_ip(request)
                     fp = request.headers.get("x-device-fingerprint")
                     db = SessionLocal()
                     try:
