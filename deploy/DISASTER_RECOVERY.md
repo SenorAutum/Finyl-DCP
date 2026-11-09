@@ -242,3 +242,43 @@ reachable.
 - **Monthly:** perform a full test restore (section 5) and confirm counts.
 - **After schema migrations:** run `deploy/backup_db.sh` manually so a
   post-migration snapshot exists.
+
+---
+
+## 8. On AWS (WP9)
+
+Everything above describes the Abacus VM. On AWS (stack `finyl-<env>`, see
+`deploy/STAGING_AWS.md`) backups are automatic and nothing runs on a server you
+manage:
+
+| What | How | Kept |
+|------|-----|------|
+| Database, point in time | RDS automatic backups (02:00 Kenyan time) + transaction logs | 7 days, restore to any second |
+| Database, daily copy | AWS Backup plan `finyl-<env>-daily` (03:00 Kenyan time) | `BackupRetentionDays` (default 35) |
+| Uploaded documents (EFS) | Same AWS Backup plan | Same |
+| Secrets (keys, passwords) | Secrets Manager; kept even if the stack is deleted | Until deleted by hand |
+
+**RPO** (most data that can be lost): a few minutes for the database (point in
+time restore), 24 hours for documents. **RTO** (time to working again): measured
+by the restore drill below; record each result here.
+
+**Monthly restore drill** (safe, never touches the live database): in AWS
+CloudShell, upload `deploy/aws/restore_drill.sh`, `one_off_task.sh` and
+`load_stack_outputs.sh` into one folder and run
+`bash restore_drill.sh staging`. It restores the newest backup into a temporary
+database, checks it with `scripts/verify_restore.py`, deletes it and prints
+PASSED/FAILED and the minutes taken.
+
+| Date | Environment | Backup used | Result | Minutes |
+|------|-------------|-------------|--------|---------|
+|      |             |             |        |         |
+
+**Real recovery** (the live database is damaged): RDS console > Databases >
+`finyl-<env>` > Actions > *Restore to point in time* (choose a time just before
+the damage) into a new name, check it with the drill's verify step, then point
+the app at it: CloudFormation cannot switch the instance in place, so ask for
+help before doing this on production. Documents: AWS Backup console > Backup
+vaults > `finyl-<env>` > choose the EFS recovery point > *Restore*.
+
+The `FIELD_ENCRYPTION_KEY` secret (`finyl-<env>/field-encryption-key`) is needed
+to read national IDs in any restored copy. Never delete or change it.

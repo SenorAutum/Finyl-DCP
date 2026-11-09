@@ -171,7 +171,47 @@ function IntegrationCard({ item, onTested }) {
   );
 }
 
-function RegistryTab() {
+// WP9: Safaricom only sends a DCP's paybill (C2B) payments to Finyl after the
+// web address is registered for that paybill. Needed once per paybill, and again
+// after moving to a new address (e.g. AWS).
+function PaybillRegistration({ tenants }) {
+  const [tenantId, setTenantId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const run = async () => {
+    setBusy(true); setResult(null);
+    try {
+      setResult(await api("/api/v1/integrations/daraja/register-c2b", { method: "POST", body: { tenant_id: Number(tenantId) } }));
+    } catch (e) { setResult({ ok: false, detail: e.detail }); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div className="card p-4 mt-6 max-w-3xl">
+      <div className="font-semibold">Paybill payments (C2B): register Finyl's address with Safaricom</div>
+      <p className="text-xs text-gray-500 mt-1">
+        Customers' paybill payments reach Finyl only after this is done for the DCP's paybill. Do it once
+        per DCP after its M-Pesa settings are saved, and again whenever Finyl moves to a new web address.
+      </p>
+      <div className="flex gap-2 mt-3 flex-wrap">
+        <select className="input !w-64" value={tenantId} onChange={(e) => setTenantId(e.target.value)}>
+          <option value="">Choose a DCP…</option>
+          {tenants.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+        </select>
+        <button className="btn-primary" disabled={!tenantId || busy} onClick={run}>
+          {busy ? "Registering…" : "Register paybill address"}
+        </button>
+      </div>
+      {result && (
+        <div className={`mt-3 text-sm rounded-lg p-3 ${result.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}>
+          {result.ok ? "Registered" : "Not registered"}
+          {result.shortcode ? ` (paybill ${result.shortcode}, ${result.environment})` : ""}: {result.detail}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RegistryTab({ tenants = [] }) {
   const [data, setData] = useState(null);
   const [err, setErr] = useState("");
   const [nonce, setNonce] = useState(0);
@@ -195,6 +235,7 @@ function RegistryTab() {
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {data.map((it) => <IntegrationCard key={it.key} item={it} onTested={() => setNonce((n) => n + 1)} />)}
       </div>
+      <PaybillRegistration tenants={tenants} />
     </div>
   );
 }
@@ -512,7 +553,7 @@ export default function Integrations() {
 
       {!me ? <Spinner /> : (
         <>
-          {tab === "registry" && <RegistryTab />}
+          {tab === "registry" && <RegistryTab tenants={tenants} />}
           {tab === "revenue" && <RevenueTab isSuper={isSuper} tenants={tenants} />}
           {tab === "logs" && <LogsTab isSuper={isSuper} tenants={tenants} />}
         </>

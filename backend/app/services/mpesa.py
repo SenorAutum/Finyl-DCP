@@ -294,7 +294,10 @@ def callback_url(suffix: str) -> str:
     validate the token and reject anything else."""
     base = (settings.DARAJA_CALLBACK_BASE_URL or "").rstrip("/")
     token = settings.MPESA_CALLBACK_TOKEN
-    return f"{base}/api/v1/payments/mpesa/{token}/{suffix}"
+    # WP9: Safaricom refuses to register C2B addresses that contain "mpesa" or
+    # "safaricom", so the callbacks live under /hooks/. The old /mpesa/ paths
+    # still answer for requests sent before the change.
+    return f"{base}/api/v1/payments/hooks/{token}/{suffix}"
 
 
 def _mpesa_ref() -> str:
