@@ -1,0 +1,135 @@
+# Deploy Finyl to AWS (WP9). Run it by hand: Actions > "Deploy to AWS" > Run workflow.
+#
+# It signs in to AWS without stored keys (GitHub OIDC and the stack's deploy role,
+# which only works for the main branch), then:
+#   1. builds the API image and pushes it to the environment's image registry;
+#   2. runs the database migrations once, as a separate short-lived task;
+#   3. optionally loads the demo data (staging only, and only into an empty database);
+#   4. restarts the API on the new image and waits until it is healthy;
+#   5. builds the web app and uploads it to S3 / CloudFront;
+#   6. checks https://<app>/api/health.
+#
+# One GitHub setting is needed: Settings > Secrets and variables > Actions >
+# Variables > AWS_ACCOUNT_ID (your 12-digit AWS account number).
+name: Deploy to AWS
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment name (the stack is finyl-<name>)"
+        required: true
+        default: staging
+      load_demo_data:
+        description: "Load demo data (staging only; skipped if the database already has DCPs)"
+        type: boolean
+        default: false
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: af-south-1
+  ENV_NAME: ${{ inputs.environment }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check settings
+        run: |
+          if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
+            echo "::error::Deploy from the main branch (the AWS role only trusts main)."; exit 1
+          fi
+          if ! [[ "${{ vars.AWS_ACCOUNT_ID }}" =~ ^[0-9]{12}$ ]]; then
+            echo "::error::Set the repository variable AWS_ACCOUNT_ID (12 digits)."; exit 1
+          fi
+          if [ "${{ inputs.load_demo_data }}" = "true" ] && [[ "$ENV_NAME" == prod* ]]; then
+            echo "::error::Demo data is never loaded into production."; exit 1
+          fi
+
+      - name: Sign in to AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/finyl-${{ inputs.environment }}-github-deploy
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Read the stack's settings
+        run: |
+          source deploy/aws/load_stack_outputs.sh "$ENV_NAME"
+          for k in APP_URL CLUSTER SERVICE TASK_FAMILY TASK_SUBNETS API_SG LOG_GROUP IMAGE_REPO WEB_BUCKET DISTRIBUTION_ID; do
+            echo "$k=${!k}" >> "$GITHUB_ENV"
+          done
+
+      - name: Sign in to the image registry
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push the API image
+        run: |
+          docker build --platform linux/amd64 -t "$IMAGE_REPO:$ENV_NAME" -t "$IMAGE_REPO:$GITHUB_SHA" backend
+          docker push "$IMAGE_REPO:$GITHUB_SHA"
+          docker push "$IMAGE_REPO:$ENV_NAME"
+
+      - name: Run database migrations
+        run: bash deploy/aws/one_off_task.sh '["python","scripts/run_migrations.py"]'
+
+      - name: Load demo data
+        if: ${{ inputs.load_demo_data }}
+        run: bash deploy/aws/one_off_task.sh '["python","-m","app.seeds.seed"]'
+
+      - name: Restart the API on the new image
+        run: |
+          desired=$(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" \
+            --query 'services[0].desiredCount' --output text)
+          aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" --force-new-deployment > /dev/null
+          if [ "$desired" = "0" ]; then
+            echo "::warning::The API is switched off (RunServices = No). Update the stack and set RunServices to Yes."
+            echo "API_OFF=true" >> "$GITHUB_ENV"
+          else
+            echo "Waiting until the new version is healthy (usually 3-6 minutes)..."
+            aws ecs wait services-stable --cluster "$CLUSTER" --services "$SERVICE"
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build and upload the web app
+        working-directory: frontend
+        run: |
+          npm ci
+          VITE_API_URL="" npm run build
+          aws s3 sync dist/assets "s3://$WEB_BUCKET/assets" --cache-control "public,max-age=31536000,immutable"
+          aws s3 sync dist "s3://$WEB_BUCKET" --exclude "assets/*" --exclude index.html --cache-control "public,max-age=300"
+          aws s3 cp dist/index.html "s3://$WEB_BUCKET/index.html" --cache-control "no-cache"
+          aws cloudfront create-invalidation --distribution-id "$DISTRIBUTION_ID" --paths "/index.html" "/" > /dev/null
+
+      - name: Check the live site
+        if: ${{ env.API_OFF != 'true' }}
+        run: |
+          for _ in $(seq 1 20); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$APP_URL/api/health" || true)
+            if [ "$code" = "200" ]; then echo "Healthy: $APP_URL"; exit 0; fi
+            sleep 15
+          done
+          echo "::error::$APP_URL/api/health did not answer 200 (last answer: $code)"; exit 1
+
+      - name: Summary
+        if: ${{ always() }}
+        run: |
+          {
+            echo "### Finyl $ENV_NAME"
+            echo "- Web app: ${APP_URL:-unknown}"
+            echo "- Version: \`$GITHUB_SHA\`"
+            [ "${API_OFF:-}" = "true" ] && echo "- **The API is off**: set RunServices = Yes on the stack."
+          } >> "$GITHUB_STEP_SUMMARY"

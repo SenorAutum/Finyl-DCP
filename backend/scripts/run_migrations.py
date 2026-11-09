@@ -53,6 +53,10 @@ MIGRATIONS_DIR = BACKEND_DIR / "migrations"
 _NUM_RE = re.compile(r"^(\d+)")
 
 
+# Any fixed number; shared by every copy of the migration runner.
+MIGRATION_LOCK_KEY = 4_317_051_202
+
+
 def _numeric_key(path: str) -> tuple:
     """Sort key: (leading number, filename) so 002 < 010 < 016 numerically."""
     name = os.path.basename(path)
@@ -129,6 +133,14 @@ def main() -> int:
     skipped_count = 0
     try:
         conn.autocommit = False
+
+        # WP9: on AWS two copies of the app (or a deploy and a restart) can start
+        # the migrations at the same moment. A database-wide lock makes the second
+        # one wait and then find everything already applied, instead of both
+        # running the same file. The lock ends when this connection closes.
+        with conn.cursor() as cur:
+            cur.execute("SELECT pg_advisory_lock(%s)", (MIGRATION_LOCK_KEY,))
+        conn.commit()
 
         # 1) Ensure the target schema exists and pin the search_path so the
         #    tracking table (and every migration) lands in the right schema.

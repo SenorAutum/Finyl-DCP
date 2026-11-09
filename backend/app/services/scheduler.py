@@ -403,7 +403,7 @@ def guarded(job_id: str, fn, every_minutes: int | None = None):
                 run_id = claim_run(db, job_id, _slot(every_minutes))
             except Exception:
                 db.rollback()
-                logger.exception("%s: could not claim a run slot; skipping", job_id)
+                logger.exception("scheduled_job_failed job=%s: could not claim a run slot", job_id)
                 return
             if run_id is None:
                 return                      # another copy is running / ran it
@@ -414,7 +414,7 @@ def guarded(job_id: str, fn, every_minutes: int | None = None):
                     detail = ", ".join(f"{k}={v}" for k, v in out.items())[:2000]
             except Exception as exc:        # jobs normally catch their own errors
                 status, detail = "failed", f"{type(exc).__name__}: {exc}"
-                logger.exception("%s failed", job_id)
+                logger.exception("scheduled_job_failed job=%s", job_id)
             try:
                 finish_run(db, run_id, status, detail)
             except Exception:
