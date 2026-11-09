@@ -428,16 +428,32 @@ def submit_dataset(dataset_name: str, rows: list, reporting_month: date,
     }
 
 
+def datasets_filed(db: Session, tenant_id: int, reporting_month: date) -> set:
+    """Dataset keys for this month that already have a log that is not an error
+    (WP8). Used so the scheduler retries only the datasets that failed."""
+    labels = {v: k for k, v in DATASET_LABELS.items()}
+    rows = (db.query(CbkSubmissionLog.dataset_name, CbkSubmissionLog.status)
+            .filter(CbkSubmissionLog.tenant_id == tenant_id,
+                    CbkSubmissionLog.reporting_month == reporting_month).all())
+    return {labels[name] for name, status in rows
+            if name in labels and (status or "").lower() not in ("error", "rejected", "failed")}
+
+
 def run_monthly_submission(db: Session, tenant_id: int, reporting_month: date,
-                           submitted_by_id: Optional[int] = None) -> dict:
+                           submitted_by_id: Optional[int] = None,
+                           skip: Optional[set] = None) -> dict:
     """Extract and submit all five datasets in the mandatory CBK sequence.
 
     Each dataset gets its own CbkSubmissionLog row (pending -> submitted/error).
     A configuration/credential problem is recorded on the row and the run stops.
+    ``skip`` (WP8): dataset keys already filed this month, which are not resent.
     """
     results = []
     for key in DATASET_SEQUENCE:
         label = DATASET_LABELS[key]
+        if skip and key in skip:
+            results.append({"name": label, "rows": 0, "status": "already filed"})
+            continue
         request_id = str(uuid.uuid4())
         try:
             rows = EXTRACTORS[key](db, tenant_id, reporting_month)

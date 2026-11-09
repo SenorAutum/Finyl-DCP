@@ -122,6 +122,10 @@ function SmsTable({ reloadKey }) {
 }
 
 export default function Payments() {
+  // WP8: sending SMS and reading the SMS log need permissions; the "run" buttons
+  // are Finyl-only (each DCP's own schedule now runs automatically every hour).
+  const { can, user } = useAuth();
+  const isSuper = user?.role === "super_admin";
   const [tab, setTab] = useState("tx");
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
@@ -155,16 +159,16 @@ export default function Payments() {
     <div>
       <PageHeader title="Payments & SMS Hub" crumbs={["Transactions", "Payments"]}
         actions={<>
-          <button className="btn-ghost" disabled={busy} onClick={() => runJob("/api/v1/notifications/jobs/run-repayment-reminders", "Repayment reminders")}>⏰ Run reminders</button>
-          <button className="btn-ghost" disabled={busy} onClick={() => runJob("/api/v1/notifications/jobs/run-overdue-alerts", "Overdue alerts")}>🚨 Run overdue alerts</button>
-          <button className="btn-primary" onClick={() => setSmsModal(true)}>✉ Send SMS</button>
+          {isSuper && <button className="btn-ghost" disabled={busy} onClick={() => runJob("/api/v1/notifications/jobs/run-repayment-reminders", "Repayment reminders")}>⏰ Run reminders</button>}
+          {isSuper && <button className="btn-ghost" disabled={busy} onClick={() => runJob("/api/v1/notifications/jobs/run-overdue-alerts", "Overdue alerts")}>🚨 Run overdue alerts</button>}
+          {can("sms.send") && <button className="btn-primary" onClick={() => setSmsModal(true)}>✉ Send SMS</button>}
         </>} />
 
       {msg && <div className="mb-3 text-sm text-teal bg-teal-50 rounded-lg p-3 font-mono">{msg}</div>}
 
       <div className="card overflow-hidden">
         <div className="flex border-b border-border">
-          {[["tx", "M-Pesa Transactions"], ["sms", "SMS Dispatch Log"]].map(([k, label]) => (
+          {[["tx", "M-Pesa Transactions"], ...(can("sms.view") ? [["sms", "SMS Dispatch Log"]] : [])].map(([k, label]) => (
             <button key={k} onClick={() => setTab(k)}
               className={`px-5 py-3 text-sm font-semibold border-b-2 -mb-px ${tab === k ? "border-accent text-accent" : "border-transparent text-gray-400 hover:text-charcoal"}`}>
               {label}

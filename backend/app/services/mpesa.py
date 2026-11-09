@@ -199,6 +199,37 @@ def _missing_fields(creds: DarajaCreds, fields) -> list:
     return [f for f in fields if _clean(getattr(creds, f, None)) is None]
 
 
+def simulation_allowed(creds: DarajaCreds | None = None) -> bool:
+    """WP8: may the app pretend to talk to Safaricom (demo/test only)? Never when
+    the platform runs against production Daraja, and never for production keys,
+    whatever a single DCP has configured."""
+    if (settings.DARAJA_ENVIRONMENT or "sandbox").strip().lower() == "production":
+        return False
+    return not (creds is not None and creds.is_production)
+
+
+def guard_no_simulation(creds: DarajaCreds, what: str) -> None:
+    """Refuse instead of simulating when simulation is not allowed (WP8)."""
+    if not creds.configured and not simulation_allowed(creds):
+        raise DarajaNotConfigured(
+            f"M-Pesa is not set up for this DCP, so the {what} was not sent. "
+            "Add the DCP's Daraja keys in Integrations.")
+
+
+def whole_shillings(amount) -> int:
+    """M-Pesa amounts are whole shillings. Refuse cents or non-positive amounts
+    rather than silently cutting them off (WP8, review 7.4). Callers already
+    round payouts and refunds to whole shillings; this is the last check."""
+    from decimal import Decimal, InvalidOperation
+    try:
+        d = Decimal(str(amount))
+    except (InvalidOperation, ValueError):
+        raise ValueError(f"Invalid M-Pesa amount: {amount!r}")
+    if not d.is_finite() or d <= 0 or d != d.to_integral_value():
+        raise ValueError(f"M-Pesa amounts must be whole shillings above zero (got {amount}).")
+    return int(d)
+
+
 def guard_production_b2c(creds: DarajaCreds) -> None:
     """Fail-closed production guard for B2C payouts.
 
@@ -357,7 +388,7 @@ def _simulate_b2c_accept(phone: str, amount: float, remarks: str,
     request = {
         "InitiatorName": creds.initiator_name,
         "CommandID": "BusinessPayment",
-        "Amount": int(amount),
+        "Amount": whole_shillings(amount),
         "PartyA": creds.shortcode,
         "PartyB": msisdn,
         "Remarks": (remarks or "")[:100],
@@ -412,6 +443,7 @@ def b2c_disburse(phone: str, amount: float, remarks: str,
     # Fail-closed: in production, a missing credential must REFUSE the payout —
     # never silently simulate it or fall back to the sandbox host.
     guard_production_b2c(creds)
+    guard_no_simulation(creds, "payout")
     if not creds.configured:
         return _simulate_b2c_accept(phone, amount, remarks, creds)
     token = get_access_token(creds=creds)
@@ -420,7 +452,7 @@ def b2c_disburse(phone: str, amount: float, remarks: str,
         "InitiatorName": creds.initiator_name,
         "SecurityCredential": creds.security_credential,
         "CommandID": "BusinessPayment",
-        "Amount": int(amount),
+        "Amount": whole_shillings(amount),
         "PartyA": creds.shortcode,
         "PartyB": msisdn,
         "Remarks": remarks[:100],
@@ -494,6 +526,7 @@ def reversal_request(transaction_id: str, amount: float, remarks: str,
     sandbox/demo returns a simulated asynchronous acknowledgement."""
     creds = creds or _settings_creds()
     guard_production_b2c(creds)  # same initiator + security credential requirement
+    guard_no_simulation(creds, "reversal")
     if not creds.configured:
         return _simulate_reversal_accept(transaction_id, amount, remarks, creds)
     token = get_access_token(creds=creds)
@@ -579,6 +612,7 @@ def stk_push(phone: str, amount: float, account_ref: str,
              creds: DarajaCreds | None = None) -> dict:
     """Real Daraja Lipa-na-M-Pesa STK push (collections prompt)."""
     creds = creds or _settings_creds()
+    guard_no_simulation(creds, "payment request")
     if not creds.configured:
         return _simulate_stk_accept(phone, amount, account_ref, creds)
     token = get_access_token(creds=creds)
@@ -589,7 +623,7 @@ def stk_push(phone: str, amount: float, account_ref: str,
         "Password": _stk_password(ts, creds),
         "Timestamp": ts,
         "TransactionType": "CustomerPayBillOnline",
-        "Amount": int(amount),
+        "Amount": whole_shillings(amount),
         "PartyA": msisdn,
         "PartyB": creds.shortcode,
         "PhoneNumber": msisdn,

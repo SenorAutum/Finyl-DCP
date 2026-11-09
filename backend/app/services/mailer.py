@@ -20,7 +20,10 @@ def is_configured() -> bool:
     return bool(settings.SMTP_HOST and settings.SMTP_FROM)
 
 
-def send_email(to: str, subject: str, body: str) -> bool:
+def send_email(to: str, subject: str, body: str,
+               attachments: list[tuple[str, bytes, str]] | None = None) -> bool:
+    """``to`` may hold several addresses separated by commas. ``attachments`` is
+    a list of (file name, content, MIME type such as "text/csv")."""
     if not (is_configured() and to):
         return False
     msg = EmailMessage()
@@ -28,6 +31,10 @@ def send_email(to: str, subject: str, body: str) -> bool:
     msg["To"] = to
     msg["Subject"] = subject
     msg.set_content(body)
+    for name, content, mime in attachments or []:
+        maintype, _, subtype = (mime or "application/octet-stream").partition("/")
+        msg.add_attachment(content, maintype=maintype, subtype=subtype or "octet-stream",
+                           filename=name)
     try:
         with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=20) as smtp:
             if settings.SMTP_STARTTLS:

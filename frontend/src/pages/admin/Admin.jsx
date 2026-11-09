@@ -128,6 +128,8 @@ export default function Admin() {
         </div>
       </div>
 
+      <JobRuns />
+
       {creating && (
         <Modal title="Onboard New Tenant" onClose={() => setCreating(false)}>
           <form onSubmit={createTenant} className="space-y-3">
@@ -138,7 +140,7 @@ export default function Admin() {
                 onChange={(e) => setForm({ ...form, code: e.target.value.toUpperCase() })} /></div>
             <div><label className="label">Brand color</label>
               <input type="color" className="input !h-10 !p-1" value={form.logo_color} onChange={(e) => setForm({ ...form, logo_color: e.target.value })} /></div>
-            <p className="text-xs text-gray-400">New tenants start with every module enabled; adjust flags in the matrix afterwards.</p>
+            <p className="text-xs text-gray-400">New DCPs start with the core modules only (lending, payments, dashboard, complaints); switch on the rest in the matrix afterwards.</p>
             <div className="flex justify-end gap-2">
               <button type="button" className="btn-ghost" onClick={() => setCreating(false)}>Cancel</button>
               <button className="btn-primary">Create tenant</button>
@@ -149,3 +151,50 @@ export default function Admin() {
     </div>
   );
 }
+
+
+// WP8: background jobs (reconciliation, SMS reminders, report e-mails, CBK
+// filing...). One row per job per time slot, whichever server copy ran it.
+const JOB_LABELS = {
+  auto_reconcile: "Stuck payout check", webhook_retry: "M-Pesa message retry",
+  webhook_purge: "M-Pesa message clean-up", ptp_reminders: "Promise-to-pay reminders",
+  gps_stipend: "GPS stipends", collection_efficiency: "Collection efficiency",
+  otp_cleanup: "Expired code clean-up", cbk_gdi_submit: "CBK GDI filing",
+  lifecycle_sms: "Repayment SMS (each DCP's hour)", report_schedules: "Scheduled report e-mails",
+  purge_job_runs: "Old job record clean-up",
+};
+function JobRuns() {
+  const [rows, setRows] = useState(null);
+  const [err, setErr] = useState("");
+  useEffect(() => {
+    api("/api/v1/admin/scheduled-jobs?limit=60").then((r) => setRows(r.items || []))
+      .catch((e) => { setErr(e.detail || "Could not load background jobs"); setRows([]); });
+  }, []);
+  const tone = { ok: "bg-emerald-100 text-emerald-700", failed: "bg-red-100 text-red-700", running: "bg-blue-100 text-blue-700" };
+  return (
+    <div className="card overflow-hidden mt-5">
+      <div className="px-5 py-3 border-b border-border">
+        <div className="font-bold text-base">Background jobs</div>
+        <div className="text-xs text-gray-400">Latest runs. Each job runs once per time slot even when several copies of the server are running.</div>
+      </div>
+      {err && <div className="m-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">{err}</div>}
+      {rows === null ? <Spinner /> : rows.length === 0 ? <div className="p-5 text-sm text-gray-400">No runs recorded yet.</div> : (
+        <div className="overflow-x-auto max-h-[420px]">
+          <table className="w-full text-sm">
+            <thead><tr><th className="th">Job</th><th className="th">Started</th><th className="th">Result</th><th className="th">Details</th><th className="th">Server</th></tr></thead>
+            <tbody>{rows.map((r) => (
+              <tr key={r.id} className="border-t border-border">
+                <td className="td font-semibold">{JOB_LABELS[r.job_id] || r.job_id}</td>
+                <td className="td whitespace-nowrap">{new Date(r.started_at).toLocaleString("en-KE", { dateStyle: "medium", timeStyle: "short" })}</td>
+                <td className="td"><span className={`inline-flex px-2 py-0.5 rounded-full text-[11px] font-semibold ${tone[r.status] || "bg-gray-100 text-gray-600"}`}>{r.status}</span></td>
+                <td className="td text-xs text-gray-500 max-w-[360px] truncate" title={r.detail || ""}>{r.detail || "—"}</td>
+                <td className="td text-xs text-gray-400">{r.host || "—"}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
