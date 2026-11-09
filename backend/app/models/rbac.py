@@ -10,6 +10,7 @@ from sqlalchemy import (Boolean, Column, DateTime, ForeignKey, Integer,
 from sqlalchemy.dialects.postgresql import JSONB
 
 from app.core.database import Base
+from app.core.timeutil import UTCDateTime
 
 # scope_type: role | branch | region  (scope_id references the role name string
 # encoded as text via a companion column, or a branch/region id)
@@ -33,8 +34,8 @@ class ApprovalThreshold(Base):
     scope_key = Column(String(60), nullable=False)           # role name OR branch/region id (as text)
     threshold_type = Column(String(20), nullable=False)      # loan_approval | disbursement | refund
     amount = Column(Numeric(14, 2), nullable=False, default=0)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(UTCDateTime, default=datetime.utcnow)
+    updated_at = Column(UTCDateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class ApproverSetting(Base):
@@ -53,7 +54,7 @@ class ApproverSetting(Base):
     role = Column(String(40), nullable=False)            # approver role key
     enabled = Column(Boolean, nullable=False, default=True)
     updated_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(UTCDateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 APPROVAL_TYPES = ["loan", "client", "disbursement", "refund"]
@@ -75,7 +76,7 @@ class SmsAutomationSetting(Base):
     automation_enabled = Column(Boolean, nullable=False, default=True)
     send_hour = Column(Integer, nullable=False, default=7)   # 0-23, server-local hour
     updated_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(UTCDateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 # Defaults applied when a tenant has no sms_automation_settings row yet.
@@ -100,7 +101,7 @@ class RolePermissionOverride(Base):
     permission_key = Column(String(60), nullable=False)
     granted = Column(Boolean, nullable=False, default=True)
     updated_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(UTCDateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class CustomRole(Base):
@@ -117,8 +118,8 @@ class CustomRole(Base):
     role_key = Column(String(40), nullable=False)
     label = Column(String(120), nullable=False)
     updated_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(UTCDateTime, default=datetime.utcnow)
+    updated_at = Column(UTCDateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class AuditLog(Base):
@@ -137,7 +138,7 @@ class AuditLog(Base):
     data_before = Column(JSONB)                              # Phase 2: structured pre-change snapshot
     data_after = Column(JSONB)                               # Phase 2: structured post-change snapshot
     ip = Column(String(50))
-    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    created_at = Column(UTCDateTime, default=datetime.utcnow, index=True)
 
 
 class PendingApproval(Base):
@@ -157,9 +158,9 @@ class PendingApproval(Base):
     reason = Column(String(200))
     status = Column(String(20), default="pending_approval", index=True)  # pending_approval | approved | rejected
     maker_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    maker_at = Column(DateTime, default=datetime.utcnow)
+    maker_at = Column(UTCDateTime, default=datetime.utcnow)
     checker_user_id = Column(Integer, ForeignKey("users.id"))
-    checker_at = Column(DateTime)
+    checker_at = Column(UTCDateTime)
     details = Column(JSON, default=dict)
 
 
@@ -175,10 +176,10 @@ class ReportSchedule(Base):
     frequency = Column(String(20), default="weekly")        # daily | weekly | monthly
     recipients = Column(String(400))                        # comma-separated emails
     active = Column(Boolean, default=True)
-    last_run_at = Column(DateTime)
+    last_run_at = Column(UTCDateTime)
     last_status = Column(String(20))       # WP8: sent | failed | skipped
     last_error = Column(Text)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(UTCDateTime, default=datetime.utcnow)
 
 
 class ReportTemplate(Base):
@@ -190,7 +191,7 @@ class ReportTemplate(Base):
     user_id = Column(Integer, ForeignKey("users.id"))
     name = Column(String(120), nullable=False)
     definition = Column(JSON, default=dict)                 # columns, filters, grouping
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(UTCDateTime, default=datetime.utcnow)
 
 
 class AnomalyFlag(Base):
@@ -204,4 +205,4 @@ class AnomalyFlag(Base):
     entity_id = Column(String(40))
     note = Column(Text, nullable=False)
     status = Column(String(20), default="open")             # open | acknowledged | resolved
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(UTCDateTime, default=datetime.utcnow)

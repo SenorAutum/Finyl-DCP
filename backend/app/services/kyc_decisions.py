@@ -286,6 +286,7 @@ def evaluate(db: Session, *, tenant_id: int, client_id: int) -> KycDecision:
     if guar_req:
         g = (db.query(Guarantor)
              .filter(Guarantor.tenant_id == tenant_id, Guarantor.client_id == client_id,
+                     Guarantor.active.is_(True),
                      Guarantor.kyc_status == "validated").first())
         checks["guarantor"] = {"pass": g is not None}
         if g is None:

@@ -35,7 +35,8 @@ from app.models import (Borrower, ClientDocument, ClientMobileWallet,
                         PaymentTransaction, User, WALLET_OPERATORS)
 from app.models import KycConsent, ClientConsentLog, CrmLead, OtpToken
 from app.schemas import (ClientCreate, EkycVerifyRequest, ValidateMpesaRequest,
-                         ConsentIn, RequestConsentOtpIn, VerifyConsentOtpIn, ConfirmMpesaIn)
+                         ConsentIn, RequestConsentOtpIn, VerifyConsentOtpIn, ConfirmMpesaIn,
+                         WalletUnlockIn)
 from app.services import crb, ekyc, mpesa, storage, otp, sms
 from app.services import alt_phone_validation, client_edit, kyc_decisions, mpesa_confirmation
 from app.services.onboarding import initial_profile_state
@@ -896,6 +897,58 @@ def build_router(prefix: str, tag: str) -> APIRouter:
                     details={"wallet_id": wallet_id}, request=request)
         db.commit()
         return {"ok": True}
+
+    @router.post("/{client_id}/wallets/{wallet_id}/unlock")
+    def unlock_wallet(client_id: int, wallet_id: int, body: WalletUnlockIn,
+                      tenant_id: int = Depends(require_module("lending")),
+                      db: Session = Depends(get_db),
+                      user: User = Depends(require_permission("wallets.unlock")),
+                      scope: UserScope = Depends(get_scope),
+                      request: Request = None):
+        """WP10: unlock a confirmed wallet so it can be corrected or removed.
+        Needs ``wallets.unlock`` (Branch Manager and DCP administrator by
+        default), a written reason, and someone who neither captured the client
+        nor owns the client's portfolio. Recorded in the audit log and the CBK
+        event log. Payouts always go to the client's main phone, whose own
+        M-Pesa confirmation is not affected."""
+        client = _get_client(db, tenant_id, client_id)
+        if not scope.can_see_client(client):
+            raise HTTPException(403, "Client is outside your data scope")
+        row = (db.query(ClientMobileWallet)
+               .filter(ClientMobileWallet.id == wallet_id,
+                       ClientMobileWallet.client_id == client_id,
+                       ClientMobileWallet.tenant_id == tenant_id)
+               .with_for_update().first())
+        if not row:
+            raise HTTPException(404, "Wallet not found")
+        if not row.wallet_locked:
+            raise HTTPException(409, "This wallet is not locked.")
+        reason = " ".join((body.reason or "").split())
+        if len(reason) < 10:
+            raise HTTPException(422, "Explain why the wallet is being unlocked (at least 10 "
+                                     "characters, for example 'Client changed M-Pesa line, "
+                                     "new SIM seen in branch').")
+        if client.created_by_user_id and user.id == client.created_by_user_id:
+            raise HTTPException(403, "You captured this client, so someone else must unlock "
+                                     "the wallet.")
+        if client.officer_staff_id and getattr(user, "staff_id", None) == client.officer_staff_id:
+            raise HTTPException(403, "You are this client's relationship officer, so someone "
+                                     "else must unlock the wallet.")
+        before = {"locked_at": row.locked_at.isoformat() if row.locked_at else None,
+                  "locked_by": row.locked_by}
+        row.wallet_locked = False
+        row.locked_at = None
+        row.locked_by = None
+        obs.log_cbk_event(obs.CBK_WALLET_UNLOCKED, tenant_id=tenant_id, user_id=user.id,
+                          entity_type="client", entity_id=client.id,
+                          outcome="unlocked", detail=str(wallet_id))
+        write_audit(db, tenant_id=tenant_id, user=user, action="client.wallet_unlocked",
+                    entity_type="client", entity_id=client.id,
+                    details={"wallet_id": wallet_id, "reason": reason[:500],
+                             "number_last4": (row.mobile_number or row.wallet_number or "")[-4:],
+                             **before}, request=request)
+        db.commit()
+        return {"wallet_id": wallet_id, "wallet_locked": False, "unlocked_by": user.full_name}
 
     @router.delete("/{client_id}/next-of-kin/{nok_id}")
     def delete_nok(client_id: int, nok_id: int,

@@ -15,6 +15,7 @@ from app.core.ownership import OwnershipError
 from app.core.config import settings
 from app.core.database import Base, SessionLocal, engine, ensure_schema
 from app.core.obs import configure_logging
+from app.core.timeutil import install_json_encoder
 from app.core.security import decode_token
 from app import models  # noqa: F401 — register all tables on Base.metadata
 from app.routers import (admin, ai, auth, call_center, cbk, clients, complaints, crm,
@@ -29,6 +30,8 @@ from app.routers import (guarantors, kyc_escalations, face_validation,
 
 # OPS-01: configure structured stdout/journald logging before the app is built.
 configure_logging()
+
+install_json_encoder()   # WP10: every time leaves the API as UTC with "Z"
 
 app = FastAPI(
     title="Finyl-DCP API",

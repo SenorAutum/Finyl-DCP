@@ -36,7 +36,7 @@ def check_confirmer(user, *, created_by_user_id: int | None,
 
 
 def check_name_and_evidence(*, expected_name: str, registered_name: str,
-                            evidence: str) -> tuple[str, str]:
+                            evidence: str, who: str = "client") -> tuple[str, str]:
     reg = " ".join((registered_name or "").split()).upper()
     ev = (evidence or "").strip()
     if not reg:
@@ -46,7 +46,7 @@ def check_name_and_evidence(*, expected_name: str, registered_name: str,
                                  "'KES 1 send-money test on 28 Oct, M-Pesa showed ...').")
     if not names_match(expected_name, reg):
         raise HTTPException(
-            422, f"The M-Pesa name '{reg}' does not match the client's names "
+            422, f"The M-Pesa name '{reg}' does not match the {who}'s names "
                  f"('{expected_name}'). Do not confirm; log a KYC escalation instead.")
     return reg, ev
 

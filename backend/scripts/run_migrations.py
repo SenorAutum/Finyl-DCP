@@ -147,6 +147,7 @@ def main() -> int:
         with conn.cursor() as cur:
             cur.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
             cur.execute(f'SET search_path TO "{schema}", public')
+            cur.execute("SET TIME ZONE 'UTC'")   # WP10: same zone as the app
             # 2) Ensure the tracking table exists.
             cur.execute(
                 """

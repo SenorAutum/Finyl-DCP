@@ -5,7 +5,7 @@
 //    submission of the five mandatory datasets, submission history, status
 //    checks, nil submissions and the compliance filing calendar.
 import { useEffect, useState } from "react";
-import { api, download } from "../../lib/api";
+import { api, download, toDate } from "../../lib/api";
 import { Badge, Empty, PageHeader, Spinner } from "../../components/ui";
 
 const FLAG_LABELS = {
@@ -13,7 +13,7 @@ const FLAG_LABELS = {
   rapid_small_transactions: "Rapid small transactions",
   velocity: "High-velocity account",
 };
-const fmtDT = (d) => (d ? new Date(d).toLocaleString("en-KE", { dateStyle: "medium", timeStyle: "short" }) : "—");
+const fmtDT = (d) => (d ? toDate(d).toLocaleString("en-KE", { dateStyle: "medium", timeStyle: "short" }) : "—");
 const fmtMonth = (d) =>
   d ? new Date(d + (d.length === 7 ? "-01" : "")).toLocaleDateString("en-KE", { month: "long", year: "numeric" }) : "—";
 

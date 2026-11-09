@@ -11,19 +11,25 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 
+def _read_sql_utc(*args, **kwargs):
+    """pd.read_sql with times as naive UTC (WP10: the columns now carry a zone)."""
+    from app.core.timeutil import naive_utc_frame
+    return naive_utc_frame(pd.read_sql(*args, **kwargs))
+
+
 def recommend_pairings(db: Session, tenant_id: int, limit: int = 20) -> list[dict]:
-    borrowers = pd.read_sql(text("""
+    borrowers = _read_sql_utc(text("""
         SELECT b.id, b.first_name || ' ' || b.last_name AS name, b.business_sector,
                b.region_id, r.name AS region_name, b.phone
         FROM borrowers b LEFT JOIN regions r ON r.id = b.region_id
         WHERE b.tenant_id = :t
     """), db.connection(), params={"t": tenant_id})
-    loans = pd.read_sql(text("""
+    loans = _read_sql_utc(text("""
         SELECT id, borrower_id, principal::float, interest_rate, status,
                outstanding_balance::float, loan_cycle_number
         FROM loans WHERE tenant_id = :t
     """), db.connection(), params={"t": tenant_id})
-    surveys = pd.read_sql(text("""
+    surveys = _read_sql_utc(text("""
         SELECT borrower_id, monthly_sales_pre::float, monthly_sales_post::float
         FROM impact_surveys WHERE tenant_id = :t
     """), db.connection(), params={"t": tenant_id})

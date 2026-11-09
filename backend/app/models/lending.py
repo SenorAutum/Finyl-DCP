@@ -9,6 +9,7 @@ from sqlalchemy.orm import relationship
 
 from app.core.crypto import EncryptedText, pii_hash
 from app.core.database import Base
+from app.core.timeutil import UTCDateTime
 
 # "processing" = a B2C disbursement has been accepted by Daraja and is awaiting
 # the asynchronous Result callback; the loan is NOT yet active/funded. On a
@@ -58,7 +59,7 @@ class Borrower(Base):
     baseline_employees = Column(Integer, default=0)
     kyc_status = Column(String(20), default="draft")   # draft | validated | failed
     credit_score = Column(Integer, default=0)          # 0-900 CRB-style score
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(UTCDateTime, default=datetime.utcnow)
 
     # --- KYC / National ID details (all additive & nullable) -------------------
     serial_number = Column(String(30))          # ID booklet serial (OCR: "SERIAL NUMBER")
@@ -80,7 +81,7 @@ class Borrower(Base):
     # --- M-Pesa name-lookup validation ---------------------------------------
     mpesa_validated = Column(Boolean, default=False)
     mpesa_validation_name = Column(String(120))
-    mpesa_validated_at = Column(DateTime)
+    mpesa_validated_at = Column(UTCDateTime)
     # WP6 (F15): how the name was confirmed, for which number, by whom, on what.
     mpesa_validation_method = Column(String(20))      # provider | manual
     mpesa_validation_phone = Column(String(20))
@@ -90,7 +91,7 @@ class Borrower(Base):
     # --- External eKYC provider verification ---------------------------------
     ekyc_status = Column(String(20))            # verified | not_verified | error | pending
     ekyc_reference = Column(String(60))
-    ekyc_checked_at = Column(DateTime)
+    ekyc_checked_at = Column(UTCDateTime)
 
     # --- Phase 2 (migrations 017, 019, 021) ---------------------------------
     business_operational_age_months = Column(Integer)
@@ -181,7 +182,7 @@ class Loan(Base):
     # CBK LN 191/2026 reg. 56(4): interest for the unused part of the term,
     # written off when the loan is repaid in full before its due date (mig. 031).
     interest_rebate = Column(Numeric(12, 2), default=0)
-    early_settled_at = Column(DateTime)
+    early_settled_at = Column(UTCDateTime)
     # WP5 (F23, migration 034): the price agreed when the loan was created
     # (fees, excise, payout, balance — services/pricing.py) and the part of the
     # balance that is fees + excise when the product adds them to the balance.
@@ -191,7 +192,7 @@ class Loan(Base):
     penalties_charged = Column(Numeric(12, 2), default=0)
     active_lock = Column(Boolean, nullable=False, default=False)  # Phase 2 (migration 021)
     loan_cycle_number = Column(Integer, default=1)   # borrower's Nth loan — drives impact survey gate
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(UTCDateTime, default=datetime.utcnow)
 
     # --- RBAC approval / maker-checker / escalation (additive & nullable) ----
     approved_by_user_id = Column(Integer, ForeignKey("users.id"))
@@ -225,7 +226,7 @@ class Repayment(Base):
     interest_component = Column(Numeric(12, 2), default=0)
     # WP2: portion of the payment applied to penalties / fees / charges.
     fee_component = Column(Numeric(12, 2), default=0)
-    payment_date = Column(DateTime, nullable=False, index=True)
+    payment_date = Column(UTCDateTime, nullable=False, index=True)
     method = Column(String(20), default="mpesa_c2b")  # mpesa_c2b | stk_push | cash
     mpesa_ref = Column(String(30))
 
@@ -248,7 +249,7 @@ class PaymentTransaction(Base):
     #   timed_out  = Daraja QueueTimeOut fired; unresolved, needs reconciliation
     status = Column(String(20), default="success")
     raw_payload = Column(JSON, default=dict)           # full Daraja-shaped request/response
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(UTCDateTime, default=datetime.utcnow)
 
 
 class SmsLog(Base):
@@ -264,11 +265,11 @@ class SmsLog(Base):
     provider_ref = Column(String(80))                      # provider message id
     provider_response = Column(Text)                       # raw provider response (truncated)
     error = Column(Text)                                   # failure reason (null on success)
-    sent_at = Column(DateTime, default=datetime.utcnow)
+    sent_at = Column(UTCDateTime, default=datetime.utcnow)
 
     # --- Delivery reporting (populated by the Uwazii DLR callback) ----------
     delivery_status = Column(String(15), default="unknown")  # unknown | delivered | failed | undelivered
-    delivered_at = Column(DateTime)                          # set when a DLR marks it delivered
+    delivered_at = Column(UTCDateTime)                          # set when a DLR marks it delivered
 
     # --- Per-message billing (snapshot of the active rate at send time) -----
     billable = Column(Boolean, default=False)                # True only for status='sent'
@@ -295,4 +296,4 @@ class SmsTemplate(Base):
     event_key = Column(String(40), nullable=False)  # loan_qualified | loan_disbursed | ...
     body = Column(Text, nullable=False)
     active = Column(Boolean, nullable=False, default=True)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(UTCDateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

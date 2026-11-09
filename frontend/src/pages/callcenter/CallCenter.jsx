@@ -2,10 +2,10 @@
 // Collection Efficiency = promises kept (repayment within 3 days of PTP date).
 import { useEffect, useState } from "react";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { api, fmtDate, fmtKES } from "../../lib/api";
+import { api, fmtDate, fmtKES, toDate } from "../../lib/api";
 import { Badge, Empty, Modal, PageHeader, Pagination, Spinner } from "../../components/ui";
 
-const fmtDT = (d) => (d ? new Date(d).toLocaleString("en-KE", { dateStyle: "medium", timeStyle: "short" }) : "—");
+const fmtDT = (d) => (d ? toDate(d).toLocaleString("en-KE", { dateStyle: "medium", timeStyle: "short" }) : "—");
 
 export default function CallCenter() {
   const [tab, setTab] = useState("scorecard");

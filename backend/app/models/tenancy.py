@@ -5,6 +5,7 @@ from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, U
 from sqlalchemy.orm import relationship
 
 from app.core.database import Base
+from app.core.timeutil import UTCDateTime
 
 # Canonical list of feature-flag module keys used across backend + frontend.
 MODULE_KEYS = [
@@ -27,7 +28,7 @@ class Tenant(Base):
     code = Column(String(20), nullable=False, unique=True)
     logo_color = Column(String(16), default="#10B981")
     active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(UTCDateTime, default=datetime.utcnow)
 
     modules = relationship("TenantModule", back_populates="tenant", cascade="all, delete-orphan")
     users = relationship("User", back_populates="tenant")
@@ -64,14 +65,14 @@ class User(Base):
     tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)  # null for super_admin
     staff_id = Column(Integer, ForeignKey("staff.id"), nullable=True)
     active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(UTCDateTime, default=datetime.utcnow)
 
     # --- RBAC additions (all additive & nullable) ----------------------------
     branch_id = Column(Integer, ForeignKey("branches.id"), nullable=True)   # scoping for branch_manager
     region_id = Column(Integer, ForeignKey("regions.id"), nullable=True)    # scoping for regional_manager
     is_locked = Column(Boolean, default=False)                              # admin lock-out
     force_password_reset = Column(Boolean, default=False)
-    deactivated_at = Column(DateTime, nullable=True)
+    deactivated_at = Column(UTCDateTime, nullable=True)
 
     # --- AUTH-02 brute-force lockout + AUTH-04 token revocation (all additive) --
     failed_login_attempts = Column(Integer, nullable=False, default=0, server_default="0")

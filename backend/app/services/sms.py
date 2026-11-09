@@ -351,6 +351,8 @@ CANONICAL_PLACEHOLDERS = {
     "amount": "Loan principal (payment amount for receipts), KES, thousands-grouped",
     "due_date": "Loan due date",
     "balance": "Outstanding balance, KES, thousands-grouped",
+    "payoff_amount": "Amount that clears the loan today, KES (early-repayment rebate "
+                     "applied, CBK LN 191/2026 reg. 56(4))",
     "account_number": "Loan account number",
     "days_left": "Days remaining until the due date (reminders)",
     "dcp_name": "Your DCP / company name",
@@ -380,8 +382,9 @@ DEFAULT_TEMPLATES = {
         "Account {{customer_number}}. {{dcp_name}}."),
     "repayment_reminder": (
         "Hi {{first_name}}, a friendly reminder: loan {{account_number}} balance "
-        "KES {{balance}} is due in {{days_left}} day(s) on {{due_date}}. Pay via "
-        "M-Pesa Paybill {{paybill}}, Account {{customer_number}}. {{dcp_name}}."),
+        "KES {{balance}} is due in {{days_left}} day(s) on {{due_date}}. To clear it "
+        "today pay KES {{payoff_amount}}. Pay via M-Pesa Paybill {{paybill}}, "
+        "Account {{customer_number}}. {{dcp_name}}."),
     "overdue_alert": (
         "Dear {{first_name}}, loan {{account_number}} is OVERDUE. Outstanding KES "
         "{{balance}}. Penalties may apply. Kindly settle to protect your credit "
@@ -456,7 +459,21 @@ def _base_context(db, tenant_id, borrower, loan) -> dict:
         # template as {{customer_number}} / {{paybill}}.
         "customer_number": getattr(borrower, "customer_number", "") or "",
         "paybill": _paybill(db, tenant_id),
+        "payoff_amount": _payoff(db, loan),
     }
+
+
+def _payoff(db, loan) -> str:
+    """WP10: what clears the loan today, with the early-repayment rebate."""
+    if loan is None or getattr(loan, "id", None) is None:
+        return ""
+    try:
+        from app.services.repayments import payoff_quote
+        return f"{payoff_quote(db, loan)['payoff_amount']:,.0f}"
+    except Exception:  # noqa: BLE001 — never block an SMS on a quote
+        logging.getLogger("finyl.sms").warning("payoff_quote failed for loan %s",
+                                               getattr(loan, "id", None))
+        return f"{float(loan.outstanding_balance or 0):,.0f}"
 
 
 def _paybill(db, tenant_id) -> str:

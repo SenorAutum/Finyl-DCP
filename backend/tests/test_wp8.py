@@ -149,7 +149,9 @@ def test_due_report_is_emailed_once_as_csv(w, monkeypatch):
     monkeypatch.setattr(mailer, "is_configured", lambda: True)
     monkeypatch.setattr(mailer, "send_email",
                         lambda to, subject, body, attachments=None: mails.append((to, attachments)) or True)
-    s = _sched(w)
+    # Created before the 07:00 slot being tested (WP10: a new schedule waits for
+    # its first slot after creation), so the test does not depend on today's date.
+    s = _sched(w, created_at=datetime(2026, 11, 1))
     morning = datetime(2026, 11, 9, 8, 0, tzinfo=NBO)
     scheduler.run_report_schedules(now_local=morning)
     assert len(mails) == 1
@@ -167,7 +169,7 @@ def test_due_report_is_emailed_once_as_csv(w, monkeypatch):
 def test_report_failure_is_shown_not_retried_hourly(w, monkeypatch):
     from app.services import mailer, scheduler
     monkeypatch.setattr(mailer, "is_configured", lambda: False)
-    s = _sched(w)
+    s = _sched(w, created_at=datetime(2026, 11, 1))
     scheduler.run_report_schedules(now_local=datetime(2026, 11, 9, 8, 0, tzinfo=NBO))
     w.db.expire_all()
     row = w.db.get(ReportSchedule, s.id)
@@ -183,9 +185,12 @@ def test_schedule_due_rules():
     tue = mon + timedelta(days=1)
     first = datetime(2026, 12, 1, 8, 0, tzinfo=NBO)
     S = lambda f, last=None: SimpleNamespace(frequency=f, last_run_at=last)   # noqa: E731
-    assert _schedule_due(S("weekly"), mon) and not _schedule_due(S("weekly"), tue)
-    assert not _schedule_due(S("daily"), mon.replace(hour=6))                 # before 7:00
-    assert _schedule_due(S("monthly"), first) and not _schedule_due(S("monthly"), mon)
+    utc = lambda d: d.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)        # noqa: E731
+    # (WP10: sent on Monday -> not due on Tuesday; never sent -> caught up.)
+    assert _schedule_due(S("weekly"), mon) and not _schedule_due(S("weekly", utc(mon)), tue)
+    assert not _schedule_due(S("daily", utc(mon - timedelta(days=1))), mon.replace(hour=6))
+    assert _schedule_due(S("monthly"), first)
+    assert not _schedule_due(S("monthly", utc(datetime(2026, 11, 1, 7, 5, tzinfo=NBO))), mon)
     assert not _schedule_due(S("daily", last=mon.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)),
                              mon + timedelta(hours=2))
 

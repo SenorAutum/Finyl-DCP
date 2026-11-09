@@ -41,6 +41,12 @@ class Guarantor(Base):
     mpesa_validated = Column(Boolean, nullable=False, default=False)
     mpesa_validation_name = Column(String(300))
     mpesa_validated_at = Column(DateTime(timezone=True))
+    # WP10: who confirmed the M-Pesa name, for which number, and how (same
+    # rules as a client's number - see app.services.mpesa_confirmation).
+    mpesa_validation_method = Column(String(20))
+    mpesa_validation_phone = Column(String(20))
+    mpesa_validated_by = Column(Integer, ForeignKey("users.id"))
+    mpesa_validation_evidence = Column(Text)
     kyc_status = Column(String(50), nullable=False, default="pending")
     active = Column(Boolean, nullable=False, default=True)
     created_by = Column(Integer, ForeignKey("users.id"))

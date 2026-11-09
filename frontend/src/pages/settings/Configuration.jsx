@@ -253,7 +253,7 @@ function ApproversTab() {
   const [err, setErr] = useState(""); const [saving, setSaving] = useState(null);
   const load = () => api("/api/v1/settings/approver-config").then(setData).catch((e) => setErr(e.detail));
   useEffect(() => { load(); }, []);
-  if (err) return <Notice msg={err} tone="bad" />;
+  if (err && !data) return <Notice msg={err} tone="bad" />;
   if (!data) return <Spinner />;
 
   async function toggle(at, role, enabled) {
@@ -269,7 +269,11 @@ function ApproversTab() {
   return (
     <div className="max-w-3xl space-y-4">
       <p className="text-sm text-gray-500">Enable or disable which roles may act as approvers for each
-        action type. Relationship Officers are front-line originators and are never eligible approvers.</p>
+        action type. Relationship Officers are front-line originators and are never eligible approvers.
+        Roles you created appear here once they hold the matching approval permission (Roles &amp; Permissions);
+        they are off until you switch them on, and a role you created needs a loan approval limit
+        (Thresholds tab) before it can approve loans.</p>
+      <Notice msg={err} tone="bad" />
       {data.approval_types.map((t) => (
         <div key={t.approval_type} className="card p-4">
           <h3 className="font-bold mb-2">{t.label}</h3>
@@ -279,7 +283,9 @@ function ApproversTab() {
                 <input type="checkbox" className="h-4 w-4 accent-emerald-600"
                   checked={!!r.enabled} disabled={saving === `${t.approval_type}:${r.role}`}
                   onChange={(e) => toggle(t.approval_type, r.role, e.target.checked)} />
-                {r.label}{!r.configured && <span className="text-[10px] text-gray-400">(default)</span>}
+                {r.label}{r.custom && <span className="text-[10px] text-indigo-500">(your role)</span>}
+                {!r.configured && <span className="text-[10px] text-gray-400">(default)</span>}
+                {r.custom && r.has_limit === false && <span className="text-[10px] text-amber-600">needs a loan limit</span>}
               </label>
             ))}
             {!t.roles.length && <span className="text-xs text-gray-400">No eligible roles.</span>}

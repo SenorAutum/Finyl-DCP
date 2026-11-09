@@ -2,11 +2,11 @@
 // alongside that day's planned/actual task summary. No map dependency; a plain
 // coordinate table keeps the view lightweight and dependency-free.
 import { useEffect, useState } from "react";
-import { api, fmtDate } from "../../lib/api";
+import { api, fmtDate, toDate, todayLocal } from "../../lib/api";
 import { Empty, KpiCard, PageHeader, Spinner } from "../../components/ui";
 
-const today = () => new Date().toISOString().slice(0, 10);
-const fmtTime = (d) => (d ? new Date(d).toLocaleString("en-KE", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "short" }) : "—");
+const today = todayLocal;
+const fmtTime = (d) => (d ? toDate(d).toLocaleString("en-KE", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "short" }) : "—");
 
 export default function GpsTracker() {
   const [staff, setStaff] = useState([]);

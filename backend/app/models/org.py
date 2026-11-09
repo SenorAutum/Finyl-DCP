@@ -7,6 +7,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 
 from app.core.database import Base
+from app.core.timeutil import UTCDateTime
 
 
 class Region(Base):
@@ -75,7 +76,7 @@ class Product(Base):
     requires_collateral = Column(Boolean, nullable=False, default=False)
     requires_next_of_kin = Column(Boolean, nullable=False, default=True)
     business_op_age_required = Column(Boolean, nullable=False, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(UTCDateTime, default=datetime.utcnow)
 
 
 class ProductChangeRequest(Base):

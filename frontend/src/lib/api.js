@@ -147,4 +147,14 @@ export const verifyConsentOtp = (body) => api("/api/v1/clients/verify-consent-ot
 
 export const fmtKES = (n) =>
   "KES " + Number(n || 0).toLocaleString("en-KE", { maximumFractionDigits: 0 });
-export const fmtDate = (d) => (d ? new Date(d).toLocaleDateString("en-KE", { year: "numeric", month: "short", day: "numeric" }) : "—");
+// WP10: the API sends every time with its zone ("...Z"). A time without a zone
+// (older stored values, e.g. inside audit details) is UTC, so read it as UTC
+// rather than as the browser's local time (which put it 3 hours off in Kenya).
+const NAIVE_TIME = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/;
+export const toDate = (v) => (typeof v === "string" && NAIVE_TIME.test(v) ? new Date(v.replace(" ", "T") + "Z") : new Date(v));
+// Today's date in the viewer's own time zone, as YYYY-MM-DD.
+export const todayLocal = () => {
+  const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+  return d.toISOString().slice(0, 10);
+};
+export const fmtDate = (d) => (d ? toDate(d).toLocaleDateString("en-KE", { year: "numeric", month: "short", day: "numeric" }) : "—");
