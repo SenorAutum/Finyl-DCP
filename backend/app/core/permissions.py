@@ -43,6 +43,7 @@ PERMISSIONS = {
     "clients.edit": "Edit client details (non-locked fields)",
     "clients.edit_locked": "Edit locked primary fields (phone, National ID, DOB)",
     "clients.approve": "Approve / reject client profiles",
+    "wallets.unlock": "Unlock a client's confirmed M-Pesa wallet so it can be changed (with a reason)",
     "docs.upload": "Upload supporting documents",
     "docs.verify": "Request document re-verification / flag incomplete",
     # Loans
@@ -144,6 +145,7 @@ ROLE_PERMISSIONS = {
     "branch_manager": {
         "sms.send", "sms.view",
         "clients.view_all", "clients.edit", "clients.edit_locked", "clients.approve",
+        "wallets.unlock",
         "docs.upload", "docs.verify",
         "loans.view_all", "loans.approve", "loans.adjust", "loans.reassign",
         "loans.escalate", "loans.transition", "loans.writeoff",

@@ -213,24 +213,8 @@ def get_approver_config(tenant_id: int = Depends(get_tenant_id),
     """Own-tenant view of every eligible approver role per approval type with its
     current effective enabled state. relationship_officer is intentionally never
     eligible (front-line originator)."""
-    rows = db.query(ApproverSetting).filter(ApproverSetting.tenant_id == tenant_id).all()
-    stored = {(r.approval_type, r.role): bool(r.enabled) for r in rows}
-    out = {"tenant_id": tenant_id, "approval_types": []}
-    for at in APPROVAL_TYPES:
-        roles = []
-        for role in eligible_approver_roles(at):
-            key = (at, role)
-            configured = key in stored
-            enabled = stored[key] if configured else rbac._default_approver_enabled(at, role)
-            roles.append({
-                "role": role, "label": ROLE_LABELS.get(role, role),
-                "enabled": enabled, "configured": configured,
-                "default": rbac._default_approver_enabled(at, role),
-            })
-        out["approval_types"].append({
-            "approval_type": at, "label": APPROVAL_TYPE_LABELS.get(at, at), "roles": roles,
-        })
-    return out
+    # WP10: includes the DCP's own roles that hold the approval permission.
+    return {"tenant_id": tenant_id, "approval_types": rbac.approver_config(db, tenant_id)}
 
 
 @router.post("/approver-config")
@@ -240,11 +224,10 @@ def set_approver_config(body: ApproverConfigIn, request: Request,
                         actor: User = Depends(require_permission("thresholds.manage"))):
     """Upsert a single approver toggle for the caller's OWN tenant. The tenant_id
     in the body is ignored — the toggle is always pinned to the resolved tenant."""
-    if body.approval_type not in APPROVAL_TYPES:
-        raise HTTPException(400, f"approval_type must be one of {APPROVAL_TYPES}")
-    if body.role not in eligible_approver_roles(body.approval_type):
-        raise HTTPException(400,
-                            f"Role '{body.role}' is not an eligible approver for '{body.approval_type}'")
+    problem = rbac.check_approver_change(db, tenant_id, body.approval_type, body.role,
+                                         bool(body.enabled))
+    if problem:
+        raise HTTPException(400, problem)
     row = db.query(ApproverSetting).filter(
         ApproverSetting.tenant_id == tenant_id,
         ApproverSetting.approval_type == body.approval_type,

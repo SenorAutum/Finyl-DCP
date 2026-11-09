@@ -15,13 +15,19 @@ from sqlalchemy.orm import Session
 
 from app.models import AmlFlag
 
+
+def _read_sql_utc(*args, **kwargs):
+    """pd.read_sql with times as naive UTC (WP10: the columns now carry a zone)."""
+    from app.core.timeutil import naive_utc_frame
+    return naive_utc_frame(pd.read_sql(*args, **kwargs))
+
 REPORT_THRESHOLD = 10_000
 STRUCT_LO = 8_000
 
 
 def run_aml_scan(db: Session, tenant_id: int) -> list[AmlFlag]:
     """Scan repayments and insert new AML flags (idempotent per loan+type)."""
-    df = pd.read_sql(text("""
+    df = _read_sql_utc(text("""
         SELECT rp.loan_id, l.borrower_id, rp.amount::float, rp.payment_date
         FROM repayments rp JOIN loans l ON l.id = rp.loan_id
         WHERE rp.tenant_id = :t

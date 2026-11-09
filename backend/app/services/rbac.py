@@ -4,7 +4,10 @@ maker-checker gating. Kept separate from the FastAPI dependency layer so the
 rules are unit-testable and reusable across routers.
 """
 from app.models import ApprovalThreshold, ApproverSetting
-from app.core.permissions import APPROVAL_TYPE_PERMISSION, has_permission
+from app.core.permissions import (APPROVAL_TYPE_LABELS, APPROVAL_TYPE_PERMISSION,
+                                  APPROVAL_TYPES, LEGACY_ROLES, ROLE_LABELS,
+                                  ROLE_PERMISSIONS, eligible_approver_roles,
+                                  has_permission)
 
 # Escalation ladder for loan approvals when the amount exceeds an actor's limit.
 ESCALATION_LADDER = {
@@ -51,6 +54,10 @@ def loan_approval_limit(db, tenant_id, user) -> float | None:
         return by_branch[str(user.branch_id)]
     if user.role == "regional_manager" and user.region_id and str(user.region_id) in by_region:
         return by_region[str(user.region_id)]
+    if is_custom_role(user.role) and user.role not in by_role:
+        # WP10: a DCP's own role never approves without a limit (fail closed:
+        # everything it approves is escalated until a limit is set).
+        return 0.0
     return by_role.get(user.role)
 
 
@@ -88,10 +95,25 @@ def _default_approver_enabled(approval_type: str, role: str) -> bool:
     return has_permission(role, perm)
 
 
+def is_custom_role(role: str | None) -> bool:
+    """A role a DCP created itself (not one of the platform's built-in roles)."""
+    return bool(role) and role not in ROLE_PERMISSIONS and role not in ROLE_LABELS
+
+
+def _custom_role_holds(db, tenant_id, approval_type: str, role: str) -> bool:
+    from app.services.authz import effective_permissions
+    perm = APPROVAL_TYPE_PERMISSION.get(approval_type)
+    return bool(perm) and perm in effective_permissions(db, tenant_id, role)
+
+
 def approver_enabled(db, tenant_id, approval_type: str, role: str) -> bool:
     """Whether `role` is configured to act as an approver for `approval_type`
     at this DCP. Returns the stored toggle when a row exists, else the
-    permission-derived default (keeping existing tenants unchanged)."""
+    permission-derived default (keeping existing tenants unchanged).
+
+    WP10: a DCP's own (custom) role is never an approver by default; it must be
+    switched on explicitly, and only while it still holds the approval
+    permission."""
     if role == "super_admin":
         return True
     row = (db.query(ApproverSetting)
@@ -99,9 +121,71 @@ def approver_enabled(db, tenant_id, approval_type: str, role: str) -> bool:
                    ApproverSetting.approval_type == approval_type,
                    ApproverSetting.role == role)
            .first())
+    if is_custom_role(role):
+        return bool(row is not None and row.enabled
+                    and _custom_role_holds(db, tenant_id, approval_type, role))
     if row is not None:
         return bool(row.enabled)
     return _default_approver_enabled(approval_type, role)
+
+
+def eligible_approver_roles_for_tenant(db, tenant_id, approval_type: str) -> list[tuple[str, str, bool]]:
+    """(role, label, custom) the DCP may switch on as approvers for
+    `approval_type`: the built-in eligible roles plus (WP10) the DCP's own
+    roles that hold the approval permission. The front-line originator, the
+    platform owner and legacy roles are never eligible."""
+    from app.services.authz import _custom_roles_for_tenant
+    labels = _custom_roles_for_tenant(db, tenant_id)
+    out = [(r, labels.get(r, ROLE_LABELS.get(r, r)), False)
+           for r in eligible_approver_roles(approval_type)]
+    for role, label in sorted(labels.items(), key=lambda kv: kv[1].lower()):
+        if (is_custom_role(role) and role not in LEGACY_ROLES
+                and _custom_role_holds(db, tenant_id, approval_type, role)):
+            out.append((role, label, True))
+    return out
+
+
+def approver_config(db, tenant_id) -> list[dict]:
+    """Every approval type with its eligible roles and their effective state,
+    for both the Finyl and the DCP approver screens."""
+    stored = {(r.approval_type, r.role): bool(r.enabled)
+              for r in db.query(ApproverSetting).filter(ApproverSetting.tenant_id == tenant_id)}
+    limits = {r.scope_key for r in _thresholds(db, tenant_id, "loan_approval")
+              if r.scope_type == "role"}
+    out = []
+    for at in APPROVAL_TYPES:
+        roles = []
+        for role, label, custom in eligible_approver_roles_for_tenant(db, tenant_id, at):
+            configured = (at, role) in stored
+            default = False if custom else _default_approver_enabled(at, role)
+            item = {"role": role, "label": label, "custom": custom,
+                    "enabled": approver_enabled(db, tenant_id, at, role),
+                    "configured": configured, "default": default}
+            if custom and at == "loan":
+                item["has_limit"] = role in limits
+            roles.append(item)
+        out.append({"approval_type": at, "label": APPROVAL_TYPE_LABELS.get(at, at),
+                    "roles": roles})
+    return out
+
+
+def check_approver_change(db, tenant_id, approval_type: str, role: str, enabled: bool) -> str | None:
+    """Why this approver switch is not allowed (None when it is)."""
+    if approval_type not in APPROVAL_TYPES:
+        return f"approval_type must be one of {APPROVAL_TYPES}"
+    eligible = {r for r, _, _ in eligible_approver_roles_for_tenant(db, tenant_id, approval_type)}
+    if role not in eligible:
+        return (f"Role '{role}' is not an eligible approver for '{approval_type}'. A role you "
+                f"created must first be given the "
+                f"'{APPROVAL_TYPE_PERMISSION.get(approval_type)}' permission.")
+    if enabled and is_custom_role(role) and approval_type == "loan":
+        has_limit = any(r.scope_type == "role" and r.scope_key == role
+                        for r in _thresholds(db, tenant_id, "loan_approval"))
+        if not has_limit:
+            return ("Set a loan approval limit for this role first (Approval thresholds: "
+                    "scope 'role', key '" + role + "', type 'loan_approval'), so it cannot "
+                    "approve loans of any size.")
+    return None
 
 
 def enabled_loan_tiers(db, tenant_id) -> list[tuple[str, str]]:

@@ -2,12 +2,12 @@
 // The GL preview shows every posting with a debits==credits check; the same range
 // can be downloaded as CSV. Gated on accounting.export.
 import { useEffect, useState } from "react";
-import { api, download } from "../../lib/api";
+import { api, download, todayLocal } from "../../lib/api";
 import { Empty, PageHeader, Spinner } from "../../components/ui";
 
 const kes2 = (n) =>
   n == null ? "—" : Number(n).toLocaleString("en-KE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const today = () => new Date().toISOString().slice(0, 10);
+const today = todayLocal;
 const janFirst = () => `${new Date().getFullYear()}-01-01`;
 
 function ChartOfAccounts() {

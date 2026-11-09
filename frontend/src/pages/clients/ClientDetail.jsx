@@ -226,6 +226,42 @@ function EditRequestsPanel({ clientId }) {
   );
 }
 
+// WP10: unlock a confirmed wallet so it can be corrected, with a reason.
+function UnlockWalletModal({ clientId, wallet, onClose, onDone }) {
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true); setErr("");
+    try {
+      await api(`/api/v1/clients/${clientId}/wallets/${wallet.id}/unlock`, { method: "POST", body: { reason } });
+      onDone();
+    } catch (ex) { setErr(ex.detail || "Could not unlock"); setBusy(false); }
+  };
+  return (
+    <Modal title="Unlock wallet" onClose={onClose}>
+      <form onSubmit={submit} className="space-y-4">
+        <p className="text-sm text-gray-600">
+          Wallet <span className="font-semibold">{wallet.mobile_number || wallet.wallet_number}</span> is
+          locked because its M-Pesa name was confirmed. Unlocking lets staff correct or remove it.
+          Your name and reason are kept in the audit log.
+        </p>
+        {err && <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">{err}</div>}
+        <div><label className="label">Reason</label>
+          <textarea className="input" rows={3} value={reason} required
+            placeholder="e.g. Client lost the line and registered a new SIM; seen at branch on 9 Nov"
+            onChange={(e) => setReason(e.target.value)} /></div>
+        <p className="text-[11px] text-gray-400">You cannot unlock a wallet for a client you captured or whose portfolio you hold.</p>
+        <div className="flex justify-end gap-2">
+          <button type="button" className="btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn-primary" disabled={busy}>{busy ? "Saving…" : "Unlock"}</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
 export default function ClientDetail() {
   const { id } = useParams();
   const nav = useNavigate();
@@ -234,6 +270,7 @@ export default function ClientDetail() {
   const [err, setErr] = useState("");
   const [editing, setEditing] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [unlocking, setUnlocking] = useState(null);
   const [kyc, setKyc] = useState(null);
   const [ocrMsg, setOcrMsg] = useState({});
 
@@ -335,7 +372,7 @@ export default function ClientDetail() {
           <div className="px-5 py-3 border-b border-border font-bold text-base">Mobile Wallets</div>
           {(c.wallets || []).length === 0 ? <Empty text="No mobile wallets" /> : (
             <table className="w-full text-sm">
-              <thead><tr><th className="th">Mobile</th><th className="th">Wallet</th><th className="th">Operator</th><th className="th">Active</th></tr></thead>
+              <thead><tr><th className="th">Mobile</th><th className="th">Wallet</th><th className="th">Operator</th><th className="th">Active</th><th className="th"></th></tr></thead>
               <tbody>
                 {c.wallets.map((w) => (
                   <tr key={w.id} className="border-t border-border">
@@ -343,6 +380,10 @@ export default function ClientDetail() {
                     <td className="td">{w.wallet_number || "—"}</td>
                     <td className="td">{w.operator || "—"}</td>
                     <td className="td">{w.active ? "Yes" : "No"}</td>
+                    <td className="td text-right">
+                      {w.wallet_locked && can("wallets.unlock") &&
+                        <button className="text-primary text-xs font-semibold" onClick={() => setUnlocking(w)}>Unlock</button>}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -458,6 +499,8 @@ export default function ClientDetail() {
         <ConfirmMpesaModal client={c} mode={kyc?.mpesa_confirmation_mode} onClose={() => setConfirming(false)}
           onDone={() => { setConfirming(false); load(); }} />
       )}
+      {unlocking && <UnlockWalletModal clientId={c.id} wallet={unlocking} onClose={() => setUnlocking(null)}
+          onDone={() => { setUnlocking(null); load(); }} />}
 
       {editing && (
         <ClientForm clientId={c.id} onClose={() => setEditing(false)}

@@ -1,11 +1,11 @@
 // Staff activity monitor — audit-style event log stream plus captured action
 // screenshots. Admins filter by officer and date range; both feeds are paginated.
 import { useEffect, useState } from "react";
-import { api } from "../../lib/api";
+import { api, toDate, todayLocal } from "../../lib/api";
 import { Empty, Pagination, PageHeader, Spinner } from "../../components/ui";
 
-const today = () => new Date().toISOString().slice(0, 10);
-const fmtTime = (d) => (d ? new Date(d).toLocaleString("en-KE", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "short", year: "numeric" }) : "—");
+const today = todayLocal;
+const fmtTime = (d) => (d ? toDate(d).toLocaleString("en-KE", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "short", year: "numeric" }) : "—");
 
 function Tabs({ tab, setTab, tabs }) {
   return (

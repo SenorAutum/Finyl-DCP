@@ -21,9 +21,11 @@ engine = create_engine(
 
 @event.listens_for(engine, "connect")
 def _set_search_path(dbapi_conn, _):
-    """Pin every connection to the app schema."""
+    """Pin every connection to the app schema and (WP10) to UTC, so times are
+    stored and compared the same way whatever zone the database server uses."""
     cur = dbapi_conn.cursor()
     cur.execute(f'SET search_path TO "{settings.DB_SCHEMA}", public')
+    cur.execute("SET TIME ZONE 'UTC'")
     cur.close()
 
 
@@ -36,6 +38,7 @@ def _set_search_path_txn(conn):
     server connection actually executing a given transaction.
     """
     conn.exec_driver_sql(f'SET LOCAL search_path TO "{settings.DB_SCHEMA}", public')
+    conn.exec_driver_sql("SET LOCAL TIME ZONE 'UTC'")
 
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

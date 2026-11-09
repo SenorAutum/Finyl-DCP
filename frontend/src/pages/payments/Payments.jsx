@@ -1,7 +1,7 @@
 // Payments & SMS hub: M-Pesa transaction ledger + SMS dispatch log +
 // notification jobs (repayment reminders / overdue alerts) + manual SMS.
 import { useEffect, useState } from "react";
-import { api, fmtKES } from "../../lib/api";
+import { api, fmtKES, toDate } from "../../lib/api";
 import { Badge, Empty, Modal, PageHeader, Pagination, Spinner } from "../../components/ui";
 import { useAuth } from "../../hooks/useAuth";
 
@@ -9,7 +9,7 @@ import { useAuth } from "../../hooks/useAuth";
 // the M-Pesa portal and records what happened.
 const STUCK = ["initiated", "uncertain", "timed_out"];
 
-const fmtDT = (d) => (d ? new Date(d).toLocaleString("en-KE", { dateStyle: "medium", timeStyle: "short" }) : "—");
+const fmtDT = (d) => (d ? toDate(d).toLocaleString("en-KE", { dateStyle: "medium", timeStyle: "short" }) : "—");
 
 function TxTable() {
   const [data, setData] = useState(null);

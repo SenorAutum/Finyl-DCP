@@ -2,10 +2,10 @@
 // plans. Managers pick an officer; each plan lists its planned visit stops and
 // how many were actually completed, with a simple completion ratio.
 import { useEffect, useState } from "react";
-import { api, fmtDate } from "../../lib/api";
+import { api, fmtDate, todayLocal } from "../../lib/api";
 import { Badge, Empty, KpiCard, Modal, PageHeader, Spinner } from "../../components/ui";
 
-const today = () => new Date().toISOString().slice(0, 10);
+const today = todayLocal;
 const visitsList = (v) => (Array.isArray(v) ? v : v ? [v] : []);
 
 export default function SiteVisits() {

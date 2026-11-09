@@ -2,12 +2,12 @@
 // daily visit-plan tasks and geo-fence location alerts. Managers pick an officer
 // from the org directory; officers see their own tasks by default.
 import { useEffect, useState } from "react";
-import { api, fmtDate } from "../../lib/api";
+import { api, fmtDate, toDate, todayLocal } from "../../lib/api";
 import { Badge, Empty, KpiCard, Modal, PageHeader, Spinner } from "../../components/ui";
 import { useAuth } from "../../hooks/useAuth";
 
-const today = () => new Date().toISOString().slice(0, 10);
-const fmtTime = (d) => (d ? new Date(d).toLocaleString("en-KE", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "short" }) : "—");
+const today = todayLocal;
+const fmtTime = (d) => (d ? toDate(d).toLocaleString("en-KE", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "short" }) : "—");
 const visitsList = (v) => (Array.isArray(v) ? v : v ? [v] : []);
 
 function Tabs({ tab, setTab, tabs }) {

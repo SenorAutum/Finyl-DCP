@@ -14,6 +14,7 @@ from sqlalchemy import (Boolean, Column, DateTime, ForeignKey, Integer, JSON,
                         Numeric, String)
 
 from app.core.database import Base
+from app.core.timeutil import UTCDateTime
 
 # --- Default IFRS 9 ECL stage rates (used when a tenant has no config row) ---
 # Expressed as fractions (0.01 == 1%). Stage buckets by days-past-due:
@@ -41,7 +42,7 @@ class EclProvisionConfig(Base):
     stage2_rate = Column(Numeric(6, 4), nullable=False, default=ECL_DEFAULT_STAGE2_RATE)
     stage3_rate = Column(Numeric(6, 4), nullable=False, default=ECL_DEFAULT_STAGE3_RATE)
     updated_by_user_id = Column(Integer, ForeignKey("users.id"))
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(UTCDateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class SuspenseEntry(Base):
@@ -65,11 +66,11 @@ class SuspenseEntry(Base):
     # never applied without a person confirming).
     bill_ref = Column(String(60))
     payer_name = Column(String(120))
-    paid_at = Column(DateTime)
+    paid_at = Column(UTCDateTime)
     suggested_loan_id = Column(Integer, ForeignKey("loans.id"))
     raw_payload = Column(JSON, default=dict)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    resolved_at = Column(DateTime)
+    created_at = Column(UTCDateTime, default=datetime.utcnow)
+    resolved_at = Column(UTCDateTime)
     resolved_by_user_id = Column(Integer, ForeignKey("users.id"))
 
 
@@ -84,7 +85,7 @@ class SmsOptOut(Base):
     id = Column(Integer, primary_key=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
     phone = Column(String(20), nullable=False)
-    opted_out_at = Column(DateTime, default=datetime.utcnow)
+    opted_out_at = Column(UTCDateTime, default=datetime.utcnow)
     source = Column(String(10), nullable=False, default="manual")  # keyword | manual | api
     active = Column(Boolean, nullable=False, default=True)
 
@@ -102,7 +103,7 @@ class KycConsent(Base):
     consent_credit_check = Column(Boolean, nullable=False, default=False)
     consent_marketing = Column(Boolean, nullable=False, default=False)
     consent_version = Column(String(20))
-    consented_at = Column(DateTime, default=datetime.utcnow)
+    consented_at = Column(UTCDateTime, default=datetime.utcnow)
     ip_address = Column(String(45))
 
 
