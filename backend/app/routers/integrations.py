@@ -153,6 +153,45 @@ def test_mpesa():
     return mpesa.test_connection()
 
 
+class RegisterC2bBody(BaseModel):
+    tenant_id: int
+
+
+@router.post("/daraja/register-c2b")
+def register_paybill_callbacks(body: RegisterC2bBody, request: Request,
+                               db: Session = Depends(get_db),
+                               user: User = Depends(require_role("super_admin"))):
+    """WP9: tell Safaricom where to send this DCP's paybill (C2B) payments, using
+    the DCP's own M-Pesa settings. Needed once per paybill/till, and again if the
+    web address changes (e.g. moving to AWS). Until it is done, customer paybill
+    payments never reach Finyl. Super-admin only; recorded in the audit trail."""
+    from app.core.deps import write_audit
+    tenant = db.get(Tenant, body.tenant_id)
+    if tenant is None:
+        raise HTTPException(404, "DCP not found")
+    creds = mpesa.resolve_creds(db, tenant.id)
+    if not creds.configured:
+        raise HTTPException(400, f"{tenant.name} has no M-Pesa settings yet (or they are switched off).")
+    try:
+        out = mpesa.register_c2b_urls(creds)
+        resp = out.get("response") or {}
+        ok = str(resp.get("ResponseCode", "")).strip() in ("0", "00000000")
+        detail = resp.get("ResponseDescription") or resp.get("errorMessage") or str(resp)[:300]
+    except Exception as exc:                     # Safaricom error or network problem
+        out, ok = {}, False
+        detail = getattr(getattr(exc, "response", None), "text", "") or str(exc)
+        detail = detail[:300]
+    write_audit(db, tenant_id=tenant.id, user=user, action="mpesa.c2b_registered" if ok else "mpesa.c2b_register_failed",
+                entity_type="tenant", entity_id=tenant.id,
+                details={"shortcode": creds.shortcode, "environment": creds.environment,
+                         "url": (out.get("request") or {}).get("ConfirmationURL", "").split("/hooks/")[0],
+                         "result": detail},
+                request=request)
+    db.commit()
+    return {"ok": ok, "detail": detail, "shortcode": creds.shortcode,
+            "environment": creds.environment}
+
+
 class TestEkycBody(BaseModel):
     national_id: str = "12345678"
     first_name: str = "Jane"

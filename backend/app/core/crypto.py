@@ -57,6 +57,22 @@ def _jwt_derived_key() -> bytes:
     return base64.urlsafe_b64encode(digest)
 
 
+def _as_fernet_key(raw: str) -> bytes:
+    """WP9: a proper Fernet key (urlsafe-b64 of 32 bytes) is used exactly as
+    given, so nothing changes for existing installations. Any other non-empty
+    value (e.g. the 64-character random string AWS Secrets Manager generates)
+    used to crash on first use; it is now turned into a Fernet key with SHA-256.
+    Either way, losing the value means losing the encrypted data: back it up."""
+    value = raw.strip()
+    try:
+        if len(base64.urlsafe_b64decode(value.encode("utf-8"))) == 32:
+            return value.encode("utf-8")
+    except (ValueError, TypeError):
+        pass
+    digest = hashlib.sha256(b"finyl-dcp/field-key/v1|" + value.encode("utf-8")).digest()
+    return base64.urlsafe_b64encode(digest)
+
+
 def _primary_key_material() -> bytes:
     """The raw bytes of the PRIMARY Fernet key (the one used to encrypt new data).
 
@@ -65,10 +81,10 @@ def _primary_key_material() -> bytes:
     """
     field_key = (getattr(settings, "FIELD_ENCRYPTION_KEY", "") or "").strip()
     if field_key:
-        return field_key.encode("utf-8")
+        return _as_fernet_key(field_key)
     pii_key = (getattr(settings, "PII_ENCRYPTION_KEY", "") or "").strip()
     if pii_key:
-        return pii_key.encode("utf-8")
+        return _as_fernet_key(pii_key)
     return _jwt_derived_key()
 
 
@@ -86,10 +102,10 @@ def _multifernet() -> MultiFernet:
 
     field_key = (getattr(settings, "FIELD_ENCRYPTION_KEY", "") or "").strip()
     if field_key:
-        _add(field_key.encode("utf-8"))
+        _add(_as_fernet_key(field_key))
     pii_key = (getattr(settings, "PII_ENCRYPTION_KEY", "") or "").strip()
     if pii_key:
-        _add(pii_key.encode("utf-8"))
+        _add(_as_fernet_key(pii_key))
     _add(_jwt_derived_key())
     return MultiFernet([Fernet(k) for k in keys])
 

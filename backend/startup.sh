@@ -54,7 +54,11 @@ if [ "${RUN_MIGRATIONS}" = "true" ]; then
   echo "[startup] Migrations complete."
 fi
 
-if [ "${RESEED_ON_START}" = "true" ]; then
+if [ "${SEED_ON_START:-true}" = "false" ]; then
+  # WP9: AWS sets SEED_ON_START=false. Migrations and any demo data are run as
+  # separate one-off steps by the deploy workflow, never on every start.
+  echo "[startup] SEED_ON_START=false: not seeding."
+elif [ "${RESEED_ON_START}" = "true" ]; then
   echo "[startup] !!! RESEED_ON_START=true — DESTRUCTIVE wipe & reseed !!!"
   echo "[startup] !!! Remove this env var after this deploy or data is wiped on every restart !!!"
   python -m app.seeds.seed --force

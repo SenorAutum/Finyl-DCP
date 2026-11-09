@@ -5,7 +5,10 @@ All runtime configuration is sourced from environment variables (see .env.exampl
 at the repo root). This keeps the codebase 100% portable: the same image runs on
 this VM, docker-compose, AWS, GCP, etc. — only the env differs.
 """
+import json
+import os
 import re
+from urllib.parse import quote
 
 from pydantic_settings import BaseSettings
 from pydantic import model_validator
@@ -22,10 +25,48 @@ MIN_JWT_SECRET_LEN = 32
 _SCHEMA_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+def _load_app_settings_json() -> None:
+    """WP9: on AWS one Secrets Manager entry ("app settings") holds every
+    optional setting as JSON, e.g. {"UWAZII_USERNAME": "...", "SMTP_FROM": "..."}.
+    ECS hands it over whole as APP_SETTINGS_JSON. Each key becomes an
+    environment variable unless that variable is already set, so a value given
+    directly always wins. Adding a provider key on AWS is then: edit the JSON in
+    the console and restart the service, with no template change."""
+    raw = (os.environ.get("APP_SETTINGS_JSON") or "").strip()
+    if not raw:
+        return
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        raise ValueError("Refusing to start: APP_SETTINGS_JSON is not valid JSON.") from None
+    if not isinstance(data, dict):
+        raise ValueError("Refusing to start: APP_SETTINGS_JSON must be a JSON object.")
+    for key, value in data.items():
+        if not isinstance(key, str) or not key or key in os.environ or value is None:
+            continue
+        if isinstance(value, bool):
+            value = "true" if value else "false"
+        elif isinstance(value, (dict, list)):
+            value = json.dumps(value)
+        os.environ[key] = str(value)
+
+
+_load_app_settings_json()
+
+
 class Settings(BaseSettings):
     # --- Database ---------------------------------------------------------
     DATABASE_URL: str = "postgresql://finyl:finyl@localhost:5432/finyl_dcp"
     DB_SCHEMA: str = "finyl_dcp"  # dedicated schema; set "public" for a dedicated DB
+    # WP9: on AWS the database address and password arrive separately (the
+    # password from Secrets Manager). When DB_HOST is set, DATABASE_URL is built
+    # from these parts, with the password safely escaped.
+    DB_HOST: str = ""
+    DB_PORT: int = 5432
+    DB_NAME: str = "finyl"
+    DB_USER: str = "finyl"
+    DB_PASSWORD: str = ""
+    DB_SSLMODE: str = "require"
     # API-04 — the DB schema is owned by migrations/*.sql. `Base.metadata.create_all`
     # at startup causes silent schema drift, so it is OFF by default. Set true only
     # for a throwaway local/dev DB with no migrations applied.
@@ -204,6 +245,14 @@ class Settings(BaseSettings):
     SMTP_PASSWORD: str = ""
     SMTP_FROM: str = ""                   # e.g. "Finyl <no-reply@yourdomain.co.ke>"
     SMTP_STARTTLS: bool = True
+    # WP9: "smtp" (above) or "ses" (Amazon SES through the server's own AWS
+    # permissions: no SMTP user or password to create). MAIL_FROM is the sender
+    # for either; SMTP_FROM is still read when MAIL_FROM is empty.
+    MAIL_BACKEND: str = "smtp"
+    MAIL_FROM: str = ""
+
+    # Time zone for fixed-time background jobs and "today" in SMS automation.
+    SCHEDULER_TIMEZONE: str = "Africa/Nairobi"
 
     # --- CBK GDI Submission ---------------------------------------------------
     # Central Bank of Kenya Granular Data Interface (GDI) monthly submission.
@@ -252,6 +301,18 @@ class Settings(BaseSettings):
                 # Skip a malformed CIDR rather than break the webhook path.
                 continue
         return nets
+
+    @model_validator(mode="after")
+    def _database_url_from_parts(self):
+        host = (self.DB_HOST or "").strip()
+        if host:
+            url = (f"postgresql://{quote(self.DB_USER, safe='')}:{quote(self.DB_PASSWORD, safe='')}"
+                   f"@{host}:{int(self.DB_PORT)}/{quote(self.DB_NAME, safe='')}")
+            mode = (self.DB_SSLMODE or "").strip()
+            if mode:
+                url += f"?sslmode={quote(mode, safe='')}"
+            self.DATABASE_URL = url
+        return self
 
     @model_validator(mode="after")
     def _enforce_strong_jwt_secret(self):

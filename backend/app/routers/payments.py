@@ -8,7 +8,8 @@ Two classes of endpoint live here:
     Every payout flows through services/disbursement.py so the RBAC / maker-checker
     ladder cannot be bypassed (MPESA-02).
 
-  * Unauthenticated Daraja callback webhooks (/mpesa/{token}/...) — Safaricom sends
+  * Unauthenticated Daraja callback webhooks (/hooks/{token}/...; WP9: the old
+    /mpesa/{token}/... paths still answer) — Safaricom sends
     no JWT, so these are protected by (a) a hard-to-guess secret path token
     (MPESA_CALLBACK_TOKEN) validated in constant time, and (b) a documented nginx
     Safaricom source-IP allowlist (defence-in-depth). They are idempotent and never
@@ -773,7 +774,8 @@ def reprocess_event(db, event) -> bool:
         return False
 
 
-@router.post("/mpesa/{token}/b2c-result")
+@router.post("/hooks/{token}/b2c-result")
+@router.post("/mpesa/{token}/b2c-result", include_in_schema=False)
 async def b2c_result_callback(token: str, request: Request, db: Session = Depends(get_db)):
     """Daraja B2C ResultURL — the definitive outcome of a disbursement (MPESA-01).
     Idempotently applies the result: success activates the loan, failure reverts it
@@ -785,7 +787,8 @@ async def b2c_result_callback(token: str, request: Request, db: Session = Depend
                                {"ResultCode": 0, "ResultDesc": "Result received"})
 
 
-@router.post("/mpesa/{token}/b2c-timeout")
+@router.post("/hooks/{token}/b2c-timeout")
+@router.post("/mpesa/{token}/b2c-timeout", include_in_schema=False)
 async def b2c_timeout_callback(token: str, request: Request, db: Session = Depends(get_db)):
     """Daraja B2C QueueTimeOutURL — payout outcome unknown. Flags the transaction
     timed_out for the reconcile sweep; does NOT revert the loan (avoids a double
@@ -797,7 +800,8 @@ async def b2c_timeout_callback(token: str, request: Request, db: Session = Depen
                                {"ResultCode": 0, "ResultDesc": "Timeout received"})
 
 
-@router.post("/mpesa/{token}/stk-callback")
+@router.post("/hooks/{token}/stk-callback")
+@router.post("/mpesa/{token}/stk-callback", include_in_schema=False)
 async def stk_callback(token: str, request: Request, db: Session = Depends(get_db)):
     """Daraja STK push CallBackURL — result of a collections prompt. On success
     records the repayment (idempotent on the M-Pesa receipt) and reduces the
@@ -809,7 +813,8 @@ async def stk_callback(token: str, request: Request, db: Session = Depends(get_d
                                {"ResultCode": 0, "ResultDesc": "Result received"})
 
 
-@router.post("/mpesa/{token}/c2b-callback")
+@router.post("/hooks/{token}/c2b-callback")
+@router.post("/mpesa/{token}/c2b-callback", include_in_schema=False)
 async def c2b_callback(token: str, request: Request, db: Session = Depends(get_db)):
     """Daraja C2B confirmation webhook (MPESA-04).
 
@@ -824,7 +829,8 @@ async def c2b_callback(token: str, request: Request, db: Session = Depends(get_d
                                {"ResultCode": 0, "ResultDesc": "Confirmation received successfully"})
 
 
-@router.post("/mpesa/{token}/reversal-result")
+@router.post("/hooks/{token}/reversal-result")
+@router.post("/mpesa/{token}/reversal-result", include_in_schema=False)
 async def reversal_result_callback(token: str, request: Request, db: Session = Depends(get_db)):
     """Daraja Reversal ResultURL — outcome of a wrong-payment reversal (WP4)."""
     _check_callback_token(token)
@@ -834,7 +840,8 @@ async def reversal_result_callback(token: str, request: Request, db: Session = D
                                {"ResultCode": 0, "ResultDesc": "Result received"})
 
 
-@router.post("/mpesa/{token}/reversal-timeout")
+@router.post("/hooks/{token}/reversal-timeout")
+@router.post("/mpesa/{token}/reversal-timeout", include_in_schema=False)
 async def reversal_timeout_callback(token: str, request: Request, db: Session = Depends(get_db)):
     """Daraja Reversal QueueTimeOutURL — outcome unknown; entry stays pending."""
     _check_callback_token(token)

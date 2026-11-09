@@ -1,5 +1,10 @@
 # Finyl-DCP — AWS "Option 2" Deployment Runbook (ECS Fargate)
 
+> **Superseded (WP9).** Use `deploy/STAGING_AWS.md` and the one-file template
+> `deploy/aws/finyl-stack.yaml` instead. This older guide is kept for reference only (its example task files were removed);
+> note its task definitions used `DB_SCHEMA=public`, but the migrations always build
+> schema `finyl_dcp`, so the API would not have found its tables.
+
 **Option 2 = Amazon ECS on Fargate (backend) + Application Load Balancer + Amazon
 RDS for PostgreSQL (database) + Netlify (frontend).**
 

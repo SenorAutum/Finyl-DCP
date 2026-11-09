@@ -1,0 +1,975 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Finyl-DCP on AWS (WP9). One stack = one complete environment (staging or
+  production): network, load balancer, the API on ECS Fargate, PostgreSQL on RDS,
+  shared storage for uploaded documents (EFS), the web app on S3 + CloudFront
+  (HTTPS without needing your own domain), generated secrets, daily backups,
+  alarms by e-mail, and a GitHub deploy role. Step-by-step: deploy/STAGING_AWS.md.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: { default: "1. This environment" }
+        Parameters: [EnvName, RunServices, ApiTaskCount, ApiCpu, ApiMemory]
+      - Label: { default: "2. Database" }
+        Parameters: [DbInstanceClass, DbEngineVersion, DbAllocatedStorage, DbMultiAz, DbDeletionProtection, BackupRetentionDays]
+      - Label: { default: "3. Payments, e-mail and alerts" }
+        Parameters: [DarajaEnvironment, SafaricomIpEnforce, MailFrom, AlertEmail]
+      - Label: { default: "4. GitHub deploys" }
+        Parameters: [GitHubRepo, CreateGitHubOidcProvider]
+      - Label: { default: "5. Your own web address (optional, leave empty for staging)" }
+        Parameters: [CustomDomain, CloudFrontCertificateArn]
+    ParameterLabels:
+      EnvName: { default: "Environment name" }
+      RunServices: { default: "Run the API now?" }
+      ApiTaskCount: { default: "Number of API copies" }
+      CreateGitHubOidcProvider: { default: "Create the GitHub sign-in link?" }
+
+Parameters:
+  EnvName:
+    Type: String
+    Default: staging
+    AllowedPattern: "^[a-z][a-z0-9-]{1,15}$"
+    Description: Short lower-case name used in every resource name, e.g. staging or prod.
+  RunServices:
+    Type: String
+    Default: "No"
+    AllowedValues: ["No", "Yes"]
+    Description: >-
+      Keep "No" when creating the stack (there is no app image yet). After the first
+      run of the "Deploy to AWS" workflow, update the stack and set "Yes".
+  ApiTaskCount:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    MaxValue: 10
+    Description: How many copies of the API run. 1 for staging, 2 or more for production.
+  ApiCpu:
+    Type: String
+    Default: "512"
+    AllowedValues: ["256", "512", "1024", "2048"]
+  ApiMemory:
+    Type: String
+    Default: "1024"
+    AllowedValues: ["512", "1024", "2048", "3072", "4096"]
+  DbInstanceClass:
+    Type: String
+    Default: db.t3.micro
+    AllowedValues: [db.t3.micro, db.t3.small, db.t3.medium, db.t4g.micro, db.t4g.small, db.t4g.medium, db.m6g.large]
+  DbEngineVersion:
+    Type: String
+    Default: "17.9"
+    AllowedPattern: "^1[6-8]\\.[0-9]+$"
+    Description: >-
+      Exact PostgreSQL version. Upgrades are never automatic: to upgrade, change this
+      value and update the stack (take a manual snapshot first).
+  DbAllocatedStorage:
+    Type: Number
+    Default: 20
+    MinValue: 20
+    MaxValue: 1000
+    Description: Starting disk size in GB (grows automatically up to 5 times this).
+  DbMultiAz:
+    Type: String
+    Default: "false"
+    AllowedValues: ["false", "true"]
+    Description: '"true" keeps a standby copy in a second data centre (production).'
+  DbDeletionProtection:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+  BackupRetentionDays:
+    Type: Number
+    Default: 35
+    MinValue: 7
+    MaxValue: 3650
+    Description: How many days the daily backups of the database and documents are kept.
+  DarajaEnvironment:
+    Type: String
+    Default: sandbox
+    AllowedValues: [sandbox, production]
+  SafaricomIpEnforce:
+    Type: String
+    Default: log
+    AllowedValues: ["off", log, enforce]
+    Description: '"log" for sandbox; "enforce" in production rejects callbacks not from Safaricom.'
+  MailFrom:
+    Type: String
+    Default: ""
+    Description: >-
+      Sender for sign-in codes and report e-mails, e.g. "Finyl <no-reply@yourdomain.co.ke>".
+      The address or its domain must be verified in Amazon SES first. Leave empty for no e-mail.
+  AlertEmail:
+    Type: String
+    Default: ""
+    Description: Who receives alarm e-mails (confirm the subscription e-mail AWS sends). Optional.
+  GitHubRepo:
+    Type: String
+    Default: SenorAutum/Finyl-DCP
+    AllowedPattern: "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+  CreateGitHubOidcProvider:
+    Type: String
+    Default: "Yes"
+    AllowedValues: ["Yes", "No"]
+    Description: >-
+      "Yes" the first time in an AWS account. Choose "No" for a second stack in the
+      same account (for example production after staging): the link exists only once.
+  CustomDomain:
+    Type: String
+    Default: ""
+    Description: Optional, e.g. app.finyl.co.ke. Needs the certificate below.
+  CloudFrontCertificateArn:
+    Type: String
+    Default: ""
+    Description: Optional ACM certificate for CustomDomain. It must be in us-east-1 (N. Virginia).
+
+Conditions:
+  ServicesOn: !Equals [!Ref RunServices, "Yes"]
+  CreateOidc: !Equals [!Ref CreateGitHubOidcProvider, "Yes"]
+  HasAlertEmail: !Not [!Equals [!Ref AlertEmail, ""]]
+  HasDomain: !And
+    - !Not [!Equals [!Ref CustomDomain, ""]]
+    - !Not [!Equals [!Ref CloudFrontCertificateArn, ""]]
+
+Mappings:
+  CloudFront:
+    Policies:
+      CachingOptimized: 658327ea-f89d-4fab-a63d-7e88639e58f6
+      CachingDisabled: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+      AllViewerExceptHostHeader: b689b0a8-53d0-40ab-baf2-68738e2966ac
+      SecurityHeaders: 67f7725c-6f97-4210-82d7-5512b31e9d03
+
+Resources:
+  # ---------------------------------------------------------------- network
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.20.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags: [{ Key: Name, Value: !Sub "finyl-${EnvName}" }]
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags: [{ Key: Name, Value: !Sub "finyl-${EnvName}" }]
+  GatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties: { VpcId: !Ref Vpc, InternetGatewayId: !Ref InternetGateway }
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.20.0.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      Tags: [{ Key: Name, Value: !Sub "finyl-${EnvName}-public-a" }]
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.20.1.0/24
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      Tags: [{ Key: Name, Value: !Sub "finyl-${EnvName}-public-b" }]
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.20.10.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      Tags: [{ Key: Name, Value: !Sub "finyl-${EnvName}-private-a" }]
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.20.11.0/24
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      Tags: [{ Key: Name, Value: !Sub "finyl-${EnvName}-private-b" }]
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags: [{ Key: Name, Value: !Sub "finyl-${EnvName}-public" }]
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  PublicSubnetARoutes:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref PublicSubnetA, RouteTableId: !Ref PublicRouteTable }
+  PublicSubnetBRoutes:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref PublicSubnetB, RouteTableId: !Ref PublicRouteTable }
+  # Private subnets (database, documents) have no route to the internet at all.
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags: [{ Key: Name, Value: !Sub "finyl-${EnvName}-private" }]
+  PrivateSubnetARoutes:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref PrivateSubnetA, RouteTableId: !Ref PrivateRouteTable }
+  PrivateSubnetBRoutes:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref PrivateSubnetB, RouteTableId: !Ref PrivateRouteTable }
+
+  # ---------------------------------------------------------- firewall rules
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Finyl load balancer - HTTP from CloudFront (requests without the secret header get 403)
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0, Description: CloudFront }
+  ApiSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Finyl API containers - port 8000 from the load balancer only
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8000
+          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+          Description: Load balancer
+  DatabaseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Finyl database - PostgreSQL from the API containers only
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref ApiSecurityGroup
+          Description: API containers
+  StorageSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Finyl document storage - NFS from the API containers only
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          SourceSecurityGroupId: !Ref ApiSecurityGroup
+          Description: API containers
+
+  # ------------------------------------------------------------------ secrets
+  # Generated once, when the stack is created, and kept if the stack is deleted.
+  # FieldEncryptionKey encrypts national IDs and other personal data: if it is
+  # lost, that data cannot be read again. Never regenerate it.
+  DatabaseSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub "finyl-${EnvName}/database"
+      Description: Finyl database user and password (generated)
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "finyl"}'
+        GenerateStringKey: password
+        PasswordLength: 32
+        ExcludePunctuation: true
+  JwtSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub "finyl-${EnvName}/jwt-secret"
+      Description: Signs staff sign-in tokens (generated)
+      GenerateSecretString: { PasswordLength: 64, ExcludePunctuation: true }
+  FieldEncryptionKey:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub "finyl-${EnvName}/field-encryption-key"
+      Description: Encrypts personal data in the database. NEVER change or delete it.
+      GenerateSecretString: { PasswordLength: 64, ExcludePunctuation: true }
+  CallbackToken:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub "finyl-${EnvName}/mpesa-callback-token"
+      Description: Hidden part of the M-Pesa callback web addresses (generated)
+      GenerateSecretString: { PasswordLength: 32, ExcludePunctuation: true }
+  SeedPassword:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub "finyl-${EnvName}/demo-password"
+      Description: First password of the demo users (staging only; changed at first sign-in)
+      GenerateSecretString:
+        PasswordLength: 20
+        ExcludePunctuation: true
+        RequireEachIncludedType: true
+  AppSettings:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub "finyl-${EnvName}/app-settings"
+      Description: >-
+        Optional settings as JSON, e.g. {"UWAZII_USERNAME": "...", "UWAZII_PASSWORD": "..."}.
+        Edit here, then restart the API (deploy workflow or "Force new deployment").
+      SecretString: "{}"
+
+  # ----------------------------------------------------------------- database
+  DatabaseSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: !Sub "Finyl ${EnvName} database subnets (private)"
+      SubnetIds: [!Ref PrivateSubnetA, !Ref PrivateSubnetB]
+  Database:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: !Sub "finyl-${EnvName}"
+      Engine: postgres
+      EngineVersion: !Ref DbEngineVersion
+      DBInstanceClass: !Ref DbInstanceClass
+      DBName: finyl
+      MasterUsername: !Sub "{{resolve:secretsmanager:${DatabaseSecret}:SecretString:username}}"
+      MasterUserPassword: !Sub "{{resolve:secretsmanager:${DatabaseSecret}:SecretString:password}}"
+      AllocatedStorage: !Ref DbAllocatedStorage
+      MaxAllocatedStorage: 100
+      StorageType: gp3
+      StorageEncrypted: true
+      MultiAZ: !Ref DbMultiAz
+      PubliclyAccessible: false
+      DBSubnetGroupName: !Ref DatabaseSubnetGroup
+      VPCSecurityGroups: [!Ref DatabaseSecurityGroup]
+      BackupRetentionPeriod: 7
+      PreferredBackupWindow: "23:00-23:30"          # 02:00 Kenyan time
+      PreferredMaintenanceWindow: "sun:00:00-sun:01:00"
+      AutoMinorVersionUpgrade: false        # versions change only through DbEngineVersion
+      CopyTagsToSnapshot: true
+      DeletionProtection: !Ref DbDeletionProtection
+      Tags: [{ Key: Name, Value: !Sub "finyl-${EnvName}" }]
+
+  # ------------------------------------------- uploaded documents (shared disk)
+  DocumentStorage:
+    Type: AWS::EFS::FileSystem
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Encrypted: true
+      PerformanceMode: generalPurpose
+      ThroughputMode: elastic
+      LifecyclePolicies: [{ TransitionToIA: AFTER_30_DAYS }]
+      FileSystemTags: [{ Key: Name, Value: !Sub "finyl-${EnvName}-documents" }]
+  DocumentStorageMountA:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref DocumentStorage
+      SubnetId: !Ref PrivateSubnetA
+      SecurityGroups: [!Ref StorageSecurityGroup]
+  DocumentStorageMountB:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref DocumentStorage
+      SubnetId: !Ref PrivateSubnetB
+      SecurityGroups: [!Ref StorageSecurityGroup]
+  DocumentStorageAccessPoint:
+    Type: AWS::EFS::AccessPoint
+    Properties:
+      FileSystemId: !Ref DocumentStorage
+      PosixUser: { Uid: "1000", Gid: "1000" }
+      RootDirectory:
+        Path: /storage
+        CreationInfo: { OwnerUid: "1000", OwnerGid: "1000", Permissions: "750" }
+
+  # --------------------------------------------------- web app (S3 + CloudFront)
+  WebBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules: [{ ObjectOwnership: BucketOwnerEnforced }]
+  WebBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: CloudFrontReadsTheWebApp
+            Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:GetObject
+            Resource: !Sub "${WebBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
+  WebOriginAccess:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "finyl-${EnvName}-web"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+  # Single-page app: any path without a file extension is the app's index.html.
+  SpaRewrite:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub "finyl-${EnvName}-spa"
+      AutoPublish: true
+      FunctionConfig: { Comment: Serve index.html for app routes, Runtime: cloudfront-js-2.0 }
+      FunctionCode: |
+        function handler(event) {
+          var request = event.request;
+          var last = request.uri.split('/').pop();
+          if (last.indexOf('.') === -1) { request.uri = '/index.html'; }
+          return request;
+        }
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: !Sub "Finyl ${EnvName}"
+        Enabled: true
+        HttpVersion: http2and3
+        PriceClass: PriceClass_All
+        DefaultRootObject: index.html
+        Aliases: !If [HasDomain, [!Ref CustomDomain], !Ref AWS::NoValue]
+        ViewerCertificate: !If
+          - HasDomain
+          - AcmCertificateArn: !Ref CloudFrontCertificateArn
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - CloudFrontDefaultCertificate: true
+        Origins:
+          - Id: web
+            DomainName: !GetAtt WebBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt WebOriginAccess.Id
+            S3OriginConfig: { OriginAccessIdentity: "" }
+          - Id: api
+            DomainName: !GetAtt LoadBalancer.DNSName
+            CustomOriginConfig:
+              HTTPPort: 80
+              OriginProtocolPolicy: http-only
+              OriginReadTimeout: 60
+              OriginKeepaliveTimeout: 5
+            OriginCustomHeaders:
+              - HeaderName: X-Finyl-Origin
+                HeaderValue: !Select [2, !Split ["/", !Ref AWS::StackId]]
+        DefaultCacheBehavior:
+          TargetOriginId: web
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: !FindInMap [CloudFront, Policies, CachingOptimized]
+          ResponseHeadersPolicyId: !FindInMap [CloudFront, Policies, SecurityHeaders]
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt SpaRewrite.FunctionARN
+        CacheBehaviors:
+          - PathPattern: /api/*
+            TargetOriginId: api
+            ViewerProtocolPolicy: https-only
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]
+            CachedMethods: [GET, HEAD]
+            Compress: true
+            CachePolicyId: !FindInMap [CloudFront, Policies, CachingDisabled]
+            OriginRequestPolicyId: !FindInMap [CloudFront, Policies, AllViewerExceptHostHeader]
+
+  # ------------------------------------------------------------ load balancer
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "finyl-${EnvName}"
+      Scheme: internet-facing
+      Type: application
+      Subnets: [!Ref PublicSubnetA, !Ref PublicSubnetB]
+      SecurityGroups: [!Ref LoadBalancerSecurityGroup]
+      LoadBalancerAttributes:
+        - { Key: idle_timeout.timeout_seconds, Value: "120" }
+        - { Key: routing.http.drop_invalid_header_fields.enabled, Value: "true" }
+  ApiTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "finyl-${EnvName}-api"
+      VpcId: !Ref Vpc
+      TargetType: ip
+      Protocol: HTTP
+      Port: 8000
+      HealthCheckPath: /api/health
+      HealthCheckIntervalSeconds: 15
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher: { HttpCode: "200" }
+      TargetGroupAttributes:
+        - { Key: deregistration_delay.timeout_seconds, Value: "30" }
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: fixed-response
+          FixedResponseConfig: { StatusCode: "403", ContentType: text/plain, MessageBody: Forbidden }
+  # Only requests that came through CloudFront carry the secret header.
+  FromCloudFrontOnly:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref HttpListener
+      Priority: 1
+      Conditions:
+        - Field: http-header
+          HttpHeaderConfig:
+            HttpHeaderName: X-Finyl-Origin
+            Values: [!Select [2, !Split ["/", !Ref AWS::StackId]]]
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref ApiTargetGroup
+
+  # ----------------------------------------------------------- the API (ECS)
+  ImageRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub "finyl-${EnvName}-api"
+      EmptyOnDelete: true
+      ImageScanningConfiguration: { ScanOnPush: true }
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {"rules": [{"rulePriority": 1, "description": "Keep the last 20 images",
+            "selection": {"tagStatus": "any", "countType": "imageCountMoreThan", "countNumber": 20},
+            "action": {"type": "expire"}}]}
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/finyl/${EnvName}/api"
+      RetentionInDays: 90
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub "finyl-${EnvName}"
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns: [arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy]
+      Policies:
+        - PolicyName: read-finyl-secrets
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref DatabaseSecret
+                  - !Ref JwtSecret
+                  - !Ref FieldEncryptionKey
+                  - !Ref CallbackToken
+                  - !Ref SeedPassword
+                  - !Ref AppSettings
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: finyl-api
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: SendEmail
+                Effect: Allow
+                Action: [ses:SendEmail, ses:SendRawEmail]
+                Resource:
+                  - !Sub "arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/*"
+                  - !Sub "arn:aws:ses:${AWS::Region}:${AWS::AccountId}:configuration-set/*"
+              - Sid: Documents
+                Effect: Allow
+                Action: [elasticfilesystem:ClientMount, elasticfilesystem:ClientWrite]
+                Resource: !GetAtt DocumentStorage.Arn
+                Condition:
+                  StringEquals:
+                    elasticfilesystem:AccessPointArn: !GetAtt DocumentStorageAccessPoint.Arn
+  ApiTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "finyl-${EnvName}-api"
+      Cpu: !Ref ApiCpu
+      Memory: !Ref ApiMemory
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      RuntimePlatform: { CpuArchitecture: X86_64, OperatingSystemFamily: LINUX }
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      Volumes:
+        - Name: documents
+          EFSVolumeConfiguration:
+            FilesystemId: !Ref DocumentStorage
+            TransitEncryption: ENABLED
+            AuthorizationConfig:
+              AccessPointId: !Ref DocumentStorageAccessPoint
+              IAM: ENABLED
+      ContainerDefinitions:
+        - Name: api
+          # The deploy workflow pushes each new version under this tag.
+          Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ImageRepository}:${EnvName}"
+          Essential: true
+          StopTimeout: 30
+          PortMappings: [{ ContainerPort: 8000, Protocol: tcp }]
+          MountPoints: [{ SourceVolume: documents, ContainerPath: /app/storage }]
+          Environment:
+            - { Name: PORT, Value: "8000" }
+            - { Name: DB_HOST, Value: !GetAtt Database.Endpoint.Address }
+            - { Name: DB_PORT, Value: !GetAtt Database.Endpoint.Port }
+            - { Name: DB_NAME, Value: finyl }
+            - { Name: DB_USER, Value: finyl }
+            - { Name: DB_SSLMODE, Value: require }
+            - { Name: DB_SCHEMA, Value: finyl_dcp }
+            - { Name: AUTO_CREATE_TABLES, Value: "false" }
+            - { Name: RUN_MIGRATIONS, Value: "false" }
+            - { Name: SEED_ON_START, Value: "false" }
+            - { Name: SCHEDULER_ENABLED, Value: "true" }
+            - { Name: SCHEDULER_TIMEZONE, Value: Africa/Nairobi }
+            - { Name: TRUSTED_PROXY_HOPS, Value: "2" }
+            - Name: ALLOWED_ORIGINS
+              Value: !If
+                - HasDomain
+                - !Sub "https://${CustomDomain},https://${Distribution.DomainName}"
+                - !Sub "https://${Distribution.DomainName}"
+            - Name: DARAJA_CALLBACK_BASE_URL
+              Value: !If [HasDomain, !Sub "https://${CustomDomain}", !Sub "https://${Distribution.DomainName}"]
+            - { Name: DARAJA_ENVIRONMENT, Value: !Ref DarajaEnvironment }
+            - { Name: SAFARICOM_IP_ENFORCE, Value: !Ref SafaricomIpEnforce }
+            - { Name: STORAGE_DIR, Value: /app/storage }
+            - { Name: MAIL_BACKEND, Value: ses }
+            - { Name: MAIL_FROM, Value: !Ref MailFrom }
+          Secrets:
+            - { Name: DB_PASSWORD, ValueFrom: !Sub "${DatabaseSecret}:password::" }
+            - { Name: JWT_SECRET, ValueFrom: !Ref JwtSecret }
+            - { Name: FIELD_ENCRYPTION_KEY, ValueFrom: !Ref FieldEncryptionKey }
+            - { Name: MPESA_CALLBACK_TOKEN, ValueFrom: !Ref CallbackToken }
+            - { Name: SEED_DEFAULT_PASSWORD, ValueFrom: !Ref SeedPassword }
+            - { Name: APP_SETTINGS_JSON, ValueFrom: !Ref AppSettings }
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: api
+  ApiService:
+    Type: AWS::ECS::Service
+    DependsOn: [FromCloudFrontOnly, DocumentStorageMountA, DocumentStorageMountB]
+    Properties:
+      ServiceName: !Sub "finyl-${EnvName}-api"
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref ApiTaskDefinition
+      LaunchType: FARGATE
+      PlatformVersion: LATEST
+      DesiredCount: !If [ServicesOn, !Ref ApiTaskCount, 0]
+      HealthCheckGracePeriodSeconds: 120
+      PropagateTags: SERVICE
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+        DeploymentCircuitBreaker: { Enable: true, Rollback: true }
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets: [!Ref PublicSubnetA, !Ref PublicSubnetB]
+          SecurityGroups: [!Ref ApiSecurityGroup]
+      LoadBalancers:
+        - { ContainerName: api, ContainerPort: 8000, TargetGroupArn: !Ref ApiTargetGroup }
+
+  # ------------------------------------------------------------------ backups
+  # Daily at 03:00 Kenyan time: the database and the uploaded documents, kept
+  # BackupRetentionDays days. (RDS also keeps 7 days of point-in-time restore.)
+  BackupVault:
+    Type: AWS::Backup::BackupVault
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BackupVaultName: !Sub "finyl-${EnvName}"
+  BackupPlan:
+    Type: AWS::Backup::BackupPlan
+    Properties:
+      BackupPlan:
+        BackupPlanName: !Sub "finyl-${EnvName}-daily"
+        BackupPlanRule:
+          - RuleName: daily
+            TargetBackupVault: !Ref BackupVault
+            ScheduleExpression: cron(0 0 * * ? *)
+            StartWindowMinutes: 60
+            CompletionWindowMinutes: 360
+            Lifecycle: { DeleteAfterDays: !Ref BackupRetentionDays }
+  BackupRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: backup.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForBackup
+        - arn:aws:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForRestores
+  BackupSelection:
+    Type: AWS::Backup::BackupSelection
+    Properties:
+      BackupPlanId: !Ref BackupPlan
+      BackupSelection:
+        SelectionName: database-and-documents
+        IamRoleArn: !GetAtt BackupRole.Arn
+        Resources:
+          - !Sub "arn:aws:rds:${AWS::Region}:${AWS::AccountId}:db:${Database}"
+          - !GetAtt DocumentStorage.Arn
+
+  # ------------------------------------------------------------------- alarms
+  Alerts:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "finyl-${EnvName}-alerts"
+      Subscription: !If
+        - HasAlertEmail
+        - [{ Protocol: email, Endpoint: !Ref AlertEmail }]
+        - !Ref AWS::NoValue
+  ServerErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "finyl-${EnvName} API server errors"
+      AlarmDescription: 10 or more failed (5xx) API answers in 5 minutes.
+      Namespace: AWS/ApplicationELB
+      MetricName: HTTPCode_Target_5XX_Count
+      Dimensions: [{ Name: LoadBalancer, Value: !GetAtt LoadBalancer.LoadBalancerFullName }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 10
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref Alerts]
+  ApiDownAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: ServicesOn
+    Properties:
+      AlarmName: !Sub "finyl-${EnvName} API down"
+      AlarmDescription: No healthy API copy for 3 minutes.
+      Namespace: AWS/ApplicationELB
+      MetricName: HealthyHostCount
+      Dimensions:
+        - { Name: TargetGroup, Value: !GetAtt ApiTargetGroup.TargetGroupFullName }
+        - { Name: LoadBalancer, Value: !GetAtt LoadBalancer.LoadBalancerFullName }
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      AlarmActions: [!Ref Alerts]
+      OKActions: [!Ref Alerts]
+  DatabaseCpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "finyl-${EnvName} database busy"
+      AlarmDescription: Database CPU above 80% for 15 minutes.
+      Namespace: AWS/RDS
+      MetricName: CPUUtilization
+      Dimensions: [{ Name: DBInstanceIdentifier, Value: !Ref Database }]
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions: [!Ref Alerts]
+  DatabaseDiskAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "finyl-${EnvName} database disk low"
+      AlarmDescription: Less than 2 GB free on the database disk.
+      Namespace: AWS/RDS
+      MetricName: FreeStorageSpace
+      Dimensions: [{ Name: DBInstanceIdentifier, Value: !Ref Database }]
+      Statistic: Minimum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 2147483648
+      ComparisonOperator: LessThanThreshold
+      AlarmActions: [!Ref Alerts]
+  JobFailureMetric:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref LogGroup
+      FilterPattern: '"scheduled_job_failed"'
+      MetricTransformations:
+        - MetricNamespace: !Sub "Finyl/${EnvName}"
+          MetricName: ScheduledJobFailures
+          MetricValue: "1"
+          DefaultValue: 0
+  JobFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "finyl-${EnvName} background job failed"
+      AlarmDescription: A background job (SMS, reports, CBK filing, payouts check) failed. See Admin > Background jobs.
+      Namespace: !Sub "Finyl/${EnvName}"
+      MetricName: ScheduledJobFailures
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref Alerts]
+
+  # ------------------------------------------- GitHub deploys (no stored keys)
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: CreateOidc
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+        - 1c58a3a8518e8759bf075b76b750d4f2df264fcd
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "finyl-${EnvName}-github-deploy"
+      Description: Used only by the "Deploy to AWS" GitHub workflow, only from the main branch.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - CreateOidc
+                - !Ref GitHubOidcProvider
+                - !Sub "arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com"
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubRepo}:ref:refs/heads/main"
+      Policies:
+        - PolicyName: deploy-finyl
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadStackOutputs
+                Effect: Allow
+                Action: cloudformation:DescribeStacks
+                Resource: !Ref AWS::StackId
+              - Sid: RegistryLogin
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: "*"
+              - Sid: PushImages
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                  - ecr:PutImage
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:DescribeImages
+                Resource: !GetAtt ImageRepository.Arn
+              - Sid: RunOneOffTasks
+                Effect: Allow
+                Action: ecs:RunTask
+                Resource: !Sub "arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task-definition/finyl-${EnvName}-api:*"
+              - Sid: WatchTasks
+                Effect: Allow
+                Action: ecs:DescribeTasks
+                Resource: !Sub "arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task/finyl-${EnvName}/*"
+              - Sid: RollOutApi
+                Effect: Allow
+                Action: [ecs:UpdateService, ecs:DescribeServices]
+                Resource: !Sub "arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:service/finyl-${EnvName}/finyl-${EnvName}-api"
+              - Sid: PassTaskRoles
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: [!GetAtt TaskExecutionRole.Arn, !GetAtt TaskRole.Arn]
+                Condition:
+                  StringEquals: { iam:PassedToService: ecs-tasks.amazonaws.com }
+              - Sid: ReadTaskLogs
+                Effect: Allow
+                Action: [logs:GetLogEvents, logs:FilterLogEvents]
+                Resource: !GetAtt LogGroup.Arn
+              - Sid: UploadWebApp
+                Effect: Allow
+                Action: [s3:ListBucket]
+                Resource: !GetAtt WebBucket.Arn
+              - Sid: UploadWebAppFiles
+                Effect: Allow
+                Action: [s3:PutObject, s3:GetObject, s3:DeleteObject]
+                Resource: !Sub "${WebBucket.Arn}/*"
+              - Sid: RefreshCdn
+                Effect: Allow
+                Action: [cloudfront:CreateInvalidation, cloudfront:GetInvalidation]
+                Resource: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
+
+Outputs:
+  AppUrl:
+    Description: Open this in a browser to use Finyl.
+    Value: !If [HasDomain, !Sub "https://${CustomDomain}", !Sub "https://${Distribution.DomainName}"]
+  CloudFrontDomain:
+    Description: Point your own domain (CNAME) here if you use one.
+    Value: !GetAtt Distribution.DomainName
+  DeployRoleArn:
+    Description: Paste into GitHub as the AWS_DEPLOY_ROLE_ARN variable.
+    Value: !GetAtt DeployRole.Arn
+  EnvName:
+    Value: !Ref EnvName
+  ClusterName:
+    Value: !Ref Cluster
+  ServiceName:
+    Value: !GetAtt ApiService.Name
+  TaskFamily:
+    Value: !Sub "finyl-${EnvName}-api"
+  TaskSubnets:
+    Value: !Join [",", [!Ref PublicSubnetA, !Ref PublicSubnetB]]
+  ApiSecurityGroup:
+    Value: !Ref ApiSecurityGroup
+  ImageRepositoryUri:
+    Value: !GetAtt ImageRepository.RepositoryUri
+  WebBucket:
+    Value: !Ref WebBucket
+  DistributionId:
+    Value: !Ref Distribution
+  LogGroup:
+    Value: !Ref LogGroup
+  DatabaseId:
+    Value: !Ref Database
+  DatabaseSubnetGroup:
+    Value: !Ref DatabaseSubnetGroup
+  DatabaseSecurityGroup:
+    Value: !Ref DatabaseSecurityGroup
+  AppSettingsSecret:
+    Description: Optional settings (JSON). Edit in Secrets Manager.
+    Value: !Sub "finyl-${EnvName}/app-settings"
+  DemoPasswordSecret:
+    Description: The demo users' first password (staging). Secrets Manager > Retrieve secret value.
+    Value: !Sub "finyl-${EnvName}/demo-password"
+  BackupVaultName:
+    Value: !Ref BackupVault
