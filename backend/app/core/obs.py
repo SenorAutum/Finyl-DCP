@@ -111,6 +111,7 @@ CBK_CLIENT_EDIT_REQUEST = "cbk.client.edit_request"
 CBK_CLIENT_EDIT_APPROVED = "cbk.client.edit_approved"
 CBK_CLIENT_EDIT_REJECTED = "cbk.client.edit_rejected"
 CBK_WALLET_LOCKED = "cbk.client.wallet_locked"
+CBK_WALLET_UNLOCKED = "cbk.client.wallet_unlocked"
 CBK_EDIT_LOCK_ENFORCED = "cbk.client.edit_lock_enforced"
 # Lending
 CBK_LOAN_ACTIVE_LOCK = "cbk.loan.active_lock"

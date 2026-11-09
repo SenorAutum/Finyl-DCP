@@ -11,6 +11,12 @@ import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+
+def _read_sql_utc(*args, **kwargs):
+    """pd.read_sql with times as naive UTC (WP10: the columns now carry a zone)."""
+    from app.core.timeutil import naive_utc_frame
+    return naive_utc_frame(pd.read_sql(*args, **kwargs))
+
 TODAY = None  # resolved per-call so long-lived processes stay correct
 
 
@@ -19,7 +25,7 @@ def _today() -> date:
 
 
 def _read_df(db: Session, sql: str, params: dict) -> pd.DataFrame:
-    return pd.read_sql(text(sql), db.connection(), params=params)
+    return _read_sql_utc(text(sql), db.connection(), params=params)
 
 
 def load_loans_df(db: Session, tenant_id: int) -> pd.DataFrame:

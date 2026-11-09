@@ -403,7 +403,7 @@ def guarded(job_id: str, fn, every_minutes: int | None = None):
                 run_id = claim_run(db, job_id, _slot(every_minutes))
             except Exception:
                 db.rollback()
-                logger.exception("%s: could not claim a run slot; skipping", job_id)
+                logger.exception("scheduled_job_failed job=%s: could not claim a run slot", job_id)
                 return
             if run_id is None:
                 return                      # another copy is running / ran it
@@ -414,7 +414,7 @@ def guarded(job_id: str, fn, every_minutes: int | None = None):
                     detail = ", ".join(f"{k}={v}" for k, v in out.items())[:2000]
             except Exception as exc:        # jobs normally catch their own errors
                 status, detail = "failed", f"{type(exc).__name__}: {exc}"
-                logger.exception("%s failed", job_id)
+                logger.exception("scheduled_job_failed job=%s", job_id)
             try:
                 finish_run(db, run_id, status, detail)
             except Exception:
@@ -439,26 +439,61 @@ def run_lifecycle_sms():
         db.close()
 
 
-def _schedule_due(schedule, now_local) -> bool:
-    """Is a report schedule due? Daily: not yet sent today. Weekly: on Mondays,
-    not yet sent this week. Monthly: on the 1st, not yet sent this month.
-    Reports go out from 07:00 Kenyan time."""
-    if now_local.hour < 7:
-        return False
-    last = schedule.last_run_at
-    if last is not None and last.tzinfo is None:
-        from datetime import timezone
-        last = last.replace(tzinfo=timezone.utc)
-    last_local = last.astimezone(now_local.tzinfo) if last else None
-    freq = (schedule.frequency or "weekly").lower()
-    today = now_local.date()
+SEND_HOUR = 7   # reports go out from 07:00 Kenyan time
+
+
+def _latest_slot(freq: str, now_local):
+    """The most recent moment (local time) a schedule of this frequency was due:
+    07:00 today (daily), 07:00 last Monday (weekly), 07:00 on the 1st (monthly).
+    None when the first slot has not yet arrived."""
+    base = now_local.replace(hour=SEND_HOUR, minute=0, second=0, microsecond=0)
     if freq == "daily":
-        return last_local is None or last_local.date() < today
+        slot = base
+        if slot > now_local:
+            slot -= timedelta(days=1)
+        return slot
     if freq == "monthly":
-        return today.day == 1 and (last_local is None or
-                                  (last_local.year, last_local.month) != (today.year, today.month))
-    # weekly (default)
-    return today.weekday() == 0 and (last_local is None or last_local.date() < today)
+        slot = base.replace(day=1)
+        if slot > now_local:
+            prev = (slot - timedelta(days=1)).replace(day=1)
+            slot = prev
+        return slot
+    slot = base - timedelta(days=now_local.weekday())   # weekly: Monday
+    if slot > now_local:
+        slot -= timedelta(days=7)
+    return slot
+
+
+def _as_local(value, tz):
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        from datetime import timezone
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(tz)
+
+
+def _schedule_due(schedule, now_local) -> bool:
+    """Is a report schedule due? It is due when its latest slot (07:00 Kenyan
+    time daily / on Mondays / on the 1st) has passed and it has not been sent
+    since. WP10: a slot missed while the servers were down is sent as soon as
+    they are back (once, however many slots were missed), instead of waiting
+    for the next slot. A new schedule waits for its first slot after creation."""
+    freq = (schedule.frequency or "weekly").lower()
+    slot = _latest_slot(freq, now_local)
+    last_local = _as_local(schedule.last_run_at, now_local.tzinfo)
+    if last_local is not None:
+        return last_local < slot
+    created = _as_local(getattr(schedule, "created_at", None), now_local.tzinfo)
+    return created is None or created < slot
+
+
+def _slot_label(schedule, now_local) -> str | None:
+    """'Monday 9 Nov 07:00' when the report is going out late (catch-up)."""
+    slot = _latest_slot((schedule.frequency or "weekly").lower(), now_local)
+    if now_local - slot > timedelta(hours=2):
+        return f"{slot:%A %d %b %H:%M}"
+    return None
 
 
 def run_report_schedules(now_local=None):
@@ -491,10 +526,14 @@ def run_report_schedules(now_local=None):
                     sch.last_status, sch.last_error = "failed", "E-mail (SMTP) is not set up on the platform."
                 else:
                     body, count = report_csv(db, sch.tenant_id, sch.report_type)
+                    late = _slot_label(sch, now_local)
+                    note = (f"\n\nThis report was due on {late} and is sent late because "
+                            f"the system was unavailable then. The figures are as of now."
+                            if late else "")
                     ok = mailer.send_email(
                         recipients, f"{sch.name} - {now_local:%d %b %Y}",
                         f"Attached: {sch.name} ({sch.report_type.replace('_', ' ')}), "
-                        f"{count} rows, as of {now_local:%d %b %Y %H:%M}.\n\nSent by Finyl.",
+                        f"{count} rows, as of {now_local:%d %b %Y %H:%M}.{note}\n\nSent by Finyl.",
                         attachments=[(f"{sch.report_type}-{now_local:%Y%m%d}.csv",
                                       body.encode("utf-8"), "text/csv")])
                     sch.last_status = "sent" if ok else "failed"

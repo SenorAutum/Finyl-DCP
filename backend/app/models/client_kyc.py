@@ -13,6 +13,7 @@ from sqlalchemy.orm import relationship
 
 from app.core.crypto import EncryptedText
 from app.core.database import Base
+from app.core.timeutil import UTCDateTime
 
 
 class ClientMobileWallet(Base):
@@ -31,7 +32,7 @@ class ClientMobileWallet(Base):
     wallet_locked = Column(Boolean, nullable=False, default=False)
     locked_at = Column(DateTime(timezone=True))
     locked_by = Column(String(100))     # 'system' or user email
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(UTCDateTime, default=datetime.utcnow)
 
     client = relationship("Borrower", back_populates="wallets")
 
@@ -53,7 +54,7 @@ class ClientNextOfKin(Base):
     national_id = Column(EncryptedText)
     address = Column(String(160))
     active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(UTCDateTime, default=datetime.utcnow)
 
     client = relationship("Borrower", back_populates="next_of_kin")
 
@@ -81,7 +82,7 @@ class ClientDocument(Base):
     ocr_field_mapping = Column(JSONB)
     ocr_confidence = Column(Numeric(5, 4))
     ocr_version = Column(String(20))
-    uploaded_at = Column(DateTime, default=datetime.utcnow)
+    uploaded_at = Column(UTCDateTime, default=datetime.utcnow)
     uploaded_by = Column(String(120))
 
     client = relationship("Borrower", back_populates="documents")

@@ -5,12 +5,12 @@
 // flow (till, bank, cash). Above the DCP's manual-payment threshold every one
 // of these waits for a second person in Approvals → Pending money actions.
 import { useEffect, useState } from "react";
-import { api } from "../../lib/api";
+import { api, toDate } from "../../lib/api";
 import { Badge, Empty, Modal, PageHeader, Pagination, Spinner } from "../../components/ui";
 
 const kes2 = (n) =>
   n == null ? "—" : `KES ${Number(n).toLocaleString("en-KE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-const fmtDT = (d) => (d ? new Date(d).toLocaleString("en-KE", { dateStyle: "medium", timeStyle: "short" }) : "—");
+const fmtDT = (d) => (d ? toDate(d).toLocaleString("en-KE", { dateStyle: "medium", timeStyle: "short" }) : "—");
 
 const STATUSES = ["", "open", "pending_approval", "refund_processing", "reversal_pending", "allocated", "refunded", "reversed"];
 const CHANNELS = [

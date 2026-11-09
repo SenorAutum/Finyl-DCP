@@ -5,10 +5,10 @@
 // accounts (it used to list staff records, whose ids are a different number);
 // (3) revoking a device also ends that person's open sessions.
 import { useEffect, useState } from "react";
-import { api } from "../../lib/api";
+import { api, toDate } from "../../lib/api";
 import { Badge, Empty, PageHeader, Spinner } from "../../components/ui";
 
-const fmtTime = (d) => (d ? new Date(d).toLocaleString("en-KE", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "short", year: "numeric" }) : "—");
+const fmtTime = (d) => (d ? toDate(d).toLocaleString("en-KE", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "short", year: "numeric" }) : "—");
 
 export default function DeviceManagement() {
   const [people, setPeople] = useState([]);

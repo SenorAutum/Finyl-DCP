@@ -2,7 +2,7 @@
 // M-Pesa / bank statements into the platform. The full key is shown exactly once
 // at creation and never again, so it is surfaced in a copyable confirmation.
 import { useEffect, useState } from "react";
-import { api, fmtDate } from "../../lib/api";
+import { api, fmtDate, toDate } from "../../lib/api";
 import { Empty, Modal, PageHeader, Spinner } from "../../components/ui";
 
 const SCOPES = [
@@ -10,7 +10,7 @@ const SCOPES = [
   ["bank_statement", "Bank statement ingestion"],
 ];
 
-const fmtTime = (d) => (d ? new Date(d).toLocaleString("en-KE", { dateStyle: "medium", timeStyle: "short" }) : "—");
+const fmtTime = (d) => (d ? toDate(d).toLocaleString("en-KE", { dateStyle: "medium", timeStyle: "short" }) : "—");
 
 export default function ApiClients() {
   const [data, setData] = useState(null);

@@ -2,10 +2,10 @@
 // Shows the verified sender ID + opt-out enforcement flag, and lets staff with
 // messaging.manage add or remove opt-outs. Purely additive to the messaging module.
 import { useEffect, useState } from "react";
-import { api } from "../../lib/api";
+import { api, toDate } from "../../lib/api";
 import { Badge, Empty, PageHeader, Spinner } from "../../components/ui";
 
-const fmtDT = (d) => (d ? new Date(d).toLocaleString("en-KE", { dateStyle: "medium", timeStyle: "short" }) : "—");
+const fmtDT = (d) => (d ? toDate(d).toLocaleString("en-KE", { dateStyle: "medium", timeStyle: "short" }) : "—");
 
 export default function OptOuts() {
   const [status, setStatus] = useState(null);

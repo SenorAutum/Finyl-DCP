@@ -16,8 +16,14 @@ from sqlalchemy.orm import Session
 from app.core.crypto import decrypt_pii
 
 
+def _read_sql_utc(*args, **kwargs):
+    """pd.read_sql with times as naive UTC (WP10: the columns now carry a zone)."""
+    from app.core.timeutil import naive_utc_frame
+    return naive_utc_frame(pd.read_sql(*args, **kwargs))
+
+
 def _loans_df(db: Session, tenant_id: int) -> pd.DataFrame:
-    df = pd.read_sql(text("""
+    df = _read_sql_utc(text("""
         SELECT l.account_number, l.principal::float, l.interest_rate, l.status,
                l.disbursement_date, l.due_date, l.outstanding_balance::float,
                b.first_name, b.last_name, b.national_id, b.phone, b.date_of_birth, b.gender,

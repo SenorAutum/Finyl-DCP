@@ -6,6 +6,7 @@ from sqlalchemy import (Boolean, Column, DateTime, Float, ForeignKey, Integer,
                         JSON, Numeric, String, Text, UniqueConstraint)
 
 from app.core.database import Base
+from app.core.timeutil import UTCDateTime
 
 
 class MpesaStatementAnalysis(Base):
@@ -18,8 +19,8 @@ class MpesaStatementAnalysis(Base):
     client_id = Column(Integer, ForeignKey("borrowers.id"), nullable=False, index=True)
     loan_id = Column(Integer, ForeignKey("loans.id"))       # optional link to an application
 
-    period_start = Column(DateTime)
-    period_end = Column(DateTime)
+    period_start = Column(UTCDateTime)
+    period_end = Column(UTCDateTime)
     months_covered = Column(Float, default=0)
     transactions_count = Column(Integer, default=0)
 
@@ -35,7 +36,7 @@ class MpesaStatementAnalysis(Base):
 
     source_filename = Column(String(200))
     created_by_user_id = Column(Integer, ForeignKey("users.id"))
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(UTCDateTime, default=datetime.utcnow)
 
 
 class CrbCheck(Base):
@@ -56,7 +57,7 @@ class CrbCheck(Base):
     raw = Column(JSON, default=dict)                # full bureau payload
     error = Column(Text)
     created_by_user_id = Column(Integer, ForeignKey("users.id"))
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(UTCDateTime, default=datetime.utcnow)
 
 
 class SmsRateCard(Base):
@@ -69,10 +70,10 @@ class SmsRateCard(Base):
     sell_price_kes = Column(Numeric(10, 4), nullable=False)   # charged to the DCP
     cost_price_kes = Column(Numeric(10, 4), nullable=False)   # our cost from Uwazii
     currency = Column(String(3), default="KES")
-    effective_from = Column(DateTime, default=datetime.utcnow)
+    effective_from = Column(UTCDateTime, default=datetime.utcnow)
     active = Column(Boolean, default=True, index=True)
     note = Column(String(200))
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(UTCDateTime, default=datetime.utcnow)
 
 
 class IntegrationTestLog(Base):
@@ -85,7 +86,7 @@ class IntegrationTestLog(Base):
     detail = Column(Text)
     run_by_user_id = Column(Integer, ForeignKey("users.id"))
     run_by_email = Column(String(120))
-    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    created_at = Column(UTCDateTime, default=datetime.utcnow, index=True)
 
 
 class MpesaWebhookEvent(Base):
@@ -110,13 +111,13 @@ class MpesaWebhookEvent(Base):
     tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
     endpoint = Column(String(40), nullable=False)      # b2c-result | b2c-timeout | stk-callback | c2b-callback
     shortcode = Column(String(20))                     # BusinessShortCode when extractable
-    received_at = Column(DateTime, default=datetime.utcnow, index=True)
-    processed_at = Column(DateTime)
+    received_at = Column(UTCDateTime, default=datetime.utcnow, index=True)
+    processed_at = Column(UTCDateTime)
     raw_payload = Column(JSON)                         # verbatim body — MAY CONTAIN PII (purged after retention)
     processing_status = Column(String(20), nullable=False, default="received")  # received|processed|failed|dead
     attempts = Column(Integer, nullable=False, default=0)
     last_error = Column(Text)
-    next_retry_at = Column(DateTime)
+    next_retry_at = Column(UTCDateTime)
 
 
 class TenantIntegrationConfig(Base):
@@ -135,4 +136,4 @@ class TenantIntegrationConfig(Base):
     secrets = Column(JSON, default=dict)               # secret fields (masked in responses)
     enabled = Column(Boolean, default=True)
     updated_by_user_id = Column(Integer, ForeignKey("users.id"))
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(UTCDateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

@@ -128,6 +128,11 @@ class ValidateMpesaRequest(BaseModel):
     expected_name: Optional[str] = None
 
 
+class WalletUnlockIn(BaseModel):
+    """WP10: why a confirmed wallet is being unlocked (kept in the audit log)."""
+    reason: str
+
+
 class ConfirmMpesaIn(BaseModel):
     """WP6 (F15): a second staff member confirms the name M-Pesa holds."""
     registered_name: str

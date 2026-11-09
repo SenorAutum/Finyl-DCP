@@ -493,28 +493,10 @@ def get_approver_config(tenant_id: int | None = None,
     if tenant_id is None:
         return result
 
-    # Stored overrides for this tenant, keyed by (approval_type, role).
-    rows = db.query(ApproverSetting).filter(ApproverSetting.tenant_id == tenant_id).all()
-    stored = {(r.approval_type, r.role): bool(r.enabled) for r in rows}
-
-    for at in APPROVAL_TYPES:
-        roles = []
-        for role in eligible_approver_roles(at):
-            key = (at, role)
-            configured = key in stored
-            enabled = stored[key] if configured else rbac._default_approver_enabled(at, role)
-            roles.append({
-                "role": role,
-                "label": ROLE_LABELS.get(role, role),
-                "enabled": enabled,
-                "configured": configured,
-                "default": rbac._default_approver_enabled(at, role),
-            })
-        result["approval_types"].append({
-            "approval_type": at,
-            "label": APPROVAL_TYPE_LABELS.get(at, at),
-            "roles": roles,
-        })
+    if not db.query(Tenant).filter(Tenant.id == tenant_id).first():
+        raise HTTPException(404, "Tenant not found")
+    # WP10: includes the DCP's own roles that hold the approval permission.
+    result["approval_types"] = rbac.approver_config(db, tenant_id)
     return result
 
 
@@ -523,13 +505,12 @@ def set_approver_config(body: ApproverConfigIn, request: Request,
                         actor: User = Depends(require_role("super_admin")),
                         db: Session = Depends(get_db)):
     """Upsert a single per-DCP approver toggle. Super admin only; audited."""
-    if body.approval_type not in APPROVAL_TYPES:
-        raise HTTPException(400, f"approval_type must be one of {APPROVAL_TYPES}")
-    if body.role not in eligible_approver_roles(body.approval_type):
-        raise HTTPException(
-            400, f"Role '{body.role}' is not an eligible approver for '{body.approval_type}'")
     if not db.query(Tenant).filter(Tenant.id == body.tenant_id).first():
         raise HTTPException(404, "Tenant not found")
+    problem = rbac.check_approver_change(db, body.tenant_id, body.approval_type, body.role,
+                                         bool(body.enabled))
+    if problem:
+        raise HTTPException(400, problem)
 
     row = db.query(ApproverSetting).filter(
         ApproverSetting.tenant_id == body.tenant_id,

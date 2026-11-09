@@ -7,6 +7,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 
 from app.core.database import Base
+from app.core.timeutil import UTCDateTime
 
 CRM_STAGES = ["lead", "contacted", "field_visit", "app_setup", "disbursed"]
 CALL_OUTCOMES = ["promise_to_pay", "no_answer", "paid", "dispute", "wrong_number", "call_back"]
@@ -37,7 +38,7 @@ class CrmLead(Base):
     converted_to_client_id = Column(Integer, ForeignKey("borrowers.id"))
     conversion_triggered_at = Column(DateTime(timezone=True))
     conversion_validations = Column(JSONB)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(UTCDateTime, default=datetime.utcnow)
 
     assigned_staff = relationship("Staff")
     visits = relationship("SiteVisit", back_populates="lead")
@@ -68,7 +69,7 @@ class CallLog(Base):
     agent_id = Column(Integer, ForeignKey("staff.id"), nullable=False, index=True)
     borrower_id = Column(Integer, ForeignKey("borrowers.id"), nullable=False)
     loan_id = Column(Integer, ForeignKey("loans.id"))
-    call_date = Column(DateTime, default=datetime.utcnow)
+    call_date = Column(UTCDateTime, default=datetime.utcnow)
     duration_seconds = Column(Integer, default=0)
     call_outcome = Column(String(20), default="no_answer")
     promise_to_pay_date = Column(Date)
@@ -89,9 +90,9 @@ class Complaint(Base):
     category = Column(String(30), nullable=False, default="other")
     description = Column(Text)
     status = Column(String(15), default="open", index=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    sla_deadline = Column(DateTime)     # created_at + 14 days (regulatory ceiling)
-    resolved_at = Column(DateTime)
+    created_at = Column(UTCDateTime, default=datetime.utcnow)
+    sla_deadline = Column(UTCDateTime)     # created_at + 14 days (regulatory ceiling)
+    resolved_at = Column(UTCDateTime)
     assigned_staff_id = Column(Integer, ForeignKey("staff.id"))
     remedial_action = Column(Text)
 
@@ -133,7 +134,7 @@ class AmlFlag(Base):
     flag_type = Column(String(40), nullable=False)   # structuring | rapid_small_repayments | velocity
     severity = Column(String(10), default="medium")  # low | medium | high
     details = Column(Text)
-    flagged_at = Column(DateTime, default=datetime.utcnow)
+    flagged_at = Column(UTCDateTime, default=datetime.utcnow)
     reviewed = Column(Boolean, default=False)
 
     borrower = relationship("Borrower")

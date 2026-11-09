@@ -1,7 +1,7 @@
 // Approvals inbox: loan approvals (threshold + escalation), client-profile
 // approvals, and maker-checker sign-off for disbursements / refunds.
 import { Fragment, useEffect, useState } from "react";
-import { api, fmtKES, fmtDate } from "../../lib/api";
+import { api, fmtKES, fmtDate, toDate } from "../../lib/api";
 import { useAuth } from "../../hooks/useAuth";
 import { PageHeader, Badge, Empty, Spinner } from "../../components/ui";
 
@@ -237,7 +237,7 @@ function PendingActions() {
                 <td className="td text-xs">
                   {p.channel && <div>{CHANNEL_LABELS[p.channel] || p.channel}</div>}
                   {p.reference && <div className="font-mono">{p.reference}</div>}
-                  {p.paid_at && <div className="text-gray-400">paid {new Date(p.paid_at).toLocaleString("en-KE", { dateStyle: "medium", timeStyle: "short" })}</div>}
+                  {p.paid_at && <div className="text-gray-400">paid {toDate(p.paid_at).toLocaleString("en-KE", { dateStyle: "medium", timeStyle: "short" })}</div>}
                   {p.suspense_id && <div className="text-gray-400">suspense #{p.suspense_id}</div>}
                   {p.action_type === "suspense_reversal" && <div>Safaricom reversal to the payer</div>}
                   {p.action_type === "suspense_refund" && p.phone && <div>to {p.phone}{p.phone_overridden && <span className="text-red-600 font-semibold"> (not the paying number)</span>}</div>}
