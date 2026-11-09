@@ -65,12 +65,17 @@ function SchedulesTab({ canManage }) {
           <table className="w-full text-sm">
             <thead><tr className="text-left border-b border-border bg-canvas">
               <th className="th">Name</th><th className="th">Report</th><th className="th">Frequency</th>
-              <th className="th">Recipients</th>{canManage && <th className="th text-right">Actions</th>}
+              <th className="th">Recipients</th><th className="th">Last sent</th>{canManage && <th className="th text-right">Actions</th>}
             </tr></thead>
             <tbody>{rows.map((s) => (
               <tr key={s.id} className="border-b border-border/60">
                 <td className="td font-medium">{s.name}</td><td className="td">{s.report_type}</td>
                 <td className="td capitalize">{s.frequency}</td><td className="td text-xs">{s.recipients || "—"}</td>
+                <td className="td text-xs">{!s.last_run_at ? <span className="text-gray-400">Not yet</span> : (
+                  <span className={s.last_status === "sent" ? "text-emerald-700" : "text-red-700"} title={s.last_error || ""}>
+                    {s.last_status === "sent" ? "Sent" : "Failed"} · {new Date(s.last_run_at).toLocaleString("en-KE", { dateStyle: "medium", timeStyle: "short" })}
+                    {s.last_error && <div className="text-gray-500">{s.last_error}</div>}
+                  </span>)}</td>
                 {canManage && <td className="td text-right"><button className="btn-ghost !py-1 !px-2 text-xs text-red-600" onClick={() => del(s.id)}>Delete</button></td>}
               </tr>
             ))}</tbody>
@@ -94,6 +99,7 @@ function ScheduleModal({ onClose, onDone }) {
         <div><label className="label">Report</label><select className="input" value={f.report_type} onChange={up("report_type")}>{REPORTS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></div>
         <div><label className="label">Frequency</label><select className="input" value={f.frequency} onChange={up("frequency")}><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select></div>
         <div><label className="label">Recipients (comma-separated emails)</label><input className="input" value={f.recipients} onChange={up("recipients")} /></div>
+        <p className="text-xs text-gray-500">Daily reports go out each morning from 7:00, weekly ones on Monday mornings, monthly ones on the 1st. Each is e-mailed as a CSV file.</p>
         {err && <div className="text-sm text-red-600">{err}</div>}
         <div className="flex justify-end gap-2 pt-2"><button className="btn-ghost" onClick={onClose}>Cancel</button><button className="btn-primary" onClick={save} disabled={!f.name}>Save</button></div>
       </div>

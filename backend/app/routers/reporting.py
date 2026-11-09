@@ -34,14 +34,11 @@ def _csv(rows: list[dict], columns: list[str]) -> str:
     return buf.getvalue()
 
 
-@router.get("/export/{report_type}")
-def export_report(report_type: str, request: Request,
-                  tenant_id: int = Depends(get_tenant_id),
-                  user: User = Depends(require_permission("reports.export")),
-                  db: Session = Depends(get_db)):
+def build_report(db: Session, tenant_id: int, report_type: str) -> tuple[list[dict], list[str]]:
+    """Rows and columns for one report (WP8: shared by the download button and
+    the scheduled e-mail, so both always contain the same thing)."""
     if report_type not in REPORT_TYPES:
-        raise HTTPException(400, f"Unknown report type. One of {REPORT_TYPES}")
-
+        raise ValueError(f"Unknown report type. One of {REPORT_TYPES}")
     loans = (db.query(Loan).options(joinedload(Loan.borrower), joinedload(Loan.staff))
              .filter(Loan.tenant_id == tenant_id).all())
     rows, columns = [], []
@@ -92,6 +89,22 @@ def export_report(report_type: str, request: Request,
         columns = ["staff_id", "officer", "loans", "principal"]
         rows = list(agg.values())
 
+    return rows, columns
+
+
+def report_csv(db: Session, tenant_id: int, report_type: str) -> tuple[str, int]:
+    rows, columns = build_report(db, tenant_id, report_type)
+    return _csv(rows, columns), len(rows)
+
+
+@router.get("/export/{report_type}")
+def export_report(report_type: str, request: Request,
+                  tenant_id: int = Depends(get_tenant_id),
+                  user: User = Depends(require_permission("reports.export")),
+                  db: Session = Depends(get_db)):
+    if report_type not in REPORT_TYPES:
+        raise HTTPException(400, f"Unknown report type. One of {REPORT_TYPES}")
+    rows, columns = build_report(db, tenant_id, report_type)
     write_audit(db, tenant_id=tenant_id, user=user, action="report.export",
                 entity_type="report", entity_id=report_type,
                 details={"rows": len(rows)}, request=request)
@@ -111,7 +124,8 @@ def list_schedules(tenant_id: int = Depends(get_tenant_id),
     rows = db.query(ReportSchedule).filter(ReportSchedule.tenant_id == tenant_id).order_by(ReportSchedule.id.desc()).all()
     return [{"id": s.id, "name": s.name, "report_type": s.report_type, "frequency": s.frequency,
              "recipients": s.recipients, "active": s.active,
-             "last_run_at": s.last_run_at.isoformat() if s.last_run_at else None} for s in rows]
+             "last_run_at": s.last_run_at.isoformat() if s.last_run_at else None,
+             "last_status": s.last_status, "last_error": s.last_error} for s in rows]
 
 
 @router.post("/schedules")

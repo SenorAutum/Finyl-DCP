@@ -277,3 +277,18 @@ def tenants_dashboard(days: int = 30, db: Session = Depends(get_db)):
     totals["tenant_count"] = len(tenants)
 
     return {"window_days": max(days, 1), "totals": totals, "tenants": out}
+
+
+@router.get("/scheduled-jobs")
+def scheduled_job_runs(limit: int = 100,
+                       _: User = Depends(require_role("super_admin")),
+                       db: Session = Depends(get_db)):
+    """WP8: the latest background job runs (one row per job per time slot), so
+    Finyl can see that reminders, filing and reconciliation are actually running."""
+    from app.models import ScheduledJobRun
+    rows = (db.query(ScheduledJobRun).order_by(ScheduledJobRun.started_at.desc())
+            .limit(max(1, min(limit, 500))).all())
+    return {"items": [{"id": r.id, "job_id": r.job_id, "slot": r.slot, "host": r.host,
+                       "started_at": r.started_at, "finished_at": r.finished_at,
+                       "status": r.status, "detail": r.detail} for r in rows]}
+

@@ -33,6 +33,8 @@ PERMISSIONS = {
     "backups.manage": "Trigger backups and data-integrity checks",
     "payments.upload": "Upload payment files / reconciliation batches",
     "messaging.manage": "Customise per-DCP SMS message templates",
+    "sms.send": "Send a one-off SMS to a client from the DCP's sender name",
+    "sms.view": "View the SMS log (codes are never shown)",
     "products.manage": "Propose new loan products and product changes (go live after Finyl approval)",
     # Clients (origination)
     "clients.view_all": "View all clients in scope (branch / region / company)",
@@ -109,6 +111,7 @@ ROLE_PERMISSIONS = {
     # System Administrator — owns configuration & user/access management,
     # NOT loan decisioning or money movement.
     "system_admin": {
+        "sms.view",
         "users.view", "users.manage", "users.lock",
         "roles.view", "roles.assign",
         "org.view", "org.manage",
@@ -139,6 +142,7 @@ ROLE_PERMISSIONS = {
 
     # Branch Manager — oversight & approval for a single branch.
     "branch_manager": {
+        "sms.send", "sms.view",
         "clients.view_all", "clients.edit", "clients.edit_locked", "clients.approve",
         "docs.upload", "docs.verify",
         "loans.view_all", "loans.approve", "loans.adjust", "loans.reassign",
@@ -159,6 +163,7 @@ ROLE_PERMISSIONS = {
 
     # Regional Manager — oversight across branches in a region.
     "regional_manager": {
+        "sms.view",
         "clients.view_all",
         "loans.view_all", "loans.approve", "loans.escalate", "loans.reassign",
         "loans.transition", "loans.writeoff", "loans.adjust",
@@ -183,6 +188,7 @@ ROLE_PERMISSIONS = {
 
     # Finance / Reconciliation Officer — company read + reconcile + refunds.
     "reconciliation_officer": {
+        "sms.send", "sms.view",
         "clients.view_all", "loans.view_all", "dashboard.company",
         "reconcile.execute", "refund.execute", "refund.approve", "reconcile.approve",
         "collections.stk_push",
@@ -192,6 +198,7 @@ ROLE_PERMISSIONS = {
 
     # HQ Operations — central reporting/monitoring, strictly READ-ONLY.
     "hq_operations": {
+        "sms.view",
         "clients.view_all", "loans.view_all", "dashboard.company",
         "reports.export", "reports.schedule", "reports.template", "reports.flag",
         "accounting.export",

@@ -45,8 +45,10 @@ def _sweep_tenant(db, tenant_id: int, stuck_minutes: int) -> dict:
         return {"stuck": 0, "resolved": 0, "mode": "none"}
 
     configured = mpesa.is_configured(mpesa.resolve_creds(db, tenant_id))
-    if configured:
-        # Real creds: read-only report — leave resolution to Daraja status polling.
+    if configured or not mpesa.simulation_allowed():
+        # Real creds, or a live (production) platform: read-only report — leave
+        # resolution to Daraja status polling / a person. WP8: never pretend a
+        # payout succeeded on a production platform, even if a DCP has no keys.
         return {"stuck": len(stuck), "resolved": 0, "mode": "report"}
 
     resolved = 0
@@ -205,7 +207,7 @@ def run_ptp_reminders():
                 else:
                     msg = (f"Follow-up: your payment promise of KES {ptp.amount} was due "
                            f"on {ptp.ptp_date}. Please settle it as soon as possible.")
-                sms.send_sms(db, ptp.tenant_id, phone, msg, category="ptp_reminder")
+                sms.send_sms(db, ptp.tenant_id, phone, msg, trigger_type="ptp_reminder")
                 log[leg] = datetime.utcnow().isoformat() + "Z"
                 ptp.reminder_sent_at = log
                 db.commit()
@@ -302,7 +304,7 @@ def run_otp_cleanup():
         db.close()
 
 
-def run_cbk_monthly_gdi_submit():
+def run_cbk_monthly_gdi_submit(today=None):
     """CBK GDI monthly submission. Fires daily but only acts within the regulatory
     filing window: the 5th–10th of the month on a weekday (Mon–Fri). For each
     tenant with `cbk_reporting` enabled that has not yet submitted last month's
@@ -311,7 +313,7 @@ def run_cbk_monthly_gdi_submit():
     from app.models import TenantModule, CbkSubmissionLog
     from app.services import cbk_gdi
 
-    today = date.today()
+    today = today or date.today()
     # Only act during the 5th–10th on a weekday.
     if not (5 <= today.day <= 10 and today.weekday() < 5):
         return
@@ -332,13 +334,14 @@ def run_cbk_monthly_gdi_submit():
         ran = 0
         for tid in tenant_ids:
             try:
-                exists = (db.query(CbkSubmissionLog)
-                          .filter(CbkSubmissionLog.tenant_id == tid,
-                                  CbkSubmissionLog.reporting_month == last_month)
-                          .first())
-                if exists:
+                # WP8: a month counts as filed only when every dataset has a
+                # log that is not an error. Datasets that failed are retried on
+                # the next day of the filing window; ones already sent are not
+                # sent again.
+                done = cbk_gdi.datasets_filed(db, tid, last_month)
+                if len(done) >= len(cbk_gdi.DATASET_SEQUENCE):
                     continue
-                cbk_gdi.run_monthly_submission(db, tid, last_month, None)
+                cbk_gdi.run_monthly_submission(db, tid, last_month, None, skip=done)
                 ran += 1
             except Exception:
                 db.rollback()
@@ -348,6 +351,187 @@ def run_cbk_monthly_gdi_submit():
                         ran, last_month.isoformat())
     except Exception:
         logger.exception("cbk_gdi_submit: aborted")
+    finally:
+        db.close()
+
+
+# --------------------------------------------------------------------------- #
+# WP8 — one run per job per time slot, across every copy of the backend.
+#   On AWS the backend runs as two or more copies. Each copy has its own
+#   scheduler, so without this every job (SMS reminders, CBK filing...) would
+#   run once per copy. Before running, a job claims (job_id, slot) in
+#   scheduled_job_runs; the database lets only one copy claim it.
+# --------------------------------------------------------------------------- #
+def _slot(every_minutes: int | None = None) -> str:
+    """The current time slot: for an interval job, the n-th block of
+    ``every_minutes`` since 1970; for a fixed-time job, the local date and hour."""
+    from zoneinfo import ZoneInfo
+    if every_minutes:
+        return f"every{every_minutes}m:{int(datetime.utcnow().timestamp() // (every_minutes * 60))}"
+    tz = getattr(settings, "SCHEDULER_TIMEZONE", None) or "Africa/Nairobi"
+    return datetime.now(ZoneInfo(tz)).strftime("%Y-%m-%dT%H")
+
+
+def claim_run(db, job_id: str, slot: str) -> int | None:
+    """Claim this slot for this job. Returns the run id, or None if another copy
+    of the backend already has it."""
+    import socket
+    from sqlalchemy import text
+    row = db.execute(text(
+        "INSERT INTO scheduled_job_runs (job_id, slot, host, started_at, status) "
+        "VALUES (:j, :s, :h, now(), 'running') "
+        "ON CONFLICT (job_id, slot) DO NOTHING RETURNING id"),
+        {"j": job_id, "s": slot, "h": socket.gethostname()[:120]}).first()
+    db.commit()
+    return row[0] if row else None
+
+
+def finish_run(db, run_id: int, status: str, detail: str | None = None) -> None:
+    from sqlalchemy import text
+    db.execute(text("UPDATE scheduled_job_runs SET finished_at = now(), status = :st, "
+                    "detail = :d WHERE id = :i"),
+               {"st": status, "d": (detail or "")[:2000] or None, "i": run_id})
+    db.commit()
+
+
+def guarded(job_id: str, fn, every_minutes: int | None = None):
+    """Wrap a job so that it runs at most once per slot across all copies."""
+    def _run():
+        db = SessionLocal()
+        try:
+            try:
+                run_id = claim_run(db, job_id, _slot(every_minutes))
+            except Exception:
+                db.rollback()
+                logger.exception("%s: could not claim a run slot; skipping", job_id)
+                return
+            if run_id is None:
+                return                      # another copy is running / ran it
+            status, detail = "ok", None
+            try:
+                out = fn()
+                if isinstance(out, dict):
+                    detail = ", ".join(f"{k}={v}" for k, v in out.items())[:2000]
+            except Exception as exc:        # jobs normally catch their own errors
+                status, detail = "failed", f"{type(exc).__name__}: {exc}"
+                logger.exception("%s failed", job_id)
+            try:
+                finish_run(db, run_id, status, detail)
+            except Exception:
+                db.rollback()
+                logger.exception("%s: could not record the run result", job_id)
+        finally:
+            db.close()
+    _run.__name__ = f"guarded_{job_id}"
+    return _run
+
+
+def run_lifecycle_sms():
+    """Hourly (WP8): repayment reminders, overdue alerts and defaulting for each
+    DCP whose automation is on and whose chosen send hour (Kenyan time) is now.
+    Before WP8 nothing called this on a schedule."""
+    from app.routers.notifications import run_all_tenants
+    db = SessionLocal()
+    try:
+        out = run_all_tenants(db)
+        return {"hour": out["hour"], "dcps_processed": out["tenants_processed"]}
+    finally:
+        db.close()
+
+
+def _schedule_due(schedule, now_local) -> bool:
+    """Is a report schedule due? Daily: not yet sent today. Weekly: on Mondays,
+    not yet sent this week. Monthly: on the 1st, not yet sent this month.
+    Reports go out from 07:00 Kenyan time."""
+    if now_local.hour < 7:
+        return False
+    last = schedule.last_run_at
+    if last is not None and last.tzinfo is None:
+        from datetime import timezone
+        last = last.replace(tzinfo=timezone.utc)
+    last_local = last.astimezone(now_local.tzinfo) if last else None
+    freq = (schedule.frequency or "weekly").lower()
+    today = now_local.date()
+    if freq == "daily":
+        return last_local is None or last_local.date() < today
+    if freq == "monthly":
+        return today.day == 1 and (last_local is None or
+                                  (last_local.year, last_local.month) != (today.year, today.month))
+    # weekly (default)
+    return today.weekday() == 0 and (last_local is None or last_local.date() < today)
+
+
+def run_report_schedules(now_local=None):
+    """Hourly (WP8): e-mail each due report schedule as a CSV attachment.
+    Before WP8 schedules could be created but nothing ever sent them."""
+    from zoneinfo import ZoneInfo
+    from app.models import ReportSchedule, Tenant
+    from app.routers.reporting import report_csv
+    from app.services import mailer
+
+    tz = getattr(settings, "SCHEDULER_TIMEZONE", None) or "Africa/Nairobi"
+    now_local = now_local or datetime.now(ZoneInfo(tz))
+    from datetime import timezone as _tz
+    stamp = now_local.astimezone(_tz.utc).replace(tzinfo=None)   # stored as UTC
+    db = SessionLocal()
+    sent = failed = 0
+    try:
+        rows = (db.query(ReportSchedule).join(Tenant, Tenant.id == ReportSchedule.tenant_id)
+                .filter(ReportSchedule.active == True, Tenant.active == True)  # noqa: E712
+                .order_by(ReportSchedule.id).all())
+        for sch in rows:
+            if not _schedule_due(sch, now_local):
+                continue
+            try:
+                recipients = ",".join(a.strip() for a in (sch.recipients or "").split(",")
+                                      if "@" in a)
+                if not recipients:
+                    sch.last_status, sch.last_error = "failed", "No valid e-mail recipients."
+                elif not mailer.is_configured():
+                    sch.last_status, sch.last_error = "failed", "E-mail (SMTP) is not set up on the platform."
+                else:
+                    body, count = report_csv(db, sch.tenant_id, sch.report_type)
+                    ok = mailer.send_email(
+                        recipients, f"{sch.name} - {now_local:%d %b %Y}",
+                        f"Attached: {sch.name} ({sch.report_type.replace('_', ' ')}), "
+                        f"{count} rows, as of {now_local:%d %b %Y %H:%M}.\n\nSent by Finyl.",
+                        attachments=[(f"{sch.report_type}-{now_local:%Y%m%d}.csv",
+                                      body.encode("utf-8"), "text/csv")])
+                    sch.last_status = "sent" if ok else "failed"
+                    sch.last_error = None if ok else "The e-mail server did not accept the message."
+                # Mark the slot as used either way, so a broken address is not
+                # retried every hour; the screen shows the failure.
+                sch.last_run_at = stamp
+                db.commit()
+                if sch.last_status == "sent":
+                    sent += 1
+                else:
+                    failed += 1
+            except Exception as exc:
+                db.rollback()
+                failed += 1
+                logger.exception("report_schedules: schedule %s failed", sch.id)
+                try:
+                    sch.last_status, sch.last_error = "failed", str(exc)[:500]
+                    sch.last_run_at = stamp
+                    db.commit()
+                except Exception:
+                    db.rollback()
+        return {"sent": sent, "failed": failed}
+    finally:
+        db.close()
+
+
+def purge_old_job_runs(days: int = 30):
+    from sqlalchemy import text
+    db = SessionLocal()
+    try:
+        db.execute(text("DELETE FROM scheduled_job_runs WHERE started_at < now() - make_interval(days => :d)"),
+                   {"d": days})
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("purge_old_job_runs failed")
     finally:
         db.close()
 
@@ -368,41 +552,54 @@ def start_scheduler():
         return
     try:
         sched = BackgroundScheduler(daemon=True)
-        sched.add_job(run_auto_reconcile, "interval",
+        sched.add_job(guarded("auto_reconcile", run_auto_reconcile,
+                              settings.SCHEDULER_INTERVAL_MINUTES), "interval",
                       minutes=settings.SCHEDULER_INTERVAL_MINUTES,
                       id="auto_reconcile", max_instances=1,
                       coalesce=True, replace_existing=True)
         # Durable-webhook workers: retry failed Daraja events on exponential
         # backoff (idempotent reprocessing) and purge raw payloads past retention.
-        sched.add_job(run_webhook_retry, "interval",
+        sched.add_job(guarded("webhook_retry", run_webhook_retry, 2), "interval",
                       minutes=2,
                       id="webhook_retry", max_instances=1,
                       coalesce=True, replace_existing=True)
-        sched.add_job(run_webhook_purge, "interval",
+        sched.add_job(guarded("webhook_purge", run_webhook_purge, 60), "interval",
                       minutes=60,
                       id="webhook_purge", max_instances=1,
                       coalesce=True, replace_existing=True)
         # Phase 2 field/collections jobs. `cron` triggers so they fire at fixed
         # local times rather than on an interval from boot.
         tz = getattr(settings, "SCHEDULER_TIMEZONE", None) or "Africa/Nairobi"
-        sched.add_job(run_ptp_reminders, "cron", hour=8, minute=0,
+        sched.add_job(guarded("ptp_reminders", run_ptp_reminders), "cron", hour=8, minute=0,
                       id="ptp_reminders", max_instances=1, coalesce=True,
                       replace_existing=True, timezone=tz)
-        sched.add_job(run_gps_stipend, "cron", hour=22, minute=0,
+        sched.add_job(guarded("gps_stipend", run_gps_stipend), "cron", hour=22, minute=0,
                       id="gps_stipend", max_instances=1, coalesce=True,
                       replace_existing=True, timezone=tz)
         # Collection efficiency: 1st of every month at 02:00.
-        sched.add_job(run_collection_efficiency, "cron", day=1, hour=2, minute=0,
+        sched.add_job(guarded("collection_efficiency", run_collection_efficiency), "cron", day=1, hour=2, minute=0,
                       id="collection_efficiency", max_instances=1, coalesce=True,
                       replace_existing=True, timezone=tz)
         # OTP cleanup: hourly is plenty (tokens expire in 5 min).
-        sched.add_job(run_otp_cleanup, "interval", minutes=30,
+        sched.add_job(guarded("otp_cleanup", run_otp_cleanup, 30), "interval", minutes=30,
                       id="otp_cleanup", max_instances=1, coalesce=True,
                       replace_existing=True)
         # CBK GDI monthly submission: check daily at 03:00; the job itself only
         # acts during the 5th–10th weekday filing window for the prior month.
-        sched.add_job(run_cbk_monthly_gdi_submit, "cron", hour=3, minute=0,
+        sched.add_job(guarded("cbk_gdi_submit", run_cbk_monthly_gdi_submit), "cron", hour=3, minute=0,
                       id="cbk_gdi_submit", max_instances=1, coalesce=True,
+                      replace_existing=True, timezone=tz)
+        # WP8: lifecycle SMS (each DCP's chosen hour) and scheduled report
+        # e-mails, both checked a few minutes past every hour; old run records
+        # are deleted daily.
+        sched.add_job(guarded("lifecycle_sms", run_lifecycle_sms), "cron", minute=5,
+                      id="lifecycle_sms", max_instances=1, coalesce=True,
+                      replace_existing=True, timezone=tz)
+        sched.add_job(guarded("report_schedules", run_report_schedules), "cron", minute=10,
+                      id="report_schedules", max_instances=1, coalesce=True,
+                      replace_existing=True, timezone=tz)
+        sched.add_job(guarded("purge_job_runs", purge_old_job_runs), "cron", hour=4, minute=30,
+                      id="purge_job_runs", max_instances=1, coalesce=True,
                       replace_existing=True, timezone=tz)
         sched.start()
         _scheduler = sched
@@ -411,7 +608,8 @@ def start_scheduler():
                     "webhook_purge every 60 min (raw retention %dh); "
                     "ptp_reminders 08:00, gps_stipend 22:00, "
                     "collection_efficiency monthly, otp_cleanup every 30 min, "
-                    "cbk_gdi_submit daily 03:00 (5th–10th weekday window) (tz=%s)",
+                    "cbk_gdi_submit daily 03:00 (5th–10th weekday window), lifecycle_sms and "
+                    "report_schedules hourly; one run per slot across copies (tz=%s)",
                     settings.SCHEDULER_INTERVAL_MINUTES,
                     settings.SCHEDULER_STUCK_MINUTES,
                     settings.WEBHOOK_RAW_RETENTION_HOURS, tz)

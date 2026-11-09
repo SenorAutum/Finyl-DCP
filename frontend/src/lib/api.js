@@ -26,8 +26,24 @@ export function deviceCode() {
   const id = getDeviceId().toUpperCase().replace(/[^A-Z0-9]/g, "");
   return id ? `${id.slice(0, 4)}-${id.slice(4, 8)}` : "";
 }
-let geo = null; // { lat, lng } once the person allowed location access
-export function setGeo(g) { geo = g; }
+// { lat, lng } once the person allowed location access. Kept for the browser
+// tab (sessionStorage) so a page reload still sends it (WP8).
+let geo = (() => { try { return JSON.parse(sessionStorage.getItem("finyl_geo") || "null"); } catch { return null; } })();
+export function setGeo(g) {
+  geo = g;
+  try { if (g) sessionStorage.setItem("finyl_geo", JSON.stringify(g)); else sessionStorage.removeItem("finyl_geo"); } catch { /* ignore */ }
+}
+// WP8: when the server ends a session it says why; the sign-in page shows it.
+async function sessionEnded(res) {
+  let reason = "";
+  try { const d = await res.clone().json(); if (typeof d.detail === "string") reason = d.detail; } catch { /* ignore */ }
+  try { if (reason && reason !== "Token expired") sessionStorage.setItem("finyl_logout_reason", reason); } catch { /* ignore */ }
+  setToken(null); window.location.href = "/login";
+  throw new ApiError(401, reason || "Session expired");
+}
+export function takeLogoutReason() {
+  try { const r = sessionStorage.getItem("finyl_logout_reason") || ""; sessionStorage.removeItem("finyl_logout_reason"); return r; } catch { return ""; }
+}
 // Ask the browser for the location (only when the DCP requires it).
 export function requestLocation() {
   return new Promise((resolve, reject) => {
@@ -68,7 +84,7 @@ export async function api(path, { method = "GET", body, raw } = {}) {
   securityHeaders(headers);
 
   const res = await fetch(`${BASE}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined });
-  if (res.status === 401 && !isAuthEndpoint(path)) { setToken(null); window.location.href = "/login"; throw new ApiError(401, "Session expired"); }
+  if (res.status === 401 && !isAuthEndpoint(path)) return sessionEnded(res);
   if (raw) return res;
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new ApiError(res.status, errorDetail(res.status, data.detail));
@@ -101,7 +117,7 @@ export async function upload(path, formData) {
   securityHeaders(headers);
 
   const res = await fetch(`${BASE}${path}`, { method: "POST", headers, body: formData });
-  if (res.status === 401 && !isAuthEndpoint(path)) { setToken(null); window.location.href = "/login"; throw new ApiError(401, "Session expired"); }
+  if (res.status === 401 && !isAuthEndpoint(path)) return sessionEnded(res);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new ApiError(res.status, errorDetail(res.status, data.detail));
   return data;

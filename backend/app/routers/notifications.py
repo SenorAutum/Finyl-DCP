@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.database import get_db
-from app.core.deps import require_module, require_role
+from app.core.deps import require_module, require_permission, require_role
 from app.core.money import D, money, in_duplum_cap
 from app.models import (Loan, SmsLog, Tenant, User, SmsAutomationSetting,
                         SMS_AUTOMATION_DEFAULT_ENABLED, SMS_AUTOMATION_DEFAULT_HOUR)
@@ -125,14 +125,18 @@ def run_tenant_jobs(db: Session, tenant_id: int, grace_days: int = 30) -> dict:
 
 @router.post("/send-sms")
 def send_sms_endpoint(body: SendSmsRequest, tenant_id: int = Depends(require_module("payments")),
+                      _: User = Depends(require_permission("sms.send")),
                       db: Session = Depends(get_db)):
+    """WP8: needs the sms.send permission (any signed-in staff member could send
+    free text from the DCP's sender name before)."""
     log = sms.send_sms(db, tenant_id, body.phone, body.message, body.trigger_type)
     db.commit()
     return {"id": log.id, "status": log.status}
 
 
 @router.get("/sms-logs")
-def sms_logs(tenant_id: int = Depends(require_module("payments")), db: Session = Depends(get_db),
+def sms_logs(tenant_id: int = Depends(require_module("payments")),
+             _: User = Depends(require_permission("sms.view")), db: Session = Depends(get_db),
              trigger_type: str = "", page: int = 1, page_size: int = 20):
     q = db.query(SmsLog).filter(SmsLog.tenant_id == tenant_id)
     if trigger_type:
@@ -191,12 +195,28 @@ def run_all_jobs(hour: int | None = None, grace_days: int = 30,
 
     `hour` overrides the current server hour (0-23) for testing.
     """
-    current_hour = hour if hour is not None else datetime.now().hour
+    return run_all_tenants(db, hour=hour, grace_days=grace_days)
+
+
+def local_now() -> datetime:
+    """Kenyan time (or SCHEDULER_TIMEZONE). WP8: the servers on AWS run on UTC, so
+    'the server hour' would send each DCP's SMS three hours late."""
+    from zoneinfo import ZoneInfo
+    from app.core.config import settings as _s
+    tz = getattr(_s, "SCHEDULER_TIMEZONE", None) or "Africa/Nairobi"
+    return datetime.now(ZoneInfo(tz))
+
+
+def run_all_tenants(db: Session, hour: int | None = None, grace_days: int = 30) -> dict:
+    """Lifecycle SMS for every DCP whose automation is on and whose send hour is
+    now (local time). Commits per DCP. Used by the hourly background job (WP8)
+    and by the super-admin 'run all' endpoint."""
+    current_hour = hour if hour is not None else local_now().hour
     if not 0 <= current_hour <= 23:
         current_hour = current_hour % 24
     results = []
     processed = 0
-    for t in db.query(Tenant).order_by(Tenant.id).all():
+    for t in db.query(Tenant).filter(Tenant.active == True).order_by(Tenant.id).all():  # noqa: E712
         cfg = get_automation_config(db, t.id)
         if not cfg["automation_enabled"]:
             results.append({"tenant_id": t.id, "tenant": t.name,

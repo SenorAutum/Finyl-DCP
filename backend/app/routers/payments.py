@@ -16,6 +16,7 @@ Two classes of endpoint live here:
 
 See app/services/mpesa.py for the annotated Daraja client (credential-gated).
 """
+from decimal import Decimal
 import hmac
 import logging
 from datetime import datetime
@@ -357,6 +358,14 @@ def stk_push(body: StkPushRequest,
             .filter(Loan.id == body.loan_id, Loan.tenant_id == tenant_id).first())
     if not loan:
         raise HTTPException(404, "Loan not found")
+    # WP8 (review 7.4): M-Pesa takes whole shillings only. The amount used to be
+    # cut down silently (500.50 became 500); now it must be whole.
+    try:
+        whole = Decimal(str(body.amount))
+    except Exception:
+        raise HTTPException(422, "Enter the amount in whole shillings.")
+    if whole <= 0 or whole != whole.to_integral_value():
+        raise HTTPException(422, "Enter the amount in whole shillings (M-Pesa does not accept cents).")
     creds = mpesa.resolve_creds(db, tenant_id)
     try:
         payload = mpesa.stk_push(loan.borrower.phone, body.amount, loan.account_number, creds=creds)
@@ -406,7 +415,8 @@ def reconcile_disbursements(tenant_id: int = Depends(require_module("payments"))
          .order_by(PaymentTransaction.created_at.asc()))
     stuck = q.all()
     resolved = []
-    if simulate and not mpesa.is_configured(mpesa.resolve_creds(db, tenant_id)):
+    if (simulate and mpesa.simulation_allowed()
+            and not mpesa.is_configured(mpesa.resolve_creds(db, tenant_id))):
         for txn in stuck:
             if txn.status not in ("processing", "timed_out") or not txn.mpesa_ref:
                 continue  # never reached Safaricom's queue: resolve by hand
@@ -572,8 +582,11 @@ def _process_stk_callback(db, body) -> tuple[dict, int | None]:
     paid_at = _parse_mpesa_time(meta.get("TransactionDate"))
 
     txn.status = "success"
-    txn.mpesa_ref = str(receipt)
-    txn.raw_payload = {**(txn.raw_payload or {}), "result_callback": body}
+    # WP8 (review 7.4): keep the CheckoutRequestID as the transaction's reference
+    # so a repeated callback still finds it (and is ignored as already
+    # processed); the M-Pesa receipt goes on the repayment and in the payload.
+    txn.raw_payload = {**(txn.raw_payload or {}), "result_callback": body,
+                       "receipt": str(receipt)}
     # Concurrency: lock the loan row so concurrent repayment callbacks serialize.
     loan = db.query(Loan).filter(
         Loan.id == txn.loan_id, Loan.tenant_id == tenant_id).with_for_update().first()

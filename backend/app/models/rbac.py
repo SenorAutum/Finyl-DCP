@@ -176,6 +176,8 @@ class ReportSchedule(Base):
     recipients = Column(String(400))                        # comma-separated emails
     active = Column(Boolean, default=True)
     last_run_at = Column(DateTime)
+    last_status = Column(String(20))       # WP8: sent | failed | skipped
+    last_error = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 

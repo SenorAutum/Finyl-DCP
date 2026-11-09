@@ -6,6 +6,9 @@
 #   backend  - the full test suite against a real PostgreSQL 16, then a check
 #              that every migration applies cleanly to an empty database.
 #   frontend - a production build of the web app.
+#   browser  - (WP8) the built web app and the backend run against a database
+#              filled with the demo data; a real Chromium signs in as different
+#              people and opens every page (e2e/test_browser_smoke.py).
 #
 # A red cross on the pull request means: do not merge until it is fixed.
 name: CI
@@ -79,3 +82,73 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
       - run: npm run build
+
+  browser:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/finyl_e2e
+      DB_SCHEMA: finyl_dcp
+      JWT_SECRET: ci-only-secret-not-used-anywhere-else-0123456789
+      # Demo data only, in a throwaway database that disappears after the run.
+      SEED_DEFAULT_PASSWORD: E2e-Demo-Pass-2026!
+      E2E_PASSWORD: E2e-Demo-Pass-2026!
+      SCHEDULER_ENABLED: "false"
+      ALLOWED_ORIGINS: http://localhost:4173
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install the backend, the test tools and Chromium
+        run: |
+          pip install -r backend/requirements.txt pytest playwright
+          python -m playwright install --with-deps chromium
+      - name: Create the demo database
+        working-directory: backend
+        run: |
+          python -c "import psycopg2; c = psycopg2.connect('postgresql://postgres:postgres@localhost:5432/postgres'); c.autocommit = True; c.cursor().execute('CREATE DATABASE finyl_e2e')"
+          python scripts/run_migrations.py
+          python -m app.seeds.seed
+          python -c "import os, psycopg2; c = psycopg2.connect(os.environ['DATABASE_URL']); c.cursor().execute('UPDATE finyl_dcp.users SET force_password_reset = false'); c.commit()"
+      - name: Start the backend
+        working-directory: backend
+        run: nohup uvicorn app.main:app --port 8000 > ../backend.log 2>&1 &
+      - name: Build and serve the web app
+        working-directory: frontend
+        env:
+          VITE_API_URL: http://localhost:8000
+        run: |
+          npm ci
+          npm run build
+          nohup npx vite preview --port 4173 --strictPort > ../frontend.log 2>&1 &
+      - name: Wait until both are answering
+        run: |
+          for i in $(seq 1 60); do
+            web=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:4173/login || true)
+            api=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/api/v1/auth/me || true)
+            if [ "$web" = "200" ] && [ "$api" != "000" ]; then echo "ready"; exit 0; fi
+            sleep 2
+          done
+          echo "The servers did not start:"; tail -50 backend.log frontend.log; exit 1
+      - name: Run the browser tests
+        run: python -m pytest -q -p no:cacheprovider e2e
+      - name: Show the server logs (only when something failed)
+        if: failure()
+        run: tail -150 backend.log frontend.log
+

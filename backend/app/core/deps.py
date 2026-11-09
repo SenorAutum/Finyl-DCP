@@ -33,7 +33,8 @@ TENANT_INACTIVE_MESSAGE = ("Your organisation's Finyl account is deactivated. "
 ROLE_HIERARCHY = {"super_admin": 4, "tenant_admin": 3, "loan_officer": 2, "call_agent": 1}
 
 
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
+def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db),
+                     request: Request = None) -> User:
     try:
         payload = decode_token(token)
     except pyjwt.ExpiredSignatureError:
@@ -56,6 +57,10 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         tenant = db.get(Tenant, user.tenant_id)
         if tenant is None or tenant.active is False:
             raise HTTPException(status.HTTP_403_FORBIDDEN, TENANT_INACTIVE_MESSAGE)
+        # WP8 (review 7.7): the DCP's working-hours, device and location rules
+        # apply for the whole session, not only at sign-in.
+        if request is not None:
+            _enforce_session_fences(db, user, request)
     # AUTH-02: honor an active temporary auto-lock window.
     locked_until = getattr(user, "locked_until", None)
     if locked_until is not None:
@@ -65,6 +70,43 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
             raise HTTPException(status.HTTP_423_LOCKED,
                                 "Account temporarily locked")
     return user
+
+
+def _enforce_session_fences(db: Session, user: User, request: Request) -> None:
+    """Checked on every signed-in request (WP8). A breach ends the session (401),
+    so the web app returns to the sign-in page and shows the reason.
+
+      * working hours: once they end, the session ends;
+      * registered devices: a device that is no longer approved is signed out;
+      * location: when the browser sends a location outside the area, the
+        session ends. (The location is required at sign-in; a request without
+        one is not refused here.)"""
+    from app.services import geo_fence
+    cfg = geo_fence.get_config(db, user.tenant_id)
+    if not cfg:
+        return
+    if cfg.time_fence_enabled and geo_fence.evaluate_timefence(db, user.tenant_id) == "outside":
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED,
+                            "Your organisation's working hours have ended, so you have been "
+                            "signed out.")
+    if cfg.device_binding_enabled:
+        from app.services import device_binding
+        fp = request.headers.get("x-device-fingerprint") or ""
+        if not device_binding.is_known(db, user_id=user.id, fingerprint=fp):
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED,
+                                "This device is no longer approved for your account, so you "
+                                "have been signed out.")
+    if cfg.geofence_enabled:
+        try:
+            lat = float(request.headers.get("x-geo-lat")) if request.headers.get("x-geo-lat") else None
+            lng = float(request.headers.get("x-geo-lng")) if request.headers.get("x-geo-lng") else None
+        except ValueError:
+            lat = lng = None
+        if lat is not None and lng is not None and \
+                geo_fence.evaluate_geofence(db, user.tenant_id, lat, lng) == "outside":
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED,
+                                "You are outside the area your organisation allows, so you "
+                                "have been signed out.")
 
 
 def get_tenant_id(

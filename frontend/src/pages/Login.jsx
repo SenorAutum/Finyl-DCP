@@ -3,7 +3,7 @@ import { useState } from "react";
 import { useNavigate, useLocation, Link } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import OtpInput from "../components/OtpInput";
-import { requestLocation, deviceCode } from "../lib/api";
+import { requestLocation, deviceCode, takeLogoutReason } from "../lib/api";
 
 // WP7: demo accounts (and their shared password) are listed only in a demo
 // build: set VITE_SHOW_DEMO_LOGINS=true, or run the dev server. A live login
@@ -30,7 +30,7 @@ export default function Login() {
   const signupSuccess = loc.state?.signupSuccess || "";
   const [email, setEmail] = useState(SHOW_DEMO ? "admin@mularcredit.co.ke" : "");
   const [password, setPassword] = useState(SHOW_DEMO ? "Finyl@2026" : "");
-  const [err, setErr] = useState("");
+  const [err, setErr] = useState(() => takeLogoutReason());
   const [busy, setBusy] = useState(false);
   const [step, setStep] = useState("password"); // "password" | "otp"
   const [otp, setOtp] = useState("");
