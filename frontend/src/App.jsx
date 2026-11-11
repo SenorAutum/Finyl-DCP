@@ -16,6 +16,7 @@ import LoanDetail from "./pages/lending/LoanDetail";
 import Products from "./pages/lending/Products";
 import Payments from "./pages/payments/Payments";
 import Suspense from "./pages/payments/Suspense";
+import BankImport from "./pages/payments/BankImport";
 import OptOuts from "./pages/messaging/OptOuts";
 import Accounting from "./pages/accounting/Accounting";
 import Complaints from "./pages/complaints/Complaints";
@@ -180,6 +181,7 @@ export default function App() {
             <Route path="/products" element={<PermGuard perms={["products.manage"]}><Products /></PermGuard>} />
             <Route path="/payments" element={<Guard module="payments"><Payments /></Guard>} />
             <Route path="/payments/suspense" element={<Guard module="payments"><PermGuard perms={["reconcile.execute"]}><Suspense /></PermGuard></Guard>} />
+            <Route path="/payments/bank-import" element={<Guard module="payments"><PermGuard perms={["payments.bank_import"]}><BankImport /></PermGuard></Guard>} />
             <Route path="/messaging/opt-outs" element={<PermGuard perms={["messaging.manage"]}><OptOuts /></PermGuard>} />
             <Route path="/accounting" element={<PermGuard perms={["accounting.export"]}><Accounting /></PermGuard>} />
             <Route path="/complaints" element={<Guard module="complaints"><Complaints /></Guard>} />

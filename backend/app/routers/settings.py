@@ -34,6 +34,7 @@ from app.models import (ApprovalThreshold, ApproverSetting, MODULE_KEYS,
 from app.schemas import (DarajaConfigIn, SmsAutomationIn, ThresholdCreate,
                         ApproverConfigIn, SettingsModuleToggle, EclConfigIn)
 from app.services import mpesa, rbac
+from app.services import webhook_security as ws
 from app.routers.notifications import get_automation_config
 
 # Whole router requires the DCP admin role (super_admin auto-passes require_role).
@@ -81,6 +82,7 @@ def get_daraja(tenant_id: int = Depends(get_tenant_id),
         "has_own_config": row is not None,
         "environment": cfg.get("environment"),
         "shortcode": cfg.get("shortcode"),
+        "till_numbers": ws.till_numbers(cfg),
         "initiator_name": cfg.get("initiator_name"),
         "secrets": secrets_state,
         "integration_status": mpesa.integration_status(creds),
@@ -112,19 +114,35 @@ def update_daraja(body: DarajaConfigIn, request: Request,
             val = val.strip()
             cfg[field] = val or None
 
+    # WP11: Buy Goods till numbers (comma or space separated; blank clears).
+    if body.till_numbers is not None:
+        tills = []
+        for t in body.till_numbers.replace(",", " ").split():
+            if not t.isdigit() or not (5 <= len(t) <= 7):
+                raise HTTPException(422, f"Till number {t} must be 5-7 digits")
+            if t not in tills:
+                tills.append(t)
+        if len(tills) > 20:
+            raise HTTPException(422, "At most 20 till numbers")
+        cfg["till_numbers"] = tills
+
     # WP2: each DCP has its own paybill, and incoming payments are routed to a
     # DCP by that number — two DCPs claiming one paybill would make every
-    # payment to it unroutable. Refuse the clash at save time.
+    # payment to it unroutable. Refuse the clash at save time (WP11: tills too).
     new_sc = str(cfg.get("shortcode") or "").strip()
-    if new_sc:
-        if not new_sc.isdigit() or not (5 <= len(new_sc) <= 7):
-            raise HTTPException(422, "Paybill / shortcode must be 5-7 digits")
-        clash = [r for r in (db.query(TenantIntegrationConfig)
-                             .filter(TenantIntegrationConfig.integration == "daraja",
-                                     TenantIntegrationConfig.tenant_id != tenant_id).all())
-                 if str((r.config or {}).get("shortcode") or "").strip() == new_sc]
+    if new_sc and (not new_sc.isdigit() or not (5 <= len(new_sc) <= 7)):
+        raise HTTPException(422, "Paybill / shortcode must be 5-7 digits")
+    mine = ws.daraja_numbers(cfg)
+    if mine:
+        others = set()
+        for r in (db.query(TenantIntegrationConfig)
+                  .filter(TenantIntegrationConfig.integration == "daraja",
+                          TenantIntegrationConfig.tenant_id != tenant_id).all()):
+            others |= ws.daraja_numbers(r.config)
+        clash = sorted(mine & others)
         if clash:
-            raise HTTPException(409, "This paybill number is already registered to another DCP")
+            what = "paybill number" if clash[0] == new_sc else "till number"
+            raise HTTPException(409, f"This {what} ({clash[0]}) is already registered to another DCP")
 
     # Secret fields — encrypt and store only when a non-blank value is supplied.
     changed_secrets = []
@@ -151,7 +169,8 @@ def update_daraja(body: DarajaConfigIn, request: Request,
     # Audit records WHICH fields changed, never the secret values.
     write_audit(db, tenant_id=tenant_id, user=actor, action="config.daraja.update",
                 entity_type="integration_config",
-                details={"non_secret": {k: cfg.get(k) for k in ("environment", "shortcode", "initiator_name")},
+                details={"non_secret": {k: cfg.get(k) for k in ("environment", "shortcode", "till_numbers",
+                                                                 "initiator_name")},
                          "secrets_updated": changed_secrets, "enabled": enabled},
                 request=request)
     db.commit()

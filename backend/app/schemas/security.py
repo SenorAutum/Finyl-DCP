@@ -13,6 +13,7 @@ class SecurityConfigUpdate(BaseModel):
     geofence_radius_km: Optional[Decimal] = None
     geofence_center_lat: Optional[Decimal] = None
     geofence_center_lng: Optional[Decimal] = None
+    location_max_age_minutes: Optional[int] = Field(None, ge=1, le=240)
     time_fence_enabled: Optional[bool] = None
     time_fence_start: Optional[str] = None      # "HH:MM"
     time_fence_end: Optional[str] = None

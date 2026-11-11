@@ -27,6 +27,7 @@ from app.routers import settings as dcp_settings
 from app.routers import (guarantors, kyc_escalations, face_validation,
                          validation_prefs, field_ops, security_config, activity,
                          collections, third_party, client_edits, search)
+from app.routers import bank_import  # WP11
 
 # OPS-01: configure structured stdout/journald logging before the app is built.
 configure_logging()
@@ -223,7 +224,9 @@ for r in (auth, admin, clients, lending, payments, notifications, dashboard,
           # Phase 2
           guarantors, kyc_escalations, face_validation, validation_prefs,
           field_ops, security_config, activity, collections, third_party,
-          search):
+          search,
+          # WP11
+          bank_import):
     app.include_router(r.router)
 
 # Phase 2 secondary routers (cross-prefix / distinct-auth endpoints).

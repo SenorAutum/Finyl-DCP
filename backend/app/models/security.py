@@ -90,6 +90,8 @@ class TenantSecurityConfig(Base):
     geofence_radius_km = Column(Numeric(8, 3))
     geofence_center_lat = Column(Numeric(10, 8))
     geofence_center_lng = Column(Numeric(11, 8))
+    # WP11: how recent the browser's location must be, in minutes (None = 15).
+    location_max_age_minutes = Column(Integer)
     time_fence_enabled = Column(Boolean, nullable=False, default=False)
     time_fence_start = Column(Time)
     time_fence_end = Column(Time)

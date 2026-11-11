@@ -79,8 +79,9 @@ def _enforce_session_fences(db: Session, user: User, request: Request) -> None:
       * working hours: once they end, the session ends;
       * registered devices: a device that is no longer approved is signed out;
       * location: when the browser sends a location outside the area, the
-        session ends. (The location is required at sign-in; a request without
-        one is not refused here.)"""
+        session ends. WP11: a request without a recent location is refused
+        with 428 (code "location_required"); the web app then asks the browser
+        for the location and sends the request again. Signing out is exempt."""
     from app.services import geo_fence
     cfg = geo_fence.get_config(db, user.tenant_id)
     if not cfg:
@@ -96,14 +97,19 @@ def _enforce_session_fences(db: Session, user: User, request: Request) -> None:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED,
                                 "This device is no longer approved for your account, so you "
                                 "have been signed out.")
-    if cfg.geofence_enabled:
-        try:
-            lat = float(request.headers.get("x-geo-lat")) if request.headers.get("x-geo-lat") else None
-            lng = float(request.headers.get("x-geo-lng")) if request.headers.get("x-geo-lng") else None
-        except ValueError:
-            lat = lng = None
+    if cfg.geofence_enabled and not request.url.path.endswith("/auth/logout"):
+        lat, lng, age = geo_fence.read_location(request.headers)
+        need = geo_fence.location_needed(cfg, lat, lng, age)
+        if need:
+            raise HTTPException(status.HTTP_428_PRECONDITION_REQUIRED,
+                                {"code": geo_fence.LOCATION_REQUIRED, "message": need})
         if lat is not None and lng is not None and \
                 geo_fence.evaluate_geofence(db, user.tenant_id, lat, lng) == "outside":
+            from app.core import obs
+            from app.core.obs import log_cbk_event
+            log_cbk_event(obs.CBK_GEOFENCE_BLOCK, tenant_id=user.tenant_id, user_id=user.id,
+                          entity_type="user", entity_id=user.id, outcome="blocked",
+                          detail="signed out: outside the allowed area")
             raise HTTPException(status.HTTP_401_UNAUTHORIZED,
                                 "You are outside the area your organisation allows, so you "
                                 "have been signed out.")

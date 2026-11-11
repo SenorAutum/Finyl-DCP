@@ -54,6 +54,7 @@ function DarajaTab() {
   const load = () => api("/api/v1/settings/daraja").then((d) => {
     setCfg(d);
     setForm({ environment: d.environment || "sandbox", shortcode: d.shortcode || "",
+              till_numbers: (d.till_numbers || []).join(", "),
               initiator_name: d.initiator_name || "" });
   }).catch((e) => setErr(e.detail || "Failed to load"));
   useEffect(() => { load(); }, []);
@@ -81,6 +82,7 @@ function DarajaTab() {
     try {
       // Only send secret fields the admin actually typed (blank = keep existing).
       const body = { environment: form.environment, shortcode: form.shortcode,
+                     till_numbers: form.till_numbers || "",
                      initiator_name: form.initiator_name };
       for (const k of ["consumer_key", "consumer_secret", "passkey", "security_credential"])
         if (form[k]) body[k] = form[k];
@@ -123,6 +125,16 @@ function DarajaTab() {
             <label className="text-xs font-semibold text-gray-600">Paybill number (shortcode)</label>
             <input className="input" inputMode="numeric" value={form.shortcode} onChange={(e) => set("shortcode", e.target.value)} />
             <p className="text-[11px] text-gray-500 mt-1">Payments into this paybill are credited to your DCP only.</p>
+          </div>
+          <div>
+            <label className="text-xs font-semibold text-gray-600">Till numbers (Buy Goods)</label>
+            <input className="input" inputMode="numeric" placeholder="e.g. 5123456, 5123457"
+              value={form.till_numbers} onChange={(e) => set("till_numbers", e.target.value)} />
+            <p className="text-[11px] text-gray-500 mt-1">
+              Optional. Separate several with commas. Add the store (head office) number too if
+              Safaricom gave you one. Till payments carry no account number, so each one goes to the
+              Suspense Account with a suggested loan for a person to confirm.
+            </p>
           </div>
           <div>
             <label className="text-xs font-semibold text-gray-600">Initiator name</label>

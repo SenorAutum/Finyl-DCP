@@ -13,13 +13,14 @@ from app.models import OtpToken, TenantSecurityConfig, User, UserDevice
 from app.services.authz import user_can
 from app.schemas import (SecurityConfigUpdate, OtpRequestIn, OtpVerifyIn,
                          DeviceRegisterIn)
-from app.services import otp as otp_svc, device_binding
+from app.services import otp as otp_svc, device_binding, geo_fence
 
 router = APIRouter(prefix="/api/v1", tags=["security"])
 
 _CFG_FIELDS = ["require_otp", "otp_channels", "device_binding_enabled",
                "geofence_enabled", "geofence_radius_km", "geofence_center_lat",
-               "geofence_center_lng", "time_fence_enabled", "time_fence_timezone",
+               "geofence_center_lng", "location_max_age_minutes",
+               "time_fence_enabled", "time_fence_timezone",
                "stipend_rate_kes_per_km", "screenshot_on_action", "activity_log_enabled"]
 
 
@@ -35,6 +36,7 @@ def _cfg_dict(c: TenantSecurityConfig) -> dict:
         "geofence_radius_km": _num(c.geofence_radius_km),
         "geofence_center_lat": _num(c.geofence_center_lat),
         "geofence_center_lng": _num(c.geofence_center_lng),
+        "location_max_age_minutes": c.location_max_age_minutes or geo_fence.DEFAULT_LOCATION_MAX_AGE,
         "time_fence_enabled": c.time_fence_enabled,
         "time_fence_start": c.time_fence_start.strftime("%H:%M") if c.time_fence_start else None,
         "time_fence_end": c.time_fence_end.strftime("%H:%M") if c.time_fence_end else None,

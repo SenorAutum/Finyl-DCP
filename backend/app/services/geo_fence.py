@@ -24,6 +24,48 @@ def haversine_km(lat1, lon1, lat2, lon2) -> float:
     return 2 * r * math.asin(min(1.0, math.sqrt(a)))
 
 
+DEFAULT_LOCATION_MAX_AGE = 15      # minutes (WP11)
+LOCATION_REQUIRED = "location_required"
+
+
+def read_location(headers) -> tuple[float | None, float | None, float | None]:
+    """(lat, lng, age in seconds) from the X-Geo-* headers the web app sends.
+    Missing or unreadable values come back as None."""
+    def num(name):
+        try:
+            v = headers.get(name)
+            return float(v) if v not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
+    lat, lng, age = num("x-geo-lat"), num("x-geo-lng"), num("x-geo-age")
+    if lat is not None and not -90 <= lat <= 90:
+        lat = None
+    if lng is not None and not -180 <= lng <= 180:
+        lng = None
+    return lat, lng, age
+
+
+def fence_set(cfg) -> bool:
+    return bool(cfg and cfg.geofence_enabled and cfg.geofence_center_lat is not None
+                and cfg.geofence_center_lng is not None and cfg.geofence_radius_km is not None)
+
+
+def location_needed(cfg, lat, lng, age, require_age: bool = True) -> str | None:
+    """WP11: why a fresh location must be asked for (None when the one sent
+    will do). The age is how old the browser's position fix is; during the
+    session a location without an age is treated as out of date (at sign-in
+    the web app has just asked for it, so a missing age is accepted there)."""
+    if not fence_set(cfg):
+        return None
+    if lat is None or lng is None:
+        return ("Your organisation needs your location while you work. Allow location "
+                "access in your browser and try again.")
+    limit = (cfg.location_max_age_minutes or DEFAULT_LOCATION_MAX_AGE) * 60
+    if (age is None and require_age) or (age is not None and (age < 0 or age > limit)):
+        return "Your location is out of date. Allow location access so it can be updated."
+    return None
+
+
 def get_config(db: Session, tenant_id: int) -> TenantSecurityConfig | None:
     return (db.query(TenantSecurityConfig)
             .filter(TenantSecurityConfig.tenant_id == tenant_id).first())

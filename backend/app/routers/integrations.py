@@ -164,32 +164,48 @@ def register_paybill_callbacks(body: RegisterC2bBody, request: Request,
     """WP9: tell Safaricom where to send this DCP's paybill (C2B) payments, using
     the DCP's own M-Pesa settings. Needed once per paybill/till, and again if the
     web address changes (e.g. moving to AWS). Until it is done, customer paybill
-    payments never reach Finyl. Super-admin only; recorded in the audit trail."""
+    payments never reach Finyl. Super-admin only; recorded in the audit trail.
+    WP11: the DCP's till numbers are registered too, one by one."""
     from app.core.deps import write_audit
+    from app.models import TenantIntegrationConfig
+    from app.services import webhook_security as ws
     tenant = db.get(Tenant, body.tenant_id)
     if tenant is None:
         raise HTTPException(404, "DCP not found")
     creds = mpesa.resolve_creds(db, tenant.id)
     if not creds.configured:
         raise HTTPException(400, f"{tenant.name} has no M-Pesa settings yet (or they are switched off).")
-    try:
-        out = mpesa.register_c2b_urls(creds)
-        resp = out.get("response") or {}
-        ok = str(resp.get("ResponseCode", "")).strip() in ("0", "00000000")
-        detail = resp.get("ResponseDescription") or resp.get("errorMessage") or str(resp)[:300]
-    except Exception as exc:                     # Safaricom error or network problem
-        out, ok = {}, False
-        detail = getattr(getattr(exc, "response", None), "text", "") or str(exc)
-        detail = detail[:300]
-    write_audit(db, tenant_id=tenant.id, user=user, action="mpesa.c2b_registered" if ok else "mpesa.c2b_register_failed",
-                entity_type="tenant", entity_id=tenant.id,
-                details={"shortcode": creds.shortcode, "environment": creds.environment,
-                         "url": (out.get("request") or {}).get("ConfirmationURL", "").split("/hooks/")[0],
-                         "result": detail},
-                request=request)
+    row = (db.query(TenantIntegrationConfig)
+           .filter(TenantIntegrationConfig.tenant_id == tenant.id,
+                   TenantIntegrationConfig.integration == "daraja").first())
+    numbers = [("paybill", creds.shortcode)]
+    numbers += [("till", t) for t in ws.till_numbers(row.config if row else {})
+                if t != creds.shortcode]
+    results = []
+    for kind, number in numbers:
+        try:
+            out = (mpesa.register_c2b_urls(creds) if kind == "paybill"
+                   else mpesa.register_c2b_urls(creds, shortcode=number))
+            resp = out.get("response") or {}
+            ok = str(resp.get("ResponseCode", "")).strip() in ("0", "00000000")
+            detail = resp.get("ResponseDescription") or resp.get("errorMessage") or str(resp)[:300]
+        except Exception as exc:                 # Safaricom error or network problem
+            out, ok = {}, False
+            detail = getattr(getattr(exc, "response", None), "text", "") or str(exc)
+            detail = detail[:300]
+        write_audit(db, tenant_id=tenant.id, user=user,
+                    action="mpesa.c2b_registered" if ok else "mpesa.c2b_register_failed",
+                    entity_type="tenant", entity_id=tenant.id,
+                    details={"shortcode": number, "kind": kind, "environment": creds.environment,
+                             "url": (out.get("request") or {}).get("ConfirmationURL", "").split("/hooks/")[0],
+                             "result": detail},
+                    request=request)
+        results.append({"kind": kind, "number": number, "ok": ok, "detail": detail})
     db.commit()
-    return {"ok": ok, "detail": detail, "shortcode": creds.shortcode,
-            "environment": creds.environment}
+    first = results[0]
+    return {"ok": all(r["ok"] for r in results), "detail": first["detail"],
+            "shortcode": creds.shortcode, "environment": creds.environment,
+            "results": results}
 
 
 class TestEkycBody(BaseModel):
