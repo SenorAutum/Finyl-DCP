@@ -189,8 +189,9 @@ function PaybillRegistration({ tenants }) {
     <div className="card p-4 mt-6 max-w-3xl">
       <div className="font-semibold">Paybill payments (C2B): register Finyl's address with Safaricom</div>
       <p className="text-xs text-gray-500 mt-1">
-        Customers' paybill payments reach Finyl only after this is done for the DCP's paybill. Do it once
-        per DCP after its M-Pesa settings are saved, and again whenever Finyl moves to a new web address.
+        Customers' paybill and till payments reach Finyl only after this is done for the DCP's numbers
+        (its paybill and any till numbers in its M-Pesa settings). Do it once per DCP after its M-Pesa
+        settings are saved, again after adding a till, and whenever Finyl moves to a new web address.
       </p>
       <div className="flex gap-2 mt-3 flex-wrap">
         <select className="input !w-64" value={tenantId} onChange={(e) => setTenantId(e.target.value)}>
@@ -201,10 +202,16 @@ function PaybillRegistration({ tenants }) {
           {busy ? "Registering…" : "Register paybill address"}
         </button>
       </div>
-      {result && (
-        <div className={`mt-3 text-sm rounded-lg p-3 ${result.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}>
-          {result.ok ? "Registered" : "Not registered"}
-          {result.shortcode ? ` (paybill ${result.shortcode}, ${result.environment})` : ""}: {result.detail}
+      {result && !result.results && (
+        <div className="mt-3 text-sm rounded-lg p-3 bg-red-50 text-red-700">Not registered: {result.detail}</div>
+      )}
+      {result?.results && (
+        <div className="mt-3 space-y-1">
+          {result.results.map((r) => (
+            <div key={r.number} className={`text-sm rounded-lg p-3 ${r.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}>
+              {r.ok ? "Registered" : "Not registered"} ({r.kind} {r.number}, {result.environment}): {r.detail}
+            </div>
+          ))}
         </div>
       )}
     </div>

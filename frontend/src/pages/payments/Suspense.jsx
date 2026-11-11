@@ -1,4 +1,5 @@
-// Suspense account: paybill receipts that could not be applied automatically
+// Suspense account: paybill, till (WP11) and bank-statement (WP11) receipts
+// that could not be applied automatically
 // (unknown account number, customer with no / several open loans, overpayment
 // excess, closed loan). Officers with reconcile.execute can Allocate a receipt
 // to a loan or Refund it, and Record a payment received outside the paybill
@@ -27,7 +28,11 @@ const REASONS = {
   overpayment: "overpayment",
   closed_loan: "loan not open",
   interest_refund_due: "interest refund due (early repayment)",
+  till_payment: "till payment — no account number",
+  bank_unmatched: "bank: no account or customer number found",
+  bank_several: "bank: names more than one account",
 };
+const SOURCES = { c2b: "Paybill", till: "Till", bank: "Bank", stk: "STK", manual: "Manual" };
 
 const pendingMsg = (r, done) =>
   r.status === "pending_approval" ? "Sent for approval — a second person must approve it under Approvals."
@@ -206,7 +211,7 @@ export default function Suspense() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead><tr>
-                <th className="th">Paid</th><th className="th">M-Pesa Ref</th>
+                <th className="th">Paid</th><th className="th">Reference</th>
                 <th className="th">Payer</th><th className="th">Account entered</th>
                 <th className="th">Amount</th><th className="th">Reason</th>
                 <th className="th">Status</th><th className="th text-right">Action</th>
@@ -215,7 +220,10 @@ export default function Suspense() {
                 {data.items.map((s) => (
                   <tr key={s.id} className="border-t border-border hover:bg-canvas/60">
                     <td className="td whitespace-nowrap">{fmtDT(s.paid_at || s.created_at)}</td>
-                    <td className="td font-mono text-xs">{s.mpesa_ref || "—"}</td>
+                    <td className="td font-mono text-xs">
+                      {s.mpesa_ref || "—"}
+                      {SOURCES[s.source] && <div className="font-sans text-[11px] text-gray-400">{SOURCES[s.source]}</div>}
+                    </td>
                     <td className="td">
                       <div>{s.payer_name || "—"}</div>
                       <div className="text-[11px] text-gray-400">{s.phone || ""}</div>

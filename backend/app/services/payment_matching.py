@@ -15,6 +15,8 @@ Matching order:
      customer of this DCP with one open loan, that loan is recorded as a
      SUGGESTION for the reviewer. A phone match is never applied automatically:
      people pay for relatives, and Safaricom may mask the number.
+     WP11: a masked (25470****149) or hashed number is matched too; when it
+     fits several clients, the payer's name must pick out one.
 """
 from __future__ import annotations
 
@@ -57,20 +59,83 @@ def _open_loans(db, tenant_id, borrower_id):
             .order_by(Loan.due_date.asc().nullslast(), Loan.id.asc()).all())
 
 
-def suggest_by_phone(db, tenant_id: int, phone) -> int | None:
+_MASK_CHARS = set("*xX#•")
+
+
+def _norm_name_tokens(name) -> set[str]:
+    return {t for t in "".join(c if c.isalpha() else " " for c in str(name or "").upper()).split()
+            if len(t) > 1}
+
+
+def _name_fits(payer_name, borrower: Borrower) -> bool:
+    """Every name M-Pesa shows for the payer is one of the client's names.
+    (Safaricom often sends only the first name.)"""
+    payer = _norm_name_tokens(payer_name)
+    if not payer:
+        return True
+    mine = _norm_name_tokens(" ".join(filter(None, [borrower.first_name, borrower.middle_name,
+                                                     borrower.last_name])))
+    return payer <= mine
+
+
+def _masked_parts(phone) -> tuple[str, str] | None:
+    """'25470****149' / '0722 *** 149' -> ('25470', '149'); None if not masked."""
+    s = "".join(str(phone or "").split())
+    if not any(c in _MASK_CHARS for c in s):
+        return None
+    first = min(i for i, c in enumerate(s) if c in _MASK_CHARS)
+    last = max(i for i, c in enumerate(s) if c in _MASK_CHARS)
+    prefix, suffix = s[:first].lstrip("+"), s[last + 1:]
+    if not prefix.isdigit() or not suffix.isdigit():
+        return None
+    if prefix.startswith("0"):
+        prefix = "254" + prefix[1:]
+    if len(prefix) < 4 or len(suffix) < 3:
+        return None
+    return prefix, suffix
+
+
+def _is_hashed(phone) -> bool:
+    s = str(phone or "").strip().lower()
+    return len(s) == 64 and all(c in "0123456789abcdef" for c in s)
+
+
+def _candidates(db, tenant_id: int, phone) -> list[Borrower]:
+    """Clients of this DCP whose number fits what M-Pesa sent: the full number,
+    a masked number (first and last digits) or a SHA-256 hash of the number."""
+    from app.services.mpesa import normalise_msisdn
+    q = db.query(Borrower).filter(Borrower.tenant_id == tenant_id)
     variants = phone_variants(phone)
-    if not variants:
+    if variants:
+        return q.filter(Borrower.phone.in_(variants)).all()
+    parts = _masked_parts(phone)
+    if parts:
+        prefix, suffix = parts
+        return [b for b in q.filter(Borrower.phone.like(f"%{suffix}")).all()
+                if normalise_msisdn(b.phone or "").startswith(prefix)
+                and normalise_msisdn(b.phone or "").endswith(suffix)]
+    if _is_hashed(phone):
+        import hashlib
+        target = str(phone).strip().lower()
+        return [b for b in q.all()
+                if hashlib.sha256(normalise_msisdn(b.phone or "").encode()).hexdigest() == target]
+    return []
+
+
+def suggest_by_phone(db, tenant_id: int, phone, payer_name=None) -> int | None:
+    """A loan to SUGGEST (never apply) for a payment that names no account.
+    WP11: also works when Safaricom masks or hashes the number; when several
+    clients fit, the payer's name must pick out exactly one."""
+    people = _candidates(db, tenant_id, phone)
+    if len(people) > 1 or (people and _masked_parts(phone)):
+        people = [b for b in people if _name_fits(payer_name, b)]
+    if len(people) != 1:
         return None
-    borrowers = (db.query(Borrower.id)
-                 .filter(Borrower.tenant_id == tenant_id, Borrower.phone.in_(variants))
-                 .all())
-    if len(borrowers) != 1:
-        return None
-    loans = _open_loans(db, tenant_id, borrowers[0][0])
+    loans = _open_loans(db, tenant_id, people[0].id)
     return loans[0].id if len(loans) == 1 else None
 
 
-def match_reference(db, tenant_id: int, bill_ref, phone=None) -> Match:
+def match_reference(db, tenant_id: int, bill_ref, phone=None, payer_name=None) -> Match:
     ref = _clean_ref(bill_ref)
 
     if ref:
@@ -94,4 +159,4 @@ def match_reference(db, tenant_id: int, bill_ref, phone=None) -> Match:
                              suggested_loan_id=(loans[0].id if loans else None))
 
     return Match(how="none", reason="unmatched",
-                 suggested_loan_id=suggest_by_phone(db, tenant_id, phone))
+                 suggested_loan_id=suggest_by_phone(db, tenant_id, phone, payer_name))

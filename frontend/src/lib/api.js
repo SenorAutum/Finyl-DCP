@@ -26,38 +26,79 @@ export function deviceCode() {
   const id = getDeviceId().toUpperCase().replace(/[^A-Z0-9]/g, "");
   return id ? `${id.slice(0, 4)}-${id.slice(4, 8)}` : "";
 }
-// { lat, lng } once the person allowed location access. Kept for the browser
-// tab (sessionStorage) so a page reload still sends it (WP8).
+// { lat, lng, acc, at } once the person allowed location access. Kept for the
+// browser tab (sessionStorage) so a page reload still sends it (WP8). WP11: `at`
+// is when the position was taken; the server refuses one that is too old, so
+// once a DCP asks for the location it is kept up to date while the tab is open.
 let geo = (() => { try { return JSON.parse(sessionStorage.getItem("finyl_geo") || "null"); } catch { return null; } })();
 export function setGeo(g) {
   geo = g;
   try { if (g) sessionStorage.setItem("finyl_geo", JSON.stringify(g)); else sessionStorage.removeItem("finyl_geo"); } catch { /* ignore */ }
 }
 // WP8: when the server ends a session it says why; the sign-in page shows it.
+// WP11: several requests can be refused at once; only the first one sends the
+// person to the sign-in page, so its reason is the one shown (a later "Not
+// authenticated" used to replace it and reload the page a second time).
+let ending = false;
 async function sessionEnded(res) {
   let reason = "";
   try { const d = await res.clone().json(); if (typeof d.detail === "string") reason = d.detail; } catch { /* ignore */ }
-  try { if (reason && reason !== "Token expired") sessionStorage.setItem("finyl_logout_reason", reason); } catch { /* ignore */ }
-  setToken(null); window.location.href = "/login";
+  if (!ending) {
+    ending = true;
+    try { if (reason && reason !== "Token expired") sessionStorage.setItem("finyl_logout_reason", reason); } catch { /* ignore */ }
+    setToken(null); window.location.href = "/login";
+  }
   throw new ApiError(401, reason || "Session expired");
 }
+// The reason is removed a moment later rather than at once: the sign-in page can
+// appear twice in a row (the app's own redirect, then the full page load), and
+// the second one must still show it (WP11).
 export function takeLogoutReason() {
-  try { const r = sessionStorage.getItem("finyl_logout_reason") || ""; sessionStorage.removeItem("finyl_logout_reason"); return r; } catch { return ""; }
+  try {
+    const r = sessionStorage.getItem("finyl_logout_reason") || "";
+    if (r) setTimeout(() => { try { sessionStorage.removeItem("finyl_logout_reason"); } catch { /* ignore */ } }, 3000);
+    return r;
+  } catch { return ""; }
 }
+const fromPosition = (p) => ({ lat: p.coords.latitude, lng: p.coords.longitude,
+  acc: p.coords.accuracy, at: Date.now() });
 // Ask the browser for the location (only when the DCP requires it).
 export function requestLocation() {
   return new Promise((resolve, reject) => {
     if (!navigator.geolocation) { reject(new Error("This browser cannot share its location.")); return; }
     navigator.geolocation.getCurrentPosition(
-      (p) => { setGeo({ lat: p.coords.latitude, lng: p.coords.longitude }); resolve(geo); },
+      (p) => { setGeo(fromPosition(p)); watchLocation(); resolve(geo); },
       () => reject(new Error("Location access was not allowed. Allow it in the browser and try again.")),
       { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 });
   });
 }
+// WP11: keep the location fresh for the rest of the tab's life once the DCP has
+// asked for it (the browser reports each move; nothing is sent until the next
+// request to Finyl).
+let watching = false;
+function watchLocation() {
+  if (watching || !navigator.geolocation) return;
+  watching = true;
+  try { sessionStorage.setItem("finyl_geo_watch", "1"); } catch { /* ignore */ }
+  navigator.geolocation.watchPosition((p) => setGeo(fromPosition(p)), () => {},
+    { enableHighAccuracy: true, maximumAge: 60000 });
+}
+try { if (sessionStorage.getItem("finyl_geo_watch")) watchLocation(); } catch { /* ignore */ }
 function securityHeaders(headers) {
   const dev = getDeviceId();
   if (dev) headers["X-Device-Fingerprint"] = dev;
-  if (geo) { headers["X-Geo-Lat"] = String(geo.lat); headers["X-Geo-Lng"] = String(geo.lng); }
+  if (geo) {
+    headers["X-Geo-Lat"] = String(geo.lat); headers["X-Geo-Lng"] = String(geo.lng);
+    if (geo.acc != null) headers["X-Geo-Acc"] = String(Math.round(geo.acc));
+    if (geo.at) headers["X-Geo-Age"] = String(Math.max(0, Math.round((Date.now() - geo.at) / 1000)));
+  }
+}
+// WP11: the server answers 428 {code: "location_required"} when the DCP needs a
+// (fresh) location. Ask the browser once and send the request again.
+const needsLocation = (status, data) => status === 428 && data?.detail?.code === "location_required";
+async function withLocation(data) {
+  try { await requestLocation(); }
+  catch (e) { throw new ApiError(428, `${data.detail.message} (${e.message})`); }
 }
 
 export class ApiError extends Error {
@@ -74,7 +115,7 @@ function isAuthEndpoint(path) {
   return AUTH_ENDPOINTS.some((p) => path === p || path.startsWith(`${p}?`));
 }
 
-export async function api(path, { method = "GET", body, raw } = {}) {
+export async function api(path, { method = "GET", body, raw, retried } = {}) {
   const headers = {};
   const token = getToken();
   if (token) headers["Authorization"] = `Bearer ${token}`;
@@ -85,6 +126,10 @@ export async function api(path, { method = "GET", body, raw } = {}) {
 
   const res = await fetch(`${BASE}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined });
   if (res.status === 401 && !isAuthEndpoint(path)) return sessionEnded(res);
+  if (res.status === 428 && !retried && !isAuthEndpoint(path)) {
+    const d = await res.clone().json().catch(() => ({}));
+    if (needsLocation(428, d)) { await withLocation(d); return api(path, { method, body, raw, retried: true }); }
+  }
   if (raw) return res;
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new ApiError(res.status, errorDetail(res.status, data.detail));
@@ -108,7 +153,7 @@ export function errorDetail(status, detail) {
 
 // Multipart upload — the browser must set its own multipart boundary, so we
 // deliberately do NOT send a Content-Type header here.
-export async function upload(path, formData) {
+export async function upload(path, formData, retried = false) {
   const headers = {};
   const token = getToken();
   if (token) headers["Authorization"] = `Bearer ${token}`;
@@ -119,6 +164,7 @@ export async function upload(path, formData) {
   const res = await fetch(`${BASE}${path}`, { method: "POST", headers, body: formData });
   if (res.status === 401 && !isAuthEndpoint(path)) return sessionEnded(res);
   const data = await res.json().catch(() => ({}));
+  if (needsLocation(res.status, data) && !retried) { await withLocation(data); return upload(path, formData, true); }
   if (!res.ok) throw new ApiError(res.status, errorDetail(res.status, data.detail));
   return data;
 }

@@ -53,6 +53,7 @@ export default function SecurityConfig() {
         geofence_radius_km: cfg.geofence_radius_km === "" ? null : Number(cfg.geofence_radius_km),
         geofence_center_lat: cfg.geofence_center_lat === "" ? null : Number(cfg.geofence_center_lat),
         geofence_center_lng: cfg.geofence_center_lng === "" ? null : Number(cfg.geofence_center_lng),
+        location_max_age_minutes: cfg.location_max_age_minutes === "" || cfg.location_max_age_minutes == null ? null : Number(cfg.location_max_age_minutes),
         time_fence_enabled: cfg.time_fence_enabled,
         time_fence_start: cfg.time_fence_start || null,
         time_fence_end: cfg.time_fence_end || null,
@@ -104,7 +105,8 @@ export default function SecurityConfig() {
           </Section>
 
           <Section title="Geo-fence">
-            <Toggle label="Enable geo-fence" hint="Restrict field actions to a location radius."
+            <Toggle label="Enable geo-fence"
+              hint="Staff can sign in and work only inside this area. The browser must share its location the whole time; anyone who leaves the area is signed out."
               checked={!!cfg.geofence_enabled} onChange={(v) => set("geofence_enabled", v)} />
             <div className="grid grid-cols-3 gap-3 pt-3">
               <div><label className="label">Center lat</label>
@@ -113,6 +115,8 @@ export default function SecurityConfig() {
                 <input className="input" type="number" step="0.000001" value={num(cfg.geofence_center_lng)} onChange={(e) => set("geofence_center_lng", e.target.value)} /></div>
               <div><label className="label">Radius (km)</label>
                 <input className="input" type="number" step="0.1" value={num(cfg.geofence_radius_km)} onChange={(e) => set("geofence_radius_km", e.target.value)} /></div>
+              <div><label className="label">Location may be at most (minutes) old</label>
+                <input className="input" type="number" min="1" max="240" value={num(cfg.location_max_age_minutes)} onChange={(e) => set("location_max_age_minutes", e.target.value)} /></div>
             </div>
           </Section>
 

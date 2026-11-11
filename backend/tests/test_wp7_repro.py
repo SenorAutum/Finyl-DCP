@@ -175,7 +175,8 @@ def test_caller_cannot_choose_their_own_ip():
 # --- 7.11: screen contracts --------------------------------------------------
 APP_ROUTES = {"/", "/clients", "/loans", "/crm", "/settings", "/collections",
               "/field", "/gps-tracking", "/guarantors", "/access/audit", "/access/users",
-              "/reporting", "/products", "/access/org", "/approvals", "/payments"}
+              "/reporting", "/products", "/access/org", "/approvals", "/payments",
+              "/payments/bank-import"}
 
 
 def test_search_only_links_to_pages_that_exist(w):

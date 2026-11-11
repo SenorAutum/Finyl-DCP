@@ -213,13 +213,16 @@ def _enforce_login_fences(db: Session, user: User, request: Request, ip: str) ->
         lat, lng = _geo_from_request(request)
         # WP7 (review 7.7): the browser never sent a location, so every sign-in
         # was refused as "outside". Ask for it instead (428); the login screen
-        # requests the location and tries again.
-        fence_set = (cfg.geofence_center_lat is not None and cfg.geofence_center_lng
-                     is not None and cfg.geofence_radius_km is not None)
-        if (lat is None or lng is None) and fence_set:
+        # requests the location and tries again. WP11: an out-of-date location
+        # is asked for again the same way.
+        _, _, age = geo_fence.read_location(request.headers if request else {})
+        if geo_fence.location_needed(cfg, lat, lng, age, require_age=False):
+            msg = ("Your organisation needs your location to sign you in. "
+                   "Allow location access in your browser and try again.")
+            if lat is not None and lng is not None:
+                msg = "Your location is out of date. Allow location access so it can be updated."
             raise HTTPException(status.HTTP_428_PRECONDITION_REQUIRED,
-                                "Your organisation needs your location to sign you in. "
-                                "Allow location access in your browser and try again.")
+                                {"code": geo_fence.LOCATION_REQUIRED, "message": msg})
         if geo_fence.evaluate_geofence(db, user.tenant_id, lat, lng) == "outside":
             log_cbk_event(obs.CBK_GEOFENCE_BLOCK, tenant_id=user.tenant_id, user_id=user.id,
                           entity_type="user", entity_id=user.id, outcome="blocked",
@@ -257,8 +260,17 @@ def _issue_login_token(db: Session, user: User, request: Request, ip: str) -> di
     password-only path and the OTP-completion path."""
     token = create_access_token(user.id, user.role, user.tenant_id,
                                 token_version=user.token_version or 0)
+    # WP11: where the person signed in from, when the browser shared it.
+    details = None
+    if request is not None:
+        lat, lng, age = geo_fence.read_location(request.headers)
+        if lat is not None and lng is not None:
+            acc = geo_fence.read_location({"x-geo-lat": request.headers.get("x-geo-acc")})[0]
+            details = {"location": {"lat": round(lat, 6), "lng": round(lng, 6),
+                                    "accuracy_m": round(acc) if acc is not None else None,
+                                    "age_s": round(age) if age is not None else None}}
     write_audit(db, tenant_id=user.tenant_id, user=user, action="auth.login",
-                entity_type="user", entity_id=user.id, request=request)
+                entity_type="user", entity_id=user.id, details=details, request=request)
     db.commit()
     log_cbk_event(obs.CBK_LOGIN, tenant_id=user.tenant_id, user_id=user.id,
                   entity_type="user", entity_id=user.id, outcome="success")

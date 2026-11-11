@@ -26,6 +26,7 @@ _NAV_COMMANDS = {
     "collections": "/collections", "ptp": "/collections",
     "field": "/field", "gps": "/gps-tracking",
     "guarantors": "/guarantors", "audit": "/access/audit",
+    "bank import": "/payments/bank-import",                   # WP11
 }
 # The permission a command's page needs; commands the caller cannot open are
 # not offered.
@@ -33,6 +34,7 @@ _NAV_NEEDS = {
     "/settings": "thresholds.manage", "/access/users": "users.view",
     "/access/audit": "audit.view", "/reporting": "reports.export",
     "/gps-tracking": "field_ops.gps_view", "/field": "field_ops.tasks_manage",
+    "/payments/bank-import": "payments.bank_import",
 }
 
 

@@ -643,14 +643,16 @@ def stk_push(phone: str, amount: float, account_ref: str,
     return {"request": safe_req, "response": resp.json()}
 
 
-def register_c2b_urls(creds: DarajaCreds | None = None) -> dict:
-    """Register C2B validation/confirmation URLs pointing at our callback."""
+def register_c2b_urls(creds: DarajaCreds | None = None, shortcode: str | None = None) -> dict:
+    """Register C2B validation/confirmation URLs pointing at our callback.
+    WP11: `shortcode` registers another of the DCP's numbers (a till or store
+    number) with the same keys; default is the paybill."""
     creds = creds or _settings_creds()
     if not creds.configured:
         raise DarajaNotConfigured("Daraja not configured — cannot register C2B URLs.")
     token = get_access_token(creds=creds)
     payload = {
-        "ShortCode": creds.shortcode,
+        "ShortCode": shortcode or creds.shortcode,
         "ResponseType": "Completed",
         "ConfirmationURL": callback_url("c2b-callback"),
         "ValidationURL": callback_url("c2b-callback"),

@@ -362,6 +362,10 @@ class DarajaConfigIn(BaseModel):
     value to set/replace, omit or send blank to keep the stored value."""
     environment: Optional[str] = None        # sandbox | production
     shortcode: Optional[str] = None
+    # WP11: Buy Goods till numbers (and the store / head-office number) that
+    # belong to this DCP, comma or space separated. Payments to any of them are
+    # routed to this DCP like paybill payments.
+    till_numbers: Optional[str] = None
     initiator_name: Optional[str] = None
     consumer_key: Optional[str] = None
     consumer_secret: Optional[str] = None

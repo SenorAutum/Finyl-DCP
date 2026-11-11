@@ -644,29 +644,42 @@ def _process_c2b_callback(db, body) -> tuple[dict, int | None]:
         if legacy is None:
             raise ws.WebhookUnresolved(f"no loan for account {cb.BillRefNumber}")
         tenant_id = legacy.tenant_id
+    till = bool(shortcode) and ws.is_till_number(db, tenant_id, shortcode)
+    source, method = ("till", "mpesa_till") if till else ("c2b", "mpesa_c2b")
+    # WP11: Safaricom may send the payer's number masked (25471****678) or as a
+    # 64-character hash. The full value is used for matching and kept in the raw
+    # payload; a hash does not fit the 20-character phone columns, so it is not
+    # stored there (it used to make the whole confirmation fail).
+    payer_phone = cb.MSISDN if cb.MSISDN and len(str(cb.MSISDN)) <= 20 else None
 
     # Idempotency on TransID (MPESA-03): duplicate delivery is a no-op.
     if rp.reference_already_used(db, tenant_id, ref):
         return {"ResultCode": 0, "ResultDesc": "Duplicate ignored"}, tenant_id
 
-    match = match_reference(db, tenant_id, cb.BillRefNumber, phone=cb.MSISDN)
+    match = match_reference(db, tenant_id, cb.BillRefNumber, phone=cb.MSISDN,
+                            payer_name=payer_name)
     if match.loan is None:
+        # WP11: a till (Buy Goods) payment carries no account number, so it
+        # always goes to review, with a suggested loan when the payer fits one.
+        reason = match.reason or "unmatched"
+        if till and not (cb.BillRefNumber or "").strip():
+            reason = "till_payment"
         entry = rp.record_suspense(
-            db, tenant_id=tenant_id, reason=match.reason or "unmatched", amount=amount,
-            ref=ref or rp.internal_ref("C2B"), phone=cb.MSISDN,
-            suggested_loan_id=match.suggested_loan_id, source="c2b",
+            db, tenant_id=tenant_id, reason=reason, amount=amount,
+            ref=ref or rp.internal_ref("C2B"), phone=payer_phone,
+            suggested_loan_id=match.suggested_loan_id, source=source,
             bill_ref=cb.BillRefNumber, payer_name=payer_name, paid_at=paid_at,
             raw_payload={"shortcode": shortcode, "account_entered": cb.BillRefNumber,
-                         "borrower_id": match.borrower_id})
+                         "borrower_id": match.borrower_id, "till": till})
         db.add(PaymentTransaction(tenant_id=tenant_id, type="c2b", loan_id=None,
-                                  amount=amount, phone=cb.MSISDN, mpesa_ref=ref,
+                                  amount=amount, phone=payer_phone, mpesa_ref=ref,
                                   status="success",
                                   raw_payload={**body, "review": True,
-                                               "review_reason": match.reason or "unmatched"}))
+                                               "review_reason": reason}))
         db.flush()
         log_money_event("c2b_unmatched", tenant_id=tenant_id, amount=amount,
-                        phone=cb.MSISDN, ref=str(ref),
-                        detail=f"bill_ref={cb.BillRefNumber!r} reason={match.reason} "
+                        phone=payer_phone, ref=str(ref),
+                        detail=f"bill_ref={cb.BillRefNumber!r} reason={reason} "
                                f"suspense_id={entry.id}")
         db.commit()
         return {"ResultCode": 0, "ResultDesc": "Confirmation received successfully",
@@ -676,8 +689,8 @@ def _process_c2b_callback(db, body) -> tuple[dict, int | None]:
     loan = (db.query(Loan).filter(Loan.id == match.loan.id, Loan.tenant_id == tenant_id)
             .with_for_update().first())
     res = rp.apply_payment(db, tenant_id=tenant_id, loan=loan, amount=amount, ref=ref,
-                           method="mpesa_c2b", paid_at=paid_at, phone=cb.MSISDN,
-                           source="c2b", bill_ref=cb.BillRefNumber, payer_name=payer_name)
+                           method=method, paid_at=paid_at, phone=payer_phone,
+                           source=source, bill_ref=cb.BillRefNumber, payer_name=payer_name)
     if res.status == "duplicate_ignored":
         db.rollback()
         return {"ResultCode": 0, "ResultDesc": "Duplicate ignored",
@@ -689,7 +702,7 @@ def _process_c2b_callback(db, body) -> tuple[dict, int | None]:
                             "review_reason": ("overpayment" if res.status == "applied"
                                               else f"loan_status_{loan.status}")})
     db.add(PaymentTransaction(tenant_id=tenant_id, type="c2b", loan_id=loan.id, amount=amount,
-                              phone=cb.MSISDN, mpesa_ref=res.ref, status="success",
+                              phone=payer_phone, mpesa_ref=res.ref, status="success",
                               raw_payload=txn_payload))
     db.commit()
     return {"ResultCode": 0, "ResultDesc": "Confirmation received successfully",

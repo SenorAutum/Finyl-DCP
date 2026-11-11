@@ -127,6 +127,34 @@ def extract_shortcode(endpoint: str, body: dict) -> str | None:
     return None
 
 
+def till_numbers(cfg) -> list[str]:
+    """WP11: the Buy Goods till / store numbers saved in a DCP's M-Pesa settings."""
+    raw = (cfg or {}).get("till_numbers") or []
+    if isinstance(raw, str):
+        raw = raw.replace(",", " ").split()
+    return [str(t).strip() for t in raw if str(t).strip()]
+
+
+def daraja_numbers(cfg) -> set[str]:
+    """Every M-Pesa number that belongs to a DCP: its paybill and its tills."""
+    nums = set(till_numbers(cfg))
+    paybill = str((cfg or {}).get("shortcode") or "").strip()
+    if paybill:
+        nums.add(paybill)
+    return nums
+
+
+def is_till_number(db, tenant_id: int | None, shortcode: str | None) -> bool:
+    """True when this number is one of the DCP's tills (not its paybill)."""
+    if not tenant_id or not shortcode:
+        return False
+    from app.models import TenantIntegrationConfig
+    row = (db.query(TenantIntegrationConfig)
+           .filter(TenantIntegrationConfig.tenant_id == tenant_id,
+                   TenantIntegrationConfig.integration == "daraja").first())
+    return row is not None and str(shortcode).strip() in till_numbers(row.config)
+
+
 def shortcode_to_tenant(db, shortcode: str | None) -> int | None:
     """Map an incoming M-Pesa BusinessShortCode to the owning tenant_id.
 
@@ -149,8 +177,8 @@ def shortcode_to_tenant(db, shortcode: str | None) -> int | None:
             .filter(TenantIntegrationConfig.integration == "daraja",
                     TenantIntegrationConfig.enabled == True)  # noqa: E712
             .all())
-    matches = [r.tenant_id for r in rows
-               if str((r.config or {}).get("shortcode") or "").strip() == shortcode]
+    # WP11: a DCP's Buy Goods till numbers route to it the same way.
+    matches = [r.tenant_id for r in rows if shortcode in daraja_numbers(r.config)]
     # De-dupe while preserving determinism.
     matches = sorted(set(matches))
     if len(matches) == 1:

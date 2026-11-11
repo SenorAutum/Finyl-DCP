@@ -32,6 +32,7 @@ PERMISSIONS = {
     "audit.view": "View the audit trail / system logs",
     "backups.manage": "Trigger backups and data-integrity checks",
     "payments.upload": "Upload payment files / reconciliation batches",
+    "payments.bank_import": "Import bank statements (money in is matched to loans; the rest goes to suspense)",
     "messaging.manage": "Customise per-DCP SMS message templates",
     "sms.send": "Send a one-off SMS to a client from the DCP's sender name",
     "sms.view": "View the SMS log (codes are never shown)",
@@ -194,7 +195,7 @@ ROLE_PERMISSIONS = {
         "clients.view_all", "loans.view_all", "dashboard.company",
         "reconcile.execute", "refund.execute", "refund.approve", "reconcile.approve",
         "collections.stk_push",
-        "payments.upload",
+        "payments.upload", "payments.bank_import",
         "accounting.export",
     },
 
