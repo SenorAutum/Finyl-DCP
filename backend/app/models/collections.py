@@ -32,6 +32,12 @@ class MpesaRatibaConsent(Base):
     ratiba_status = Column(String(50))
     deduction_amount = Column(Numeric(14, 2))
     deduction_day = Column(Integer)
+    # WP12: what Safaricom's standing order needs, and its reference.
+    frequency = Column(String(2))            # Daraja code: 1 once ... 4 monthly ... 8 yearly
+    start_date = Column(Date)
+    end_date = Column(Date)
+    request_ref = Column(String(80))         # Safaricom's responseRefID, to match the callback
+    created_by = Column(Integer, ForeignKey("users.id"))
     raw_response = Column(JSONB)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
 

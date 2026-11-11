@@ -39,6 +39,8 @@ ENDPOINT_STK_CALLBACK = "stk-callback"
 ENDPOINT_C2B_CALLBACK = "c2b-callback"
 ENDPOINT_REVERSAL_RESULT = "reversal-result"
 ENDPOINT_REVERSAL_TIMEOUT = "reversal-timeout"
+ENDPOINT_RATIBA_CALLBACK = "ratiba-callback"       # WP12: standing order confirmed / refused
+ENDPOINT_MPESA_PULL = "mpesa-pull"                 # WP12: payments fetched with Pull Transactions
 
 
 # --------------------------------------------------------------------------- #

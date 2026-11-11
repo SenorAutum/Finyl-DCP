@@ -30,7 +30,25 @@ from app.services import mpesa
 from app.services import repayments as rp
 
 MANUAL_THRESHOLD = "manual_payment"
-MANUAL_CHANNELS = {"mpesa_paybill", "mpesa_till", "bank", "cash", "other"}
+# WP12: every way a client can pay a DCP, for manual entry and uploads.
+# key -> (label, needs a reference). Keys stay short: the repayment method is
+# stored as "manual_<key>" in a 20-character column.
+PAYMENT_CHANNELS = {
+    "mpesa_paybill": ("M-Pesa paybill", True),
+    "mpesa_till": ("M-Pesa till (Buy Goods)", True),
+    "mpesa_pochi": ("M-Pesa Pochi la Biashara", True),
+    "mpesa_send": ("M-Pesa Send Money to a phone", True),
+    "bank_paybill": ("Bank paybill (e.g. Equity 247247 into the DCP's account)", True),
+    "bank_deposit": ("Bank deposit at a branch or agent", True),
+    "bank_eft": ("Bank transfer (EFT)", True),
+    "bank_rtgs": ("Bank transfer (RTGS)", True),
+    "pesalink": ("PesaLink", True),
+    "cheque": ("Cheque", True),
+    "bank": ("Bank (other)", True),
+    "cash": ("Cash at a branch", False),
+    "other": ("Other", True),
+}
+MANUAL_CHANNELS = set(PAYMENT_CHANNELS)
 MANUAL_ACTIONS = ("manual_payment", "suspense_allocate", "suspense_refund", "suspense_reversal")
 
 # action_type -> (permission the checker needs, per-DCP approver type)

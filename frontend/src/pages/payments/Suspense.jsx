@@ -14,6 +14,7 @@ const kes2 = (n) =>
 const fmtDT = (d) => (d ? toDate(d).toLocaleString("en-KE", { dateStyle: "medium", timeStyle: "short" }) : "—");
 
 const STATUSES = ["", "open", "pending_approval", "refund_processing", "reversal_pending", "allocated", "refunded", "reversed"];
+// WP12: the full list comes from the server; this is the fallback.
 const CHANNELS = [
   ["mpesa_paybill", "M-Pesa paybill"],
   ["mpesa_till", "M-Pesa till"],
@@ -32,7 +33,8 @@ const REASONS = {
   bank_unmatched: "bank: no account or customer number found",
   bank_several: "bank: names more than one account",
 };
-const SOURCES = { c2b: "Paybill", till: "Till", bank: "Bank", stk: "STK", manual: "Manual" };
+const SOURCES = { c2b: "Paybill", till: "Till", bank: "Bank", stk: "STK", manual: "Manual",
+  mpesa_stmt: "M-Pesa statement", bank_ipn: "Bank notification" };
 
 const pendingMsg = (r, done) =>
   r.status === "pending_approval" ? "Sent for approval — a second person must approve it under Approvals."
@@ -46,6 +48,10 @@ const nowLocal = () => {
 };
 
 function RecordPayment({ onClose, onDone }) {
+  const [channels, setChannels] = useState(CHANNELS.map(([key, label]) => ({ key, label, needs_reference: key !== "cash" })));
+  useEffect(() => {
+    api("/api/v1/payments/channels").then((d) => { if (d.channels?.length) setChannels(d.channels); }).catch(() => {});
+  }, []);
   const [f, setF] = useState({ channel: "mpesa_paybill", amount: "", reference: "", paid_at: nowLocal(),
                                target: "customer", customer_number: "", loan_id: "",
                                payer_name: "", payer_phone: "", note: "" });
@@ -75,7 +81,7 @@ function RecordPayment({ onClose, onDone }) {
           <div>
             <label className="text-xs font-semibold text-gray-600">Received via</label>
             <select className="input" value={f.channel} onChange={(e) => set("channel", e.target.value)}>
-              {CHANNELS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+              {channels.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
             </select>
           </div>
           <div>
@@ -84,7 +90,9 @@ function RecordPayment({ onClose, onDone }) {
           </div>
           <div>
             <label className="text-xs font-semibold text-gray-600">
-              {f.channel === "bank" ? "Bank reference" : "M-Pesa code"}{f.channel === "cash" ? " (optional)" : ""}
+              {f.channel.startsWith("mpesa") ? "M-Pesa code" : f.channel === "cheque" ? "Cheque number"
+                : f.channel === "cash" ? "Receipt number" : "Bank reference"}
+              {channels.find((c) => c.key === f.channel)?.needs_reference === false ? " (optional)" : ""}
             </label>
             <input className="input font-mono uppercase" value={f.reference} onChange={(e) => set("reference", e.target.value)} />
           </div>

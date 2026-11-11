@@ -503,7 +503,7 @@ class SuspenseRefundIn(BaseModel):
 
 class ManualPaymentIn(BaseModel):
     """WP2 — money received outside the automatic paybill flow."""
-    channel: str                         # mpesa_paybill | mpesa_till | bank | cash | other
+    channel: str                         # a key of payment_approvals.PAYMENT_CHANNELS (WP12)
     amount: float
     reference: Optional[str] = None      # M-Pesa code / bank reference (required unless cash)
     paid_at: datetime                    # when the customer paid

@@ -208,6 +208,65 @@ def register_paybill_callbacks(body: RegisterC2bBody, request: Request,
             "results": results}
 
 
+class RegisterPullBody(BaseModel):
+    tenant_id: int
+    nominated_number: str
+
+
+class PullNowBody(BaseModel):
+    tenant_id: int
+    hours: int = 24
+
+
+@router.get("/daraja/pull-status")
+def pull_status(tenant_id: int, db: Session = Depends(get_db),
+                user: User = Depends(require_role("super_admin"))):
+    """WP12: which DCP numbers are registered for missed-payment checks."""
+    from app.services import mpesa_pull
+    state = mpesa_pull.get_state(db, tenant_id)
+    return {"numbers": mpesa_pull.dcp_numbers(db, tenant_id),
+            "registered": sorted((state.get("numbers") or {}).keys()),
+            "nominated_number": state.get("nominated_number"),
+            "last_run": state.get("last_run")}
+
+
+@router.post("/daraja/register-pull")
+def register_pull(body: RegisterPullBody, request: Request, db: Session = Depends(get_db),
+                  user: User = Depends(require_role("super_admin"))):
+    """WP12: register the DCP's paybill and tills for Daraja Pull Transactions,
+    so payments whose notification never arrived are found every hour.
+    Safaricom allows this on live numbers only."""
+    from app.core.deps import write_audit
+    from app.services import mpesa_pull
+    if db.get(Tenant, body.tenant_id) is None:
+        raise HTTPException(404, "DCP not found")
+    try:
+        results = mpesa_pull.register(db, body.tenant_id, body.nominated_number, user.id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    write_audit(db, tenant_id=body.tenant_id, user=user, action="mpesa.pull_registered",
+                entity_type="tenant", entity_id=body.tenant_id,
+                details={"results": results}, request=request)
+    db.commit()
+    return {"ok": all(r["ok"] for r in results), "results": results}
+
+
+@router.post("/daraja/pull-now")
+def pull_now(body: PullNowBody, request: Request, db: Session = Depends(get_db),
+             user: User = Depends(require_role("super_admin"))):
+    """WP12: check now for missed payments in the last `hours` (at most 48)."""
+    from app.core.deps import write_audit
+    from app.services import mpesa_pull
+    if db.get(Tenant, body.tenant_id) is None:
+        raise HTTPException(404, "DCP not found")
+    res = mpesa_pull.pull_for_tenant(db, body.tenant_id, body.hours)
+    write_audit(db, tenant_id=body.tenant_id, user=user, action="mpesa.pull_now",
+                entity_type="tenant", entity_id=body.tenant_id,
+                details={k: res[k] for k in ("found", "recovered", "errors")}, request=request)
+    db.commit()
+    return res
+
+
 class TestEkycBody(BaseModel):
     national_id: str = "12345678"
     first_name: str = "Jane"

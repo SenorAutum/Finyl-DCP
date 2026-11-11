@@ -153,9 +153,10 @@ def ratiba_consent(body: RatibaConsentIn,
         row = ratiba_service.record_consent(
             db, tenant_id=tenant_id, loan_id=body.loan_id, phone=body.phone,
             consent_given=body.consent_given, deduction_amount=body.deduction_amount,
-            deduction_day=body.deduction_day, ip=ip)
+            deduction_day=body.deduction_day, ip=ip, frequency=body.frequency,
+            start_date=body.start_date, end_date=body.end_date, user_id=user.id)
     except ValueError as e:
-        raise HTTPException(404, str(e))
+        raise HTTPException(404 if str(e) == "loan_not_found" else 422, str(e))
     write_audit(db, tenant_id=tenant_id, user=user, action="collections.ratiba_consent",
                 entity_type="loan", entity_id=body.loan_id,
                 details={"consent_given": body.consent_given}, request=request)
@@ -168,9 +169,10 @@ def ratiba_initiate(body: RatibaInitiateIn,
                     tenant_id: int = Depends(require_module("lending")),
                     user=Depends(require_permission("collections.ptp_manage")),
                     db: Session = Depends(get_db), request: Request = None):
+    from app.services.mpesa import DarajaNotConfigured
     try:
         row = ratiba_service.initiate(db, tenant_id=tenant_id, loan_id=body.loan_id)
-    except ValueError as e:
+    except (ValueError, DarajaNotConfigured) as e:
         raise HTTPException(400, str(e))
     write_audit(db, tenant_id=tenant_id, user=user, action="collections.ratiba_initiate",
                 entity_type="loan", entity_id=body.loan_id,

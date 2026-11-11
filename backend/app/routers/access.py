@@ -588,7 +588,7 @@ async def payment_upload(request: Request, file: UploadFile = File(...),
 
     Columns (case-insensitive): `account_number` OR `customer_number`, `amount`,
     `mpesa_ref` (or `reference`), optional `date`, optional `channel`
-    (mpesa_paybill | mpesa_till | bank | cash | other; default mpesa_paybill).
+    (any key of PAYMENT_CHANNELS, e.g. mpesa_paybill, bank_eft, pesalink; default mpesa_paybill).
 
     WP4 — every row now follows the same rules as a manual payment:
       * matched only within this DCP (loan account number or customer number);

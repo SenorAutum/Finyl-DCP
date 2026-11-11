@@ -38,6 +38,11 @@ class RatibaConsentIn(BaseModel):
     consent_given: bool = True
     deduction_amount: Optional[Decimal] = None
     deduction_day: Optional[int] = None
+    # WP12: Daraja frequency code (1 once, 2 daily, 3 weekly, 4 monthly, 5 every
+    # two months, 6 quarterly, 7 every six months, 8 yearly) and the dates.
+    frequency: Optional[str] = None
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
 
 
 class RatibaInitiateIn(BaseModel):

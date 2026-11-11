@@ -23,7 +23,7 @@ const NAV = [
       anyPerm: ["loans.view_all", "loans.view_portfolio", "loans.create"] },
     { to: "/payments", label: "Payments & SMS", module: "payments", icon: "₿" },
     { to: "/payments/suspense", label: "Suspense Account", module: "payments", icon: "⏳", anyPerm: ["reconcile.execute"] },
-    { to: "/payments/bank-import", label: "Bank Statement Import", module: "payments", icon: "🧾", anyPerm: ["payments.bank_import"] },
+    { to: "/payments/bank-import", label: "Statement Import", module: "payments", icon: "🧾", anyPerm: ["payments.bank_import"] },
   ]},
   { group: "Registry", items: [
     { to: "/guarantors", label: "Guarantors", module: "lending", icon: "🤝",

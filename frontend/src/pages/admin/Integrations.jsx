@@ -14,7 +14,7 @@
 // REGISTRY with a status() and optional test() callable) — this UI renders it
 // automatically from GET /api/v1/integrations. No frontend change required.
 import { useEffect, useState } from "react";
-import { api, fmtDate } from "../../lib/api";
+import { api, fmtDate, toDate } from "../../lib/api";
 import { PageHeader, Spinner, KpiCard, Pagination, Empty, Modal } from "../../components/ui";
 
 // SMS amounts are fractional (sub-shilling per message), so revenue needs more
@@ -218,6 +218,72 @@ function PaybillRegistration({ tenants }) {
   );
 }
 
+// WP12: Daraja "Pull Transactions" — every hour Finyl asks Safaricom for the
+// last few hours of paybill and till payments and records any whose
+// notification never arrived. Each DCP number is registered once.
+function MissedPayments({ tenants }) {
+  const [tenantId, setTenantId] = useState("");
+  const [nominated, setNominated] = useState("");
+  const [hours, setHours] = useState(24);
+  const [state, setState] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const load = (id) => {
+    setState(null); setMsg(null);
+    if (id) api(`/api/v1/integrations/daraja/pull-status?tenant_id=${id}`).then(setState).catch(() => {});
+  };
+  const register = async () => {
+    setBusy(true); setMsg(null);
+    try {
+      const r = await api("/api/v1/integrations/daraja/register-pull", { method: "POST", body: { tenant_id: Number(tenantId), nominated_number: nominated } });
+      setMsg({ ok: r.ok, text: r.results.map((x) => `${x.number}: ${x.ok ? "registered" : "not registered"} (${x.detail})`).join(" · ") });
+      load(tenantId);
+    } catch (e) { setMsg({ ok: false, text: e.detail }); }
+    finally { setBusy(false); }
+  };
+  const pullNow = async () => {
+    setBusy(true); setMsg(null);
+    try {
+      const r = await api("/api/v1/integrations/daraja/pull-now", { method: "POST", body: { tenant_id: Number(tenantId), hours: Number(hours) } });
+      setMsg({ ok: !r.errors.length, text: `Safaricom listed ${r.found} payment(s); ${r.recovered} were missing and are now recorded.${r.errors.length ? ` Problems: ${r.errors.join("; ")}` : ""}` });
+      load(tenantId);
+    } catch (e) { setMsg({ ok: false, text: e.detail }); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div className="card p-4 mt-6 max-w-3xl">
+      <div className="font-semibold">Missed paybill and till payments (Pull Transactions)</div>
+      <p className="text-xs text-gray-500 mt-1">
+        If Safaricom's notification of a payment never reaches Finyl, the payment is found here: every hour
+        Finyl asks Safaricom for the last few hours of payments and records any that are missing. Register
+        each DCP once, with the phone number nominated on its M-Pesa organisation account (shown in the M-Pesa
+        business portal). Safaricom allows this on live numbers only.
+      </p>
+      <div className="flex gap-2 mt-3 flex-wrap items-center">
+        <select className="input !w-64" value={tenantId} onChange={(e) => { setTenantId(e.target.value); load(e.target.value); }}>
+          <option value="">Choose a DCP…</option>
+          {tenants.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+        </select>
+        <input className="input !w-48" placeholder="Nominated number 07…" value={nominated} onChange={(e) => setNominated(e.target.value)} />
+        <button className="btn-primary" disabled={!tenantId || !nominated || busy} onClick={register}>Register</button>
+      </div>
+      {state && (
+        <div className="text-xs text-gray-600 mt-2">
+          Numbers: {state.numbers.join(", ") || "none in its M-Pesa settings"} · registered: {state.registered.join(", ") || "none yet"}
+          {state.last_run && <> · last check {toDate(state.last_run.at).toLocaleString("en-KE")}: {state.last_run.recovered} recovered</>}
+        </div>
+      )}
+      <div className="flex gap-2 mt-3 flex-wrap items-center">
+        <span className="text-sm">Check now for the last</span>
+        <input className="input !w-20" type="number" min="1" max="48" value={hours} onChange={(e) => setHours(e.target.value)} />
+        <span className="text-sm">hours</span>
+        <button className="btn-ghost" disabled={!tenantId || busy || !state?.registered?.length} onClick={pullNow}>{busy ? "Working…" : "Check now"}</button>
+      </div>
+      {msg && <div className={`mt-3 text-sm rounded-lg p-3 ${msg.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}>{msg.text}</div>}
+    </div>
+  );
+}
+
 function RegistryTab({ tenants = [] }) {
   const [data, setData] = useState(null);
   const [err, setErr] = useState("");
@@ -243,6 +309,7 @@ function RegistryTab({ tenants = [] }) {
         {data.map((it) => <IntegrationCard key={it.key} item={it} onTested={() => setNonce((n) => n + 1)} />)}
       </div>
       <PaybillRegistration tenants={tenants} />
+      <MissedPayments tenants={tenants} />
     </div>
   );
 }

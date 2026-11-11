@@ -426,6 +426,20 @@ def guarded(job_id: str, fn, every_minutes: int | None = None):
     return _run
 
 
+def run_mpesa_pull():
+    """WP12: hourly, ask Safaricom for the last few hours of paybill and till
+    payments and record any whose notification never arrived."""
+    from app.services import mpesa_pull
+    db = SessionLocal()
+    try:
+        res = mpesa_pull.run_pull_all(db)
+        if res["recovered"]:
+            logger.warning("mpesa_pull: recovered %d payment(s)", res["recovered"])
+        return res
+    finally:
+        db.close()
+
+
 def run_lifecycle_sms():
     """Hourly (WP8): repayment reminders, overdue alerts and defaulting for each
     DCP whose automation is on and whose chosen send hour (Kenyan time) is now.
@@ -636,6 +650,9 @@ def start_scheduler():
                       replace_existing=True, timezone=tz)
         sched.add_job(guarded("report_schedules", run_report_schedules), "cron", minute=10,
                       id="report_schedules", max_instances=1, coalesce=True,
+                      replace_existing=True, timezone=tz)
+        sched.add_job(guarded("mpesa_pull", run_mpesa_pull), "cron", minute=20,
+                      id="mpesa_pull", max_instances=1, coalesce=True,
                       replace_existing=True, timezone=tz)
         sched.add_job(guarded("purge_job_runs", purge_old_job_runs), "cron", hour=4, minute=30,
                       id="purge_job_runs", max_instances=1, coalesce=True,
