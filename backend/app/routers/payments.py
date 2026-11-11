@@ -244,6 +244,13 @@ def reconcile_payment(body: ReconcileRequest,
 # --------------------------------------------------------------------------- #
 # WP2 — Manual payment entry (paybill / till / bank / cash) with maker-checker
 # --------------------------------------------------------------------------- #
+@router.get("/channels")
+def payment_channels(_: int = Depends(require_module("payments"))):
+    """WP12: the ways a client can pay, for the payment screens."""
+    return {"channels": [{"key": k, "label": label, "needs_reference": ref}
+                         for k, (label, ref) in pay_appr.PAYMENT_CHANNELS.items()]}
+
+
 @router.post("/manual")
 def record_manual_payment(body: ManualPaymentIn, request: Request,
                           tenant_id: int = Depends(require_module("payments")),
@@ -263,9 +270,9 @@ def record_manual_payment(body: ManualPaymentIn, request: Request,
     if amount <= 0:
         raise HTTPException(422, "Amount must be positive")
     ref = pay_appr.clean_reference(body.reference)
-    if not ref and channel != "cash":
-        raise HTTPException(422, "A transaction reference (M-Pesa code or bank reference) "
-                                 "is required for this channel")
+    if not ref and pay_appr.PAYMENT_CHANNELS[channel][1]:
+        raise HTTPException(422, "A transaction reference (M-Pesa code, bank reference or "
+                                 "cheque number) is required for this channel")
     paid_at = pay_appr.check_paid_at(body.paid_at)
     note = (body.note or "").strip()
     if not note:
@@ -862,6 +869,70 @@ async def reversal_timeout_callback(token: str, request: Request, db: Session = 
     body = await _read_payload(request)
     return _ingest_and_process(db, ws.ENDPOINT_REVERSAL_TIMEOUT, body, _process_reversal_timeout,
                                {"ResultCode": 0, "ResultDesc": "Timeout received"})
+
+
+def _process_ratiba_callback(db, body) -> tuple[dict, int | None]:
+    """WP12: Safaricom's answer on a standing order (client confirmed or not)."""
+    from app.services import ratiba
+    row = ratiba.apply_callback(db, body if isinstance(body, dict) else {})
+    if row is None:
+        raise ws.WebhookUnresolved("standing-order callback for an unknown request")
+    db.commit()
+    return {"ResultCode": 0, "ResultDesc": "Received"}, row.tenant_id
+
+
+_PROCESSORS[ws.ENDPOINT_RATIBA_CALLBACK] = _process_ratiba_callback
+_PROCESSORS[ws.ENDPOINT_MPESA_PULL] = _process_c2b_callback      # WP12: same routine
+
+
+@router.post("/hooks/{token}/ratiba-callback")
+async def ratiba_callback(token: str, request: Request, db: Session = Depends(get_db)):
+    """WP12: M-Pesa Ratiba (standing order) result."""
+    _check_callback_token(token)
+    ws.check_ip_allowlist(request, ws.ENDPOINT_RATIBA_CALLBACK)
+    body = await _read_payload(request)
+    return _ingest_and_process(db, ws.ENDPOINT_RATIBA_CALLBACK, body, _process_ratiba_callback,
+                               {"ResultCode": 0, "ResultDesc": "Received"})
+
+
+def _process_bank_ipn(db, body) -> tuple[dict, int | None]:
+    """WP12: one bank payment notification (already checked as genuine)."""
+    from app.services import bank_notifications as bn
+    found = bn.find_by_key(db, (body or {}).get("_bank_key"))
+    if found is None:
+        raise ws.WebhookUnresolved("bank set-up no longer exists")
+    tenant_id, bank, _secret = found
+    res = bn.process(db, tenant_id, bank, (body or {}).get("payload") or {})
+    db.commit()
+    return {"status": "received", "result": res.get("status")}, tenant_id
+
+
+_PROCESSORS["bank-ipn"] = _process_bank_ipn          # WP12: bank notifications
+
+
+@router.post("/hooks/bank/{key}")
+async def bank_notification(key: str, request: Request, db: Session = Depends(get_db)):
+    """WP12: a bank tells Finyl that money arrived in a DCP's account. The
+    address is private to one DCP and one bank; the message must carry the
+    agreed signature or key (and come from the bank's addresses, if set)."""
+    import json
+    from app.core.net import client_ip
+    from app.services import bank_notifications as bn
+    found = bn.find_by_key(db, key)
+    if found is None:
+        raise HTTPException(404, "Not Found")
+    tenant_id, bank, secret = found
+    raw = await request.body()
+    why = bn.verify(bank, secret, raw, request.headers, client_ip(request))
+    if why:
+        logger.warning("bank_ipn_refused tenant_id=%s bank=%s: %s", tenant_id, bank.get("name"), why)
+        raise HTTPException(401, f"Not accepted: {why}")
+    try:
+        payload = json.loads(raw or b"{}")
+    except ValueError:
+        raise HTTPException(400, "The body must be JSON")
+    return _ingest_and_process(db, bn.ENDPOINT, {"_bank_key": key, "payload": payload},
+                               _process_bank_ipn, {"status": "received"})
 
 
 @router.get("/transactions")

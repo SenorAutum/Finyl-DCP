@@ -38,8 +38,10 @@ from app.services import webhook_security as ws
 from app.routers.notifications import get_automation_config
 
 # Whole router requires the DCP admin role (super_admin auto-passes require_role).
+# WP12: the DCP administrator role (tenant_admin) was refused here ("Insufficient
+# role") although the page is shown to it, so every tab failed for it.
 router = APIRouter(prefix="/api/v1/settings", tags=["settings"],
-                   dependencies=[Depends(require_role("system_admin"))])
+                   dependencies=[Depends(require_role("system_admin", "tenant_admin"))])
 
 _SECRET_FIELDS = ("consumer_key", "consumer_secret", "passkey", "security_credential")
 _VALID_ENVIRONMENTS = ("sandbox", "production")
@@ -175,6 +177,75 @@ def update_daraja(body: DarajaConfigIn, request: Request,
                 request=request)
     db.commit()
     return get_daraja(tenant_id=tenant_id, db=db, _=actor)
+
+
+# --------------------------------------------------------------------------- #
+# WP12: bank payment notifications (one set-up per bank account)
+# --------------------------------------------------------------------------- #
+@router.get("/bank-notifications")
+def list_bank_notifications(tenant_id: int = Depends(get_tenant_id), db: Session = Depends(get_db),
+                            _: User = Depends(require_permission("thresholds.manage"))):
+    from app.services import bank_notifications as bn
+    return {"banks": bn.list_banks(db, tenant_id), "fields": list(bn.MAP_FIELDS),
+            "auth_modes": list(bn.AUTH_MODES)}
+
+
+def _save_bank(body, request, tenant_id, db, actor, bank_id=None):
+    from app.services import bank_notifications as bn
+    try:
+        bank = bn.save_bank(db, tenant_id, actor.id, dict(body or {}), bank_id)
+    except bn.BankConfigError as exc:
+        raise HTTPException(422, str(exc))
+    write_audit(db, tenant_id=tenant_id, user=actor, action="config.bank_notifications.save",
+                entity_type="integration_config", entity_id=bank["id"],
+                details={k: bank.get(k) for k in ("name", "auth_mode", "field_map", "allowed_ips",
+                                                  "active")}, request=request)
+    db.commit()
+    return bank
+
+
+@router.post("/bank-notifications")
+def add_bank_notification(body: dict, request: Request, tenant_id: int = Depends(get_tenant_id),
+                          db: Session = Depends(get_db),
+                          actor: User = Depends(require_permission("thresholds.manage"))):
+    return _save_bank(body, request, tenant_id, db, actor)
+
+
+@router.put("/bank-notifications/{bank_id}")
+def update_bank_notification(bank_id: str, body: dict, request: Request,
+                             tenant_id: int = Depends(get_tenant_id), db: Session = Depends(get_db),
+                             actor: User = Depends(require_permission("thresholds.manage"))):
+    return _save_bank(body, request, tenant_id, db, actor, bank_id)
+
+
+@router.delete("/bank-notifications/{bank_id}")
+def delete_bank_notification(bank_id: str, request: Request, tenant_id: int = Depends(get_tenant_id),
+                             db: Session = Depends(get_db),
+                             actor: User = Depends(require_permission("thresholds.manage"))):
+    from app.services import bank_notifications as bn
+    bn.delete_bank(db, tenant_id, actor.id, bank_id)
+    write_audit(db, tenant_id=tenant_id, user=actor, action="config.bank_notifications.delete",
+                entity_type="integration_config", entity_id=bank_id, request=request)
+    db.commit()
+    return {"banks": bn.list_banks(db, tenant_id)}
+
+
+@router.post("/bank-notifications/{bank_id}/test")
+def test_bank_notification(bank_id: str, body: dict, tenant_id: int = Depends(get_tenant_id),
+                           db: Session = Depends(get_db),
+                           _: User = Depends(require_permission("thresholds.manage"))):
+    """Show what a sample notification from the bank would do. Records nothing."""
+    from app.services import bank_notifications as bn
+    row = next((b for b in (bn._row(db, tenant_id).config or {}).get("banks", [])
+                if b["id"] == bank_id), None) if bn._row(db, tenant_id) else None
+    if row is None:
+        raise HTTPException(404, "No such bank set-up")
+    sample = (body or {}).get("sample")
+    if not isinstance(sample, (dict, list)):
+        raise HTTPException(422, "Paste a sample notification (JSON) from the bank")
+    out = bn.dry_run(db, tenant_id, row, sample)
+    db.rollback()
+    return out
 
 
 @router.post("/daraja/test")

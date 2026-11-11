@@ -2,6 +2,7 @@
 // via Daraja B2C), officer reassignment, repayment schedule/history, STK-push.
 // Approval itself now lives in the Approvals inbox with threshold + escalation.
 import { useEffect, useState, useRef } from "react"; // <-- ADDED useRef
+import { methodLabel } from "../../lib/paymentChannels";
 import { Link, useParams } from "react-router-dom";
 import { api, fmtDate, fmtKES } from "../../lib/api";
 import { Badge, Modal, PageHeader, Spinner } from "../../components/ui";
@@ -230,7 +231,7 @@ export default function LoanDetail() {
                   <td className="td font-semibold">{fmtKES(r.amount)}</td>
                   <td className="td">{fmtKES(r.principal_component)}</td>
                   <td className="td">{fmtKES(r.interest_component)}</td>
-                  <td className="td">{r.method}</td>
+                  <td className="td">{methodLabel(r.method)}</td>
                   <td className="td font-mono text-xs">{r.mpesa_ref || "—"}</td>
                 </tr>
               ))}</tbody>

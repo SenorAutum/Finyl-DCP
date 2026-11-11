@@ -664,6 +664,30 @@ def register_c2b_urls(creds: DarajaCreds | None = None, shortcode: str | None = 
     return {"request": payload, "response": resp.json()}
 
 
+def register_pull(creds: DarajaCreds, shortcode: str, nominated_number: str) -> dict:
+    """WP12: register a DCP number for Daraja Pull Transactions (once)."""
+    token = get_access_token(creds=creds)
+    payload = {"ShortCode": str(shortcode), "RequestType": "Pull",
+               "NominatedNumber": nominated_number,
+               "CallBackURL": callback_url("pull-callback")}
+    resp = httpx.post(f"{creds.base_url}/pulltransactions/v1/register",
+                      headers={"Authorization": f"Bearer {token}"}, json=payload, timeout=45)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def query_pull(creds: DarajaCreds, shortcode: str, start: str, end: str, offset: int = 0) -> dict:
+    """WP12: the C2B payments to `shortcode` between two Kenyan times
+    ('YYYY-MM-DD HH:MM:SS', at most 48 hours back), one page at a time."""
+    token = get_access_token(creds=creds)
+    payload = {"ShortCode": str(shortcode), "StartDate": start, "EndDate": end,
+               "OffSetValue": str(offset)}
+    resp = httpx.post(f"{creds.base_url}/pulltransactions/v1/query",
+                      headers={"Authorization": f"Bearer {token}"}, json=payload, timeout=60)
+    resp.raise_for_status()
+    return resp.json()
+
+
 def normalise_msisdn(phone: str) -> str:
     """Normalise a Kenyan mobile number to Daraja's 2547XXXXXXXX format."""
     digits = "".join(c for c in (phone or "") if c.isdigit())

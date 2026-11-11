@@ -1,4 +1,5 @@
 """WP11: bank statement import — preview, import, saved column layouts.
+WP12: also reads the M-Pesa business portal statement (missed paybill payments).
 
 The DCP uploads its bank statement (CSV or .xlsx). Preview shows what would
 happen to every line without saving anything. Import reads the file again
@@ -125,6 +126,9 @@ async def import_statement(request: Request, file: UploadFile = File(...),
         raise HTTPException(422, "leave_out must be line numbers separated by commas")
 
     label = " ".join((bank_account or "").split())[:60]
+    # WP12: an M-Pesa business portal statement records paybill payments.
+    mpesa_stmt = bs.clean_layout(chosen).get("kind") == "mpesa"
+    channel, source = ("mpesa_paybill", "mpesa_stmt") if mpesa_stmt else ("bank", "bank")
     applied, parked, to_suspense, left_out, outcome = 0, 0, 0, 0, []
     for ln in lines:
         if ln.status not in ("matched", "review"):
@@ -133,12 +137,13 @@ async def import_statement(request: Request, file: UploadFile = File(...),
             left_out += 1
             outcome.append({"line": ln.line, "result": "left out"})
             continue
-        note = f"Bank statement {file.filename or ''}" + (f" ({label})" if label else "") + \
-               f", line {ln.line}: {ln.description[:80]}"
+        note = (f"{'M-Pesa' if mpesa_stmt else 'Bank'} statement {file.filename or ''}"
+                + (f" ({label})" if label else "") + f", line {ln.line}: {ln.description[:80]}")
         if ln.status == "matched":
             loan = ln.match.loan
-            details = {"channel": "bank", "reference": ln.reference,
+            details = {"channel": channel, "reference": ln.reference,
                        "paid_at": ln.paid_at.isoformat(), "note": note,
+                       "payer_name": ln.payer_name, "payer_phone": ln.payer_phone,
                        "matched_by": ln.match.how, "source_endpoint": "bank_statement"}
             if rbac.requires_maker_checker(db, tenant_id, pay_appr.MANUAL_THRESHOLD, float(ln.amount)):
                 p = pay_appr.park_manual_payment(db, tenant_id=tenant_id, user=user, loan=loan,
@@ -157,8 +162,9 @@ async def import_statement(request: Request, file: UploadFile = File(...),
         else:
             entry = rp.record_suspense(
                 db, tenant_id=tenant_id, reason=ln.reason or "bank_unmatched", amount=ln.amount,
-                ref=ln.reference, suggested_loan_id=ln.match.suggested_loan_id, source="bank",
-                bill_ref=ln.description[:60] or None, paid_at=ln.paid_at,
+                ref=ln.reference, suggested_loan_id=ln.match.suggested_loan_id, source=source,
+                bill_ref=(ln.account or ln.description)[:60] or None, paid_at=ln.paid_at,
+                payer_name=ln.payer_name, phone=ln.payer_phone,
                 raw_payload={"file": file.filename, "line": ln.line, "bank_account": label,
                              "description": ln.description[:300]})
             db.flush()

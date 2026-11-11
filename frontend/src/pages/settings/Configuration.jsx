@@ -7,6 +7,7 @@ import { PageHeader, Spinner, Badge } from "../../components/ui";
 
 const TABS = [
   ["daraja", "M-Pesa / Daraja"],
+  ["banks", "Bank Notifications"],
   ["sms", "SMS Automation"],
   ["approvers", "Approver Tiers"],
   ["thresholds", "Maker-Checker Thresholds"],
@@ -28,6 +29,7 @@ export default function Configuration() {
         ))}
       </div>
       {tab === "daraja" && <DarajaTab />}
+      {tab === "banks" && <BanksTab />}
       {tab === "sms" && <SmsTab />}
       {tab === "approvers" && <ApproversTab />}
       {tab === "thresholds" && <ThresholdsTab />}
@@ -40,6 +42,135 @@ function Notice({ msg, tone = "ok" }) {
   if (!msg) return null;
   const cls = tone === "ok" ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700";
   return <div className={`rounded-lg px-3 py-2 text-sm mb-3 ${cls}`}>{msg}</div>;
+}
+
+// --------------------------------------------------------------------------- //
+// WP12: bank payment notifications — one set-up per bank account. Finyl gives a
+// private address to hand to the bank; the bank signs each message with the
+// agreed secret; the DCP says which field holds what.
+// --------------------------------------------------------------------------- //
+const BANK_FIELDS = [
+  ["reference", "Bank reference *", "e.g. transactionReference"],
+  ["amount", "Amount *", "e.g. amount or transaction.amount"],
+  ["date", "Date and time", "e.g. transactionDate"],
+  ["account", "Account the payer typed", "e.g. billNumber or customerReference"],
+  ["narrative", "Narrative", "e.g. narration"],
+  ["payer_name", "Payer name", "e.g. debitCustName"],
+  ["payer_phone", "Payer phone", "e.g. phoneNumber"],
+  ["direction", "Credit / debit flag (optional)", "e.g. transactionType"],
+];
+const emptyBank = { name: "", auth_mode: "hmac_sha256", auth_header: "X-Signature", secret: "",
+  allowed_ips: "", amount_in_cents: false, active: true, field_map: {} };
+
+function BanksTab() {
+  const [banks, setBanks] = useState(null);
+  const [edit, setEdit] = useState(null);           // { id?, ...form }
+  const [msg, setMsg] = useState(""); const [err, setErr] = useState("");
+  const [sample, setSample] = useState(""); const [test, setTest] = useState(null);
+  const load = () => api("/api/v1/settings/bank-notifications").then((d) => setBanks(d.banks)).catch((e) => setErr(e.detail));
+  useEffect(() => { load(); }, []);
+  if (!banks) return err ? <Notice msg={err} tone="bad" /> : <Spinner />;
+  const set = (k, v) => setEdit((f) => ({ ...f, [k]: v }));
+  const setField = (k, v) => setEdit((f) => ({ ...f, field_map: { ...f.field_map, [k]: v } }));
+  async function save() {
+    setErr(""); setMsg("");
+    try {
+      const body = { ...edit, allowed_ips: edit.allowed_ips };
+      const b = edit.id
+        ? await api(`/api/v1/settings/bank-notifications/${edit.id}`, { method: "PUT", body })
+        : await api("/api/v1/settings/bank-notifications", { method: "POST", body });
+      setMsg(`Saved. Give the bank this address: ${b.url}`);
+      setEdit(null); load();
+    } catch (e) { setErr(e.detail || "Save failed"); }
+  }
+  async function remove(b) {
+    if (!window.confirm(`Remove ${b.name}? Notifications from this bank will be refused.`)) return;
+    try { const d = await api(`/api/v1/settings/bank-notifications/${b.id}`, { method: "DELETE" }); setBanks(d.banks); }
+    catch (e) { setErr(e.detail || "Could not remove"); }
+  }
+  async function runTest(b) {
+    setTest(null); setErr("");
+    let parsed;
+    try { parsed = JSON.parse(sample); } catch { setErr("The sample is not valid JSON."); return; }
+    try { setTest({ bank: b.id, ...(await api(`/api/v1/settings/bank-notifications/${b.id}/test`, { method: "POST", body: { sample: parsed } })) }); }
+    catch (e) { setErr(e.detail || "Test failed"); }
+  }
+  return (
+    <div className="max-w-3xl space-y-4">
+      <Notice msg={msg} /><Notice msg={err} tone="bad" />
+      <div className="card p-5">
+        <h3 className="font-bold">Bank payment notifications</h3>
+        <p className="text-xs text-gray-500 mt-1">
+          Many banks can tell Finyl the moment money lands in your account. Add a set-up per bank account,
+          agree a shared secret with the bank, tell Finyl which field holds what, and give the bank the address
+          Finyl shows. Payments that name a loan account number or customer number are applied at once; the rest
+          go to the Suspense Account. The same bank reference is never counted twice.
+        </p>
+        <div className="mt-3 space-y-2">
+          {banks.length === 0 && <div className="text-sm text-gray-400">No bank set up yet.</div>}
+          {banks.map((b) => (
+            <div key={b.id} className="border border-border rounded-lg p-3">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div className="font-semibold">{b.name} {!b.active && <span className="text-xs text-gray-400">(off)</span>}</div>
+                <div className="space-x-1">
+                  <button className="btn-ghost text-xs" onClick={() => setEdit({ ...emptyBank, ...b, secret: "", allowed_ips: (b.allowed_ips || []).join(", ") })}>Edit</button>
+                  <button className="btn-ghost text-xs text-red-600" onClick={() => remove(b)}>Remove</button>
+                </div>
+              </div>
+              <div className="text-xs text-gray-500 mt-1 break-all">Address for the bank: <span className="font-mono">{b.url}</span></div>
+              <div className="text-xs text-gray-500">Proof: {b.auth_mode === "hmac_sha256" ? "HMAC-SHA256 signature" : "shared key"} in header {b.auth_header}{b.allowed_ips?.length ? ` · only from ${b.allowed_ips.join(", ")}` : ""}</div>
+              <div className="mt-2">
+                <textarea className="input font-mono text-xs" rows={3} placeholder='Paste a sample notification from the bank, e.g. {"transactionReference": "...", "amount": "1500.00", ...}'
+                  value={sample} onChange={(e) => setSample(e.target.value)} />
+                <button className="btn-ghost text-xs mt-1" onClick={() => runTest(b)}>Test with this sample (records nothing)</button>
+                {test?.bank === b.id && (
+                  <div className="text-xs mt-1 bg-canvas rounded p-2">
+                    Reference {test.reference || "—"} · amount {test.amount ?? "—"} · account {test.account || "—"} · payer {test.payer_name || "—"}
+                    <div className="font-semibold mt-1">Result: {test.result}</div>
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+        {!edit && <button className="btn-primary mt-3" onClick={() => setEdit({ ...emptyBank })}>Add a bank</button>}
+      </div>
+
+      {edit && (
+        <div className="card p-5 space-y-3">
+          <h3 className="font-bold">{edit.id ? `Edit ${edit.name}` : "Add a bank"}</h3>
+          <div className="grid sm:grid-cols-2 gap-3">
+            <div><label className="text-xs font-semibold text-gray-600">Name</label>
+              <input className="input" placeholder="e.g. Equity collections account" value={edit.name} onChange={(e) => set("name", e.target.value)} /></div>
+            <div><label className="text-xs font-semibold text-gray-600">How the bank proves it is the bank</label>
+              <select className="input" value={edit.auth_mode} onChange={(e) => { set("auth_mode", e.target.value); set("auth_header", e.target.value === "hmac_sha256" ? "X-Signature" : "X-Api-Key"); }}>
+                <option value="hmac_sha256">Signature (HMAC-SHA256 of the message)</option>
+                <option value="shared_key">Shared key in a header</option>
+              </select></div>
+            <div><label className="text-xs font-semibold text-gray-600">Header name</label>
+              <input className="input" value={edit.auth_header} onChange={(e) => set("auth_header", e.target.value)} /></div>
+            <div><label className="text-xs font-semibold text-gray-600">Shared secret {edit.secret_set ? "(set — leave blank to keep)" : "(at least 16 characters)"}</label>
+              <input className="input" type="password" autoComplete="new-password" value={edit.secret} onChange={(e) => set("secret", e.target.value)} /></div>
+            <div className="sm:col-span-2"><label className="text-xs font-semibold text-gray-600">Bank's internet addresses (optional, comma separated)</label>
+              <input className="input" placeholder="e.g. 196.201.214.0/24" value={edit.allowed_ips} onChange={(e) => set("allowed_ips", e.target.value)} /></div>
+          </div>
+          <div className="text-xs font-semibold text-gray-600 pt-2">Which field holds what (use dots for nested fields, e.g. transaction.amount)</div>
+          <div className="grid sm:grid-cols-2 gap-3">
+            {BANK_FIELDS.map(([k, label, ph]) => (
+              <div key={k}><label className="text-xs text-gray-600">{label}</label>
+                <input className="input font-mono text-xs" placeholder={ph} value={edit.field_map?.[k] || ""} onChange={(e) => setField(k, e.target.value)} /></div>
+            ))}
+          </div>
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={!!edit.amount_in_cents} onChange={(e) => set("amount_in_cents", e.target.checked)} /> The bank sends amounts in cents</label>
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={!!edit.active} onChange={(e) => set("active", e.target.checked)} /> Accept notifications from this bank</label>
+          <div className="flex gap-2 justify-end">
+            <button className="btn-ghost" onClick={() => setEdit(null)}>Cancel</button>
+            <button className="btn-primary" onClick={save}>Save</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 // --------------------------------------------------------------------------- //

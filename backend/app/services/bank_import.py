@@ -43,7 +43,9 @@ MAX_ROWS = 5000            # lines read from one file
 MAX_CREDITS = 2000         # money-in lines imported from one file
 MAX_FILE_BYTES = 10 * 1024 * 1024
 LAYOUTS_INTEGRATION = "bank_import_layouts"
-FIELDS = ("date", "description", "reference", "credit", "debit", "amount", "balance")
+FIELDS = ("date", "description", "reference", "credit", "debit", "amount", "balance",
+          "account", "payer", "status")      # WP12: account, payer, status (M-Pesa statements)
+KINDS = ("bank", "mpesa")
 
 
 class StatementError(ValueError):
@@ -197,7 +199,8 @@ def _read_xlsx(data: bytes) -> list[list[str]]:
 # --------------------------------------------------------------------------- #
 _SYNONYMS = {
     "date": ["transaction date", "trans date", "txn date", "tran date", "posting date",
-             "post date", "booking date", "date", "value date"],
+             "post date", "booking date", "completion time", "date", "value date",
+             "initiation time"],
     "description": ["description", "narrative", "narration", "particulars", "details",
                     "transaction details", "transaction description", "remarks", "memo"],
     "reference": ["reference", "ref", "ref no", "reference no", "reference number",
@@ -206,10 +209,15 @@ _SYNONYMS = {
     "credit": ["credit", "credits", "credit amount", "money in", "paid in", "amount in",
                "deposit", "deposits", "cr", "lodgement", "lodgements"],
     "debit": ["debit", "debits", "debit amount", "money out", "paid out", "amount out",
-              "withdrawal", "withdrawals", "dr"],
+              "withdrawal", "withdrawals", "dr", "withdrawn"],
     "amount": ["amount", "transaction amount", "amount kes", "kes amount"],
     "balance": ["balance", "running balance", "closing balance", "book balance",
                 "ledger balance", "available balance"],
+    # WP12: what the payer typed as the account (M-Pesa statements: "A/C No.").
+    "account": ["a c no", "ac no", "account no", "account number", "bill reference",
+                "bill ref number", "billrefnumber"],
+    "payer": ["other party info", "other party", "payer", "sender", "customer"],
+    "status": ["transaction status", "status"],
 }
 
 
@@ -221,17 +229,19 @@ def _guess(header: list[str]) -> dict:
     """{field: column heading} for the headings this row has."""
     normed = [_norm(h) for h in header]
     out, used = {}, set()
-    for fld in ("date", "credit", "debit", "amount", "balance", "reference", "description"):
-        for syn in _SYNONYMS[fld]:
-            hit = next((i for i, h in enumerate(normed) if h == syn and i not in used), None)
-            if hit is None:
-                hit = next((i for i, h in enumerate(normed)
-                            if i not in used and h and (h.startswith(syn + " ") or h.endswith(" " + syn))),
-                           None)
-            if hit is not None:
-                out[fld] = header[hit]
-                used.add(hit)
-                break
+    for fld in ("date", "credit", "debit", "amount", "account", "balance", "reference",
+                "status", "payer", "description"):
+        # An exact heading wins over one that only starts or ends with the word
+        # ("Receipt No." over "Linked Transaction ID" for the reference).
+        hit = next((i for syn in _SYNONYMS[fld] for i, h in enumerate(normed)
+                    if h == syn and i not in used), None)
+        if hit is None:
+            hit = next((i for syn in _SYNONYMS[fld] for i, h in enumerate(normed)
+                        if i not in used and h and (h.startswith(syn + " ") or h.endswith(" " + syn))),
+                       None)
+        if hit is not None:
+            out[fld] = header[hit]
+            used.add(hit)
     return out
 
 
@@ -241,7 +251,10 @@ def detect_layout(rows: list[list[str]]) -> dict:
     for i, row in enumerate(rows[:40]):
         g = _guess(row)
         if "date" in g and ("credit" in g or "amount" in g):
-            return {"header_row": i + 1, **g}
+            # WP12: the M-Pesa business portal statement (Receipt No., Paid In ...).
+            normed = {_norm(c) for c in row}
+            kind = "mpesa" if {"receipt no", "paid in"} <= normed else "bank"
+            return {"header_row": i + 1, "kind": kind, **g}
     raise StatementError("Could not find the column headings (a date column and a credit or amount "
                          "column). Choose the columns by hand.")
 
@@ -271,6 +284,8 @@ def clean_layout(layout: dict | None) -> dict:
         out["header_row"] = None
     order = str(layout.get("date_order") or "dmy").lower()
     out["date_order"] = order if order in ("dmy", "mdy", "ymd") else "dmy"
+    kind = str(layout.get("kind") or "bank").lower()
+    out["kind"] = kind if kind in KINDS else "bank"
     if not out["date"]:
         raise StatementError("Choose the date column.")
     if not (out["credit"] or out["amount"]):
@@ -408,6 +423,9 @@ class Line:
     amount: Decimal | None = None
     reason: str | None = None
     match: LineMatch = field(default_factory=LineMatch)
+    account: str = ""                    # WP12: what the payer typed as the account
+    payer_name: str | None = None
+    payer_phone: str | None = None
 
     def as_dict(self) -> dict:
         loan = self.match.loan
@@ -424,7 +442,8 @@ class Line:
                 "matched_by": self.match.how if loan is not None else None,
                 "loan_id": loan.id if loan is not None else None,
                 "account_number": loan.account_number if loan is not None else None,
-                "client": who,
+                "client": who, "account_entered": self.account or None,
+                "payer": " ".join(filter(None, [self.payer_phone, self.payer_name])) or None,
                 "suggested_loan_id": self.match.suggested_loan_id}
 
 
@@ -466,6 +485,11 @@ def analyse(db, tenant_id: int, rows: list[list[str]], layout: dict) -> list[Lin
         if not any(c.strip() for c in row):
             continue
         desc = " ".join(get("description").split())
+        state = get("status").strip().lower()
+        if state and state not in ("completed", "complete", "success", "successful"):
+            out.append(Line(line=i, status="skipped", description=desc,
+                            reason=f"transaction {state}"))
+            continue
         try:
             credit = parse_amount(get("credit")) if cols["credit"] is not None else None
             if credit is None and cols["amount"] is not None:
@@ -491,8 +515,10 @@ def analyse(db, tenant_id: int, rows: list[list[str]], layout: dict) -> list[Lin
             continue
         amount = money(credit)
         ref = _ref_for(get("reference"), paid_at, amount, desc, get("balance"))
+        payer_phone, payer_name = _payer(get("payer"))
         ln = Line(line=i, status="review", paid_at=paid_at, description=desc,
-                  reference=ref, amount=amount)
+                  reference=ref, amount=amount, account=get("account").strip(),
+                  payer_name=payer_name, payer_phone=payer_phone)
         if paid_at > now + timedelta(days=1):
             ln.status, ln.reason = "error", "date is in the future"
         elif ref in seen:
@@ -507,13 +533,44 @@ def analyse(db, tenant_id: int, rows: list[list[str]], layout: dict) -> list[Lin
                 if credits > MAX_CREDITS:
                     ln.status, ln.reason = "error", f"more than {MAX_CREDITS} money-in lines in one file"
                 else:
-                    ln.match = match_text(db, tenant_id, desc, get("reference"))
+                    ln.match = _match_line(db, tenant_id, ln, get("reference"))
                     if ln.match.loan is not None:
                         ln.status = "matched"
                     else:
                         ln.reason = ln.match.reason
         out.append(ln)
     return out
+
+
+def _payer(text) -> tuple[str | None, str | None]:
+    """'254712***678 - JANE WANJIKU' -> ('254712***678', 'JANE WANJIKU')."""
+    s = " ".join(str(text or "").split())
+    if not s:
+        return None, None
+    m = re.match(r"^\s*([0-9*xX#+ ]{6,20}?)\s*[-–:]\s*(.*)$", s)
+    if m:
+        return m.group(1).replace(" ", "")[:20] or None, (m.group(2).strip() or None)
+    return None, s[:120]
+
+
+def _match_line(db, tenant_id, ln: Line, reference: str) -> LineMatch:
+    """WP12: an account column (what the payer typed, as on a paybill) is
+    matched exactly like a paybill account number; otherwise the narrative is
+    searched. Unmatched lines get a suggestion from the payer's number and name."""
+    from app.services.payment_matching import match_reference, suggest_by_phone
+    from app.services.repayments import COLLECTIBLE_STATUSES
+    if ln.account:
+        m = match_reference(db, tenant_id, ln.account)
+        if m.loan is not None:
+            if m.loan.status not in COLLECTIBLE_STATUSES:
+                return LineMatch(reason="closed_loan", suggested_loan_id=m.loan.id)
+            return LineMatch(loan=m.loan, how=m.how)
+        if m.reason in ("no_open_loan", "ambiguous_customer"):
+            return LineMatch(reason=m.reason, suggested_loan_id=m.suggested_loan_id)
+    found = match_text(db, tenant_id, ln.description, reference)
+    if found.loan is None and not found.suggested_loan_id and ln.payer_phone:
+        found.suggested_loan_id = suggest_by_phone(db, tenant_id, ln.payer_phone, ln.payer_name)
+    return found
 
 
 def summary(lines: list[Line]) -> dict:

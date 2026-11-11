@@ -1,4 +1,5 @@
-// WP11: Bank statement import (not the per-client affordability statements under
+// WP11/WP12: Statement import — bank statements and M-Pesa paybill/till statements
+// (not the per-client affordability statements under
 // Collections). Upload the DCP's bank statement (CSV or .xlsx),
 // check what will happen to every money-in line, then import:
 //   * lines naming a loan account number or customer number are recorded as
@@ -15,9 +16,12 @@ import { Badge, Empty, PageHeader } from "../../components/ui";
 const kes = (n) => (n == null ? "—" : `KES ${Number(n).toLocaleString("en-KE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
 const FIELDS = [
   ["date", "Date", true], ["description", "Description / narrative", false],
-  ["reference", "Bank reference", false], ["credit", "Credit (money in)", false],
+  ["reference", "Reference (bank reference or M-Pesa receipt)", false], ["credit", "Credit (money in)", false],
   ["debit", "Debit (money out)", false], ["amount", "Amount (if no credit column)", false],
   ["balance", "Balance", false],
+  ["account", "Account number the payer typed (M-Pesa: A/C No.)", false],
+  ["payer", "Payer (M-Pesa: Other Party Info)", false],
+  ["status", "Transaction status", false],
 ];
 const STATUS = {
   matched: ["approved", "Matched"], review: ["overdue", "To review"],
@@ -102,10 +106,12 @@ export default function BankImport() {
 
   return (
     <div>
-      <PageHeader title="Bank Statement Import" crumbs={["Payments", "Bank Statement Import"]} />
+      <PageHeader title="Statement Import" crumbs={["Payments", "Statement Import"]} />
       <p className="text-sm text-gray-500 mb-4 max-w-3xl">
-        Upload your bank statement as CSV or Excel (.xlsx). Money-in lines that mention a loan account
-        number (e.g. FL/FY2026/12/34) or a customer number are recorded against that loan. Everything else
+        Upload a bank statement, or the statement of your paybill or till from the M-Pesa business portal,
+        as CSV or Excel (.xlsx). Money-in lines that mention a loan account number (e.g. FL/FY2026/12/34)
+        or a customer number are recorded against that loan. An M-Pesa statement catches paybill payments
+        whose notification never reached Finyl: its receipt numbers are the same, so nothing is counted twice. Everything else
         goes to the Suspense Account for someone to allocate. Importing the same statement twice records
         nothing twice. PDF and old .xls files cannot be read: download CSV or Excel from your bank, or
         open the file in Excel and save it as .xlsx.
@@ -145,6 +151,13 @@ export default function BankImport() {
               <label className="text-xs font-semibold text-gray-600">Headings are on line</label>
               <input className="input" type="number" min="1" value={layout?.header_row || ""}
                 onChange={(e) => setLayout((l) => ({ ...l, header_row: Number(e.target.value) || null }))} />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-gray-600">This is</label>
+              <select className="input" value={layout?.kind || "bank"} onChange={(e) => setLayout((l) => ({ ...l, kind: e.target.value }))}>
+                <option value="bank">A bank statement</option>
+                <option value="mpesa">An M-Pesa paybill / till statement</option>
+              </select>
             </div>
             <div>
               <label className="text-xs font-semibold text-gray-600">Dates are written</label>
@@ -213,6 +226,7 @@ export default function BankImport() {
                             <Badge value={tone}>{label}</Badge>
                             {l.status === "matched" && <div className="text-xs mt-1">{l.account_number} · {l.client} <span className="text-gray-400">(by {l.matched_by === "customer_number" ? "customer number" : "account number"})</span></div>}
                             {l.status === "review" && <div className="text-xs mt-1 text-amber-800">Suspense: {REASONS[l.reason] || l.reason}{l.suggested_loan_id ? ` · suggested loan #${l.suggested_loan_id}` : ""}</div>}
+                            {(l.account_entered || l.payer) && <div className="text-[11px] text-gray-400">{l.account_entered ? `account typed: ${l.account_entered}` : ""}{l.account_entered && l.payer ? " · " : ""}{l.payer || ""}</div>}
                             {["duplicate", "skipped", "error"].includes(l.status) && <div className="text-xs mt-1 text-gray-500">{l.reason}</div>}
                           </td>
                         </tr>
