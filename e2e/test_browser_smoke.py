@@ -36,7 +36,9 @@ PAGES = ["/", "/clients", "/borrowers", "/guarantors", "/loans", "/products", "/
          "/books/budgets", "/books/close", "/books/settings",
          # WP15: HR and payroll
          "/hr", "/hr/employees", "/hr/employees/1", "/hr/leave", "/hr/attendance", "/hr/payroll", "/hr/payroll/1",
-         "/hr/payslips/1", "/hr/p9/1", "/hr/appraisals", "/hr/settings", "/me/hr"]
+         "/hr/payslips/1", "/hr/p9/1", "/hr/appraisals", "/hr/settings", "/me/hr",
+         # WP16: lending additions
+         "/loan-requests", "/collateral", "/groups", "/groups/1", "/loans/1"]
 # Finyl-only pages, opened by the Finyl super admin.
 SUPER_PAGES = ["/admin", "/access/payments", "/access/backups", "/approver-config",
                # WP13: the Finyl command centre

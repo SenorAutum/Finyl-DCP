@@ -20,7 +20,7 @@ from app.services.authz import user_can
 
 # A loan in any of these states still counts as the client's open loan.
 OPEN_LOAN_STATUSES = ("pending", "underwriting", "approved", "active", "overdue",
-                      "defaulted", "disbursed", "arrears")
+                      "defaulted", "disbursed", "arrears", "written_off")
 
 
 def _reasons_text(decision) -> str:

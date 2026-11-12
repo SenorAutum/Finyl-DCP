@@ -16,7 +16,7 @@ from app.core.timeutil import UTCDateTime
 # successful Result it moves to "active"; on failure/timeout it reverts to
 # "approved" so it can be safely retried (see services/disbursement.py).
 LOAN_STATUSES = ["pending", "underwriting", "approved", "processing", "active",
-                 "paid", "overdue", "defaulted", "rejected"]
+                 "paid", "overdue", "defaulted", "rejected", "written_off"]
 
 # Reference lists surfaced to the UI (kept as text columns rather than DB enums so
 # a tenant can extend them without a migration).
@@ -191,6 +191,15 @@ class Loan(Base):
     # WP5 (F25): penalties added to the balance, so the balance can be checked.
     penalties_charged = Column(Numeric(12, 2), default=0)
     active_lock = Column(Boolean, nullable=False, default=False)  # Phase 2 (migration 021)
+    # WP16 (migration 045): write-off, waivers, rescheduling, top-ups, groups.
+    written_off_at = Column(UTCDateTime)
+    written_off_amount = Column(Numeric(12, 2), nullable=False, default=0)
+    interest_waived = Column(Numeric(12, 2), nullable=False, default=0)
+    fees_waived = Column(Numeric(12, 2), nullable=False, default=0)
+    restructure_count = Column(Integer, nullable=False, default=0)
+    restructured_at = Column(UTCDateTime)
+    topup_of_loan_id = Column(Integer, ForeignKey("loans.id"))
+    group_id = Column(Integer)
     loan_cycle_number = Column(Integer, default=1)   # borrower's Nth loan — drives impact survey gate
     created_at = Column(UTCDateTime, default=datetime.utcnow)
 

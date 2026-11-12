@@ -72,3 +72,7 @@ from app.models.books import (AccSettings, AccJournal, AccJournalLine, AccSuppli
 from app.models.hr import (HrSettings, HrEmployee, HrPayItem, HrLeaveType, HrLeaveBalance,  # noqa: E402
                            HrLeaveRequest, HrAttendance, HrDocument, HrAppraisal, HrPayrollRun,
                            HrPayslip)
+
+# ── WP16: lending additions ────────────────────────────────────────────────
+from app.models.lending_plus import (LoanAction, LoanCollateral, LendingGroup,  # noqa: E402
+                                     LendingGroupMember, LendingGroupMeeting)

@@ -584,6 +584,46 @@ def _seed_hr(db, mular, mk):
     db.commit()
 
 
+def _seed_lending_plus(db, mular):
+    """WP16 demo: a group with members and a meeting, collateral on a few
+    loans, a write-off request waiting for a second manager."""
+    from datetime import timedelta as _td
+    from app.models import (Borrower, LendingGroup, LendingGroupMeeting, LendingGroupMember, Loan, LoanCollateral,
+                            User as _U)
+    from app.services import lending_plus as LP, ledger
+    today = ledger.today()
+    clients = db.query(Borrower).filter(Borrower.tenant_id == mular.id).order_by(Borrower.id).limit(6).all()
+    if len(clients) >= 4:
+        g = LendingGroup(tenant_id=mular.id, code="GRP-0001", name="Umoja Women Self-Help Group",
+                         branch_id=clients[0].branch_id, meeting_day="Tuesday", meeting_frequency="weekly",
+                         meeting_place="Kawangware Social Hall", registration_no="SHG/NRB/2024/118",
+                         formed_on=today - _td(days=400), status="active")
+        db.add(g)
+        db.flush()
+        for i, c in enumerate(clients[:5]):
+            db.add(LendingGroupMember(tenant_id=mular.id, group_id=g.id, borrower_id=c.id,
+                                      role=["chair", "secretary", "treasurer", "member", "member"][i],
+                                      joined_on=today - _td(days=380), active=True))
+            for ln in db.query(Loan).filter(Loan.borrower_id == c.id, Loan.status.in_(("active", "overdue"))):
+                ln.group_id = g.id
+        db.add(LendingGroupMeeting(tenant_id=mular.id, group_id=g.id, held_on=today - _td(days=(today.weekday() - 1) % 7 or 7),
+                                   present=[c.id for c in clients[:4]], collected=12500,
+                                   notes="Two members paid in full; one asked for more time"))
+    for ln in db.query(Loan).filter(Loan.tenant_id == mular.id, Loan.status.in_(("active", "overdue"))).limit(3):
+        db.add(LoanCollateral(tenant_id=mular.id, borrower_id=ln.borrower_id, loan_id=ln.id, kind="business_equipment",
+                              description="Posho mill and generator", identifier=f"SN-{ln.id:05d}",
+                              estimated_value=float(ln.principal) * 2, forced_sale_value=float(ln.principal) * 1.2,
+                              valued_by="Branch manager", valued_on=today - _td(days=60), location="Client's shop",
+                              received_on=today - _td(days=60), status="held"))
+    bm = db.query(_U).filter(_U.tenant_id == mular.id, _U.role.in_(("branch_manager", "tenant_admin"))) \
+        .order_by(_U.role).first()
+    bad = (db.query(Loan).filter(Loan.tenant_id == mular.id, Loan.status.in_(("defaulted", "overdue")))
+           .order_by(Loan.due_date).first())
+    if bm and bad:
+        LP.request_action(db, mular.id, bad, "writeoff", {}, "No payment for over 180 days; client relocated, phone off", bm)
+    db.commit()
+
+
 def main(force=False):
     ensure_schema()
     _apply_migrations()
@@ -648,6 +688,7 @@ def main(force=False):
         _seed_command_centre(db, partner, mular, pesaf, jenga)
         _seed_books(db, mular, _mk)
         _seed_hr(db, mular, _mk)
+        _seed_lending_plus(db, mular)
 
         # Fill the KYC onboarding fields (ID details, wallets, next of kin)
         from app.seeds.client_kyc import enrich

@@ -7,6 +7,7 @@ import { Link, useParams } from "react-router-dom";
 import { api, fmtDate, fmtKES } from "../../lib/api";
 import { Badge, Modal, PageHeader, Spinner } from "../../components/ui";
 import { useAuth } from "../../hooks/useAuth";
+import LoanExtras from "./LoanExtras";
 
 // Lifecycle transitions still handled inline (approval/disbursement excluded).
 const NEXT = {
@@ -239,6 +240,8 @@ export default function LoanDetail() {
           </div>
         )}
       </div>
+
+      <LoanExtras loanId={loan.id} onChange={load} />
 
       {stk !== null && (
         <Modal title="Send STK Push (Collections)" onClose={() => setStk(null)}>

@@ -36,7 +36,7 @@ _ALIASES = {"dob": "date_of_birth"}
 # A client is record-locked while any of their loans is in one of these states:
 # approved (a payout is due to their number), on the books, or in default.
 LOCKING_LOAN_STATUSES = ("approved", "active", "overdue", "defaulted",
-                         "disbursed", "arrears")
+                         "disbursed", "arrears", "written_off")
 
 
 class EditRefused(ValueError):

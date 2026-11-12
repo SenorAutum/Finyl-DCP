@@ -91,6 +91,11 @@ PERMISSIONS = {
     "payroll.approve": "Approve payroll prepared by someone else (posts it to the books) and record payments",
     "appraisals.manage": "Write and share performance appraisals",
     "hr.self": "See your own payslips, leave and appraisals; apply for leave",
+    # WP16 — lending additions
+    "loans.waive": "Ask for and approve waivers of interest or fees (a second person approves)",
+    "loans.topup": "Start a top-up (a new loan that first settles the client's current loan)",
+    "collateral.manage": "Record and release collateral (logbooks, title deeds, equipment, savings)",
+    "groups.manage": "Create lending groups, add members and record meetings",
     # --- Phase 2 additive permissions ---------------------------------------
     # Guarantors
     "guarantors.manage": "Create / edit / validate guarantors and their documents",
@@ -280,6 +285,16 @@ for _role, _extra in {
     "director": {"accounting.view", "accounting.approve", "accounting.close"},
 }.items():
     ROLE_PERMISSIONS[_role] |= _extra
+# WP16 — lending additions.
+for _role, _extra in {
+    "relationship_officer": {"collateral.manage", "groups.manage", "loans.topup"},
+    "branch_manager": {"loans.waive", "collateral.manage", "groups.manage", "loans.topup"},
+    "regional_manager": {"loans.waive", "collateral.manage", "groups.manage"},
+    "hq_credit_committee": {"loans.waive"},
+    "director": {"loans.waive"},
+}.items():
+    ROLE_PERMISSIONS[_role] |= _extra
+
 # WP15 — HR roles.
 ROLE_PERMISSIONS["hr_manager"] = {
     "hr.view", "hr.manage", "leave.approve", "payroll.run", "appraisals.manage",
