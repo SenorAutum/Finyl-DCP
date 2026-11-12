@@ -38,7 +38,8 @@ from app.models import Loan, Repayment, SuspenseEntry, TenantIntegrationConfig
 
 logger = logging.getLogger("finyl.repayments")
 
-COLLECTIBLE_STATUSES = ("active", "overdue", "defaulted")
+# WP16: a written-off loan is still owed — what comes in afterwards is a recovery.
+COLLECTIBLE_STATUSES = ("active", "overdue", "defaulted", "written_off")
 ZERO = Decimal("0.00")
 
 # --------------------------------------------------------------------------- #
@@ -161,6 +162,8 @@ def owed_breakdown(db, loan: Loan) -> dict:
     principal_total = money(loan.principal or 0)
     interest_total = money(D(loan.principal or 0) * D(loan.interest_rate or 0) / Decimal(100))
 
+    # WP16: interest forgiven by an approved waiver is no longer owed.
+    interest_total = max(interest_total - money(getattr(loan, "interest_waived", 0) or 0), ZERO)
     principal_owed = max(principal_total - p_paid, ZERO)
     interest_owed = max(interest_total - i_paid, ZERO)
     fees_owed = outstanding - principal_owed - interest_owed
@@ -271,12 +274,14 @@ def payoff_quote(db, loan: Loan, on: date | datetime | None = None,
     interest_total = money(D(loan.principal or 0) * D(loan.interest_rate or 0) / Decimal(100))
     earned = money(interest_total * fraction)
     interest_paid = owed["interest_paid"]   # recorded split + any unsplit payments
-    earned_owed = earned - interest_paid
+    waived = money(getattr(loan, "interest_waived", 0) or 0)
+    earned_owed = earned - interest_paid - waived
     credit = ZERO
     if earned_owed < 0:
         # Interest already paid exceeds what has been earned (possible under the
-        # proportional split): the surplus counts towards the payoff.
-        credit, earned_owed = -earned_owed, ZERO
+        # proportional split): the surplus counts towards the payoff. A waiver
+        # never turns into money back.
+        credit, earned_owed = max(interest_paid - earned, ZERO), ZERO
     earned_owed = min(earned_owed, owed["interest"])
     rebate = money(owed["interest"] - earned_owed)
     raw = owed["principal"] + owed["fees"] + earned_owed - credit

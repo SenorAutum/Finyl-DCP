@@ -91,6 +91,10 @@ import HrPayroll, { P9, PayrollRun, Payslip } from "./pages/hr/Payroll";
 import HrAppraisals from "./pages/hr/Appraisals";
 import HrSettings from "./pages/hr/Settings";
 import MyHr from "./pages/hr/MyHr";
+// WP16 — lending additions
+import LoanRequests from "./pages/lending/LoanRequests";
+import CollateralPage from "./pages/lending/Collateral";
+import GroupsPage, { GroupDetail } from "./pages/lending/Groups";
 
 // Ordered fallbacks: first module the user can access becomes their home page.
 const HOME_ORDER = [
@@ -273,6 +277,10 @@ export default function App() {
             <Route path="/hr/appraisals" element={<PermGuard perms={["hr.view", "appraisals.manage"]}><HrAppraisals /></PermGuard>} />
             <Route path="/hr/settings" element={<PermGuard perms={["hr.view"]}><HrSettings /></PermGuard>} />
             <Route path="/me/hr" element={<PermGuard perms={["hr.self"]}><MyHr /></PermGuard>} />
+            <Route path="/loan-requests" element={<PermGuard perms={["loans.writeoff", "loans.waive"]}><LoanRequests /></PermGuard>} />
+            <Route path="/collateral" element={<Guard module="lending"><CollateralPage /></Guard>} />
+            <Route path="/groups" element={<Guard module="lending"><GroupsPage /></Guard>} />
+            <Route path="/groups/:id" element={<Guard module="lending"><GroupDetail /></Guard>} />
             <Route path="/complaints" element={<Guard module="complaints"><Complaints /></Guard>} />
             <Route path="/crm" element={<Guard module="crm"><Crm /></Guard>} />
             <Route path="/call-center" element={<Guard module="call_center"><CallCenter /></Guard>} />

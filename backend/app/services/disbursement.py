@@ -135,8 +135,17 @@ def execute_disbursement(db, tenant_id, loan: Loan, actor_user_id: int) -> dict:
     db.refresh(loan)
 
     snapshot = pricing.loan_snapshot(loan, loan.product)
-    loan.pricing_snapshot = snapshot
     amount = money(snapshot["payout_amount"])
+    if loan.topup_of_loan_id:
+        # WP16: a top-up first settles the old loan; only the rest is sent.
+        from app.services.lending_plus import topup_cash
+        try:
+            amount, settle = topup_cash(db, loan, amount)
+        except HTTPException:
+            db.rollback()
+            raise
+        snapshot = {**snapshot, "topup_settlement": float(settle), "cash_sent": float(amount)}
+    loan.pricing_snapshot = snapshot
     if amount <= 0:
         db.rollback()
         raise HTTPException(422, "Fees and excise duty leave nothing to pay out on this loan")
@@ -223,6 +232,10 @@ def apply_b2c_result(db, tenant_id, txn: PaymentTransaction, result_code, receip
         if loan is not None and loan.status == "processing":
             from app.services import pricing
             snapshot = pricing.loan_snapshot(loan, loan.product)
+            # WP16: keep the top-up settlement worked out at payout time.
+            for k in ("topup_settlement", "cash_sent"):
+                if k in (loan.pricing_snapshot or {}):
+                    snapshot = {**snapshot, k: loan.pricing_snapshot[k]}
             loan.pricing_snapshot = snapshot
             loan.status = "active"
             loan.disbursement_date = date.today()
@@ -248,6 +261,10 @@ def apply_b2c_result(db, tenant_id, txn: PaymentTransaction, result_code, receip
             log_money_event("disburse_settled", tenant_id=tenant_id, loan_id=loan.id,
                             amount=money(txn.amount), ref=txn.mpesa_ref,
                             detail=f"outstanding={loan.outstanding_balance}")
+            if loan.topup_of_loan_id:
+                # WP16: the part of the top-up kept back settles the old loan now.
+                from app.services.lending_plus import settle_old_loan
+                settle_old_loan(db, tenant_id, loan)
             try:
                 sms.sms_loan_disbursed(db, tenant_id, loan.borrower, loan)
             except Exception:

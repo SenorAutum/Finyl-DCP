@@ -57,6 +57,8 @@ def money_account(b: L.Books, method: str | None, source: str | None = None):
     m = (method or "").lower()
     if m == "suspense_allocation":
         return b.account("suspense")
+    if m == "topup" or (source or "") == "topup":
+        return b.account("mpesa_disbursement")      # kept back from a top-up payout
     if "cash" in m:
         return b.account("cash")
     if any(k in m for k in ("bank", "cheque", "eft", "rtgs", "pesalink")) or (source or "") in ("bank", "manual"):
@@ -122,6 +124,14 @@ def _post_repayment(db, b: L.Books, r: Repayment, loan: Loan | None):
     acct_no = getattr(loan, "account_number", f"#{r.loan_id}")
     desc = f"Repayment on {acct_no}"
     lines = [L.line(money_account(b, r.method), debit=amount, description=desc, **tags)]
+    written_off = getattr(loan, "written_off_at", None)
+    if written_off is not None and r.payment_date and r.payment_date >= written_off:
+        # WP16: the loan has left the books; whatever comes in now is a recovery.
+        lines.append(L.line(b.account("recoveries"), credit=amount, description="Recovery on a written-off loan", **tags))
+        return L.post_journal(db, b.tenant_id, entry_date=L.nairobi_date(r.payment_date),
+                              description=f"Recovery on written-off loan {acct_no}", lines=lines, kind="auto",
+                              source_type="repayment", source_id=r.id, branch_id=tags["branch_id"],
+                              reference=r.mpesa_ref, settings=b.settings, auto_date=True)
     if principal:
         lines.append(L.line(b.account("loan_book"), credit=principal, description="Principal", **tags))
     if interest:
@@ -141,6 +151,8 @@ def _post_repayment(db, b: L.Books, r: Repayment, loan: Loan | None):
 
 
 def _suspense_account(b, s: SuspenseEntry):
+    if (s.source or "") == "topup":
+        return b.account("mpesa_disbursement")
     return money_account(b, None, "bank" if (s.source or "") in ("bank", "manual") else "mpesa")
 
 
@@ -148,6 +160,18 @@ def _post_suspense_in(db, b, s: SuspenseEntry):
     amt = money(s.amount or 0)
     if amt <= 0:
         return None
+    if s.reason == "interest_refund_due":
+        # No money came in: interest booked when it was paid is now owed back to
+        # the borrower (early settlement, CBK LN 191/2026 reg. 56(4)).
+        desc = "Interest to refund after early settlement"
+        return L.post_journal(db, b.tenant_id, entry_date=L.nairobi_date(s.paid_at or s.created_at),
+                              description=desc,
+                              lines=[L.line(b.account("interest_income"), debit=amt, description=desc,
+                                            loan_id=s.matched_loan_id),
+                                     L.line(b.account("suspense"), credit=amt, description=desc,
+                                            loan_id=s.matched_loan_id)],
+                              kind="auto", source_type="suspense_in", source_id=s.id, reference=s.mpesa_ref,
+                              settings=b.settings, auto_date=True)
     desc = f"Payment not yet allocated ({s.reason})"
     return L.post_journal(db, b.tenant_id, entry_date=L.nairobi_date(s.paid_at or s.created_at),
                           description=desc,
