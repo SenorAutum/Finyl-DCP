@@ -60,3 +60,10 @@ from app.models.platform import (PlatformUserAccess, PlatformPricing, TenantBill
                                  PlatformUnmatchedPayment, PlatformFacility, PlatformDrawdown,
                                  PlatformLead, PlatformLeadEvent, PlatformAlert,
                                  PlatformAlertRecipient, PlatformTenantDaily)
+
+# ── WP14: ERP accounting ───────────────────────────────────────────────────
+from app.models.books import (AccSettings, AccJournal, AccJournalLine, AccSupplier,  # noqa: E402
+                              AccBill, AccBillLine, AccExpenseClaim, AccExpenseClaimLine,
+                              AccPaymentOut, AccAttachment, AccBankStatement, AccBankLine,
+                              AccBudget, AccBudgetLine, AccAssetCategory, AccAsset,
+                              AccDepreciationRun, AccDepreciationLine)

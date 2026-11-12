@@ -71,6 +71,17 @@ import PlatformLending from "./pages/platform/Lending";
 import PlatformPipeline from "./pages/platform/Pipeline";
 import PlatformAlerts from "./pages/platform/Alerts";
 import PlatformPeople from "./pages/platform/People";
+// WP14 — ERP accounting
+import BooksOverview from "./pages/books/Overview";
+import BooksJournals from "./pages/books/Journals";
+import BooksReports from "./pages/books/Reports";
+import BooksPayables from "./pages/books/Payables";
+import BooksClaims from "./pages/books/Claims";
+import BooksReconciliation from "./pages/books/Reconciliation";
+import BooksAssets from "./pages/books/Assets";
+import BooksBudgets from "./pages/books/Budgets";
+import BooksClose from "./pages/books/Close";
+import BooksSettings from "./pages/books/Settings";
 
 // Ordered fallbacks: first module the user can access becomes their home page.
 const HOME_ORDER = [
@@ -231,6 +242,16 @@ export default function App() {
             <Route path="/payments/bank-import" element={<Guard module="payments"><PermGuard perms={["payments.bank_import"]}><BankImport /></PermGuard></Guard>} />
             <Route path="/messaging/opt-outs" element={<PermGuard perms={["messaging.manage"]}><OptOuts /></PermGuard>} />
             <Route path="/accounting" element={<PermGuard perms={["accounting.export"]}><Accounting /></PermGuard>} />
+            <Route path="/books" element={<PermGuard perms={["accounting.view"]}><BooksOverview /></PermGuard>} />
+            <Route path="/books/journals" element={<PermGuard perms={["accounting.view"]}><BooksJournals /></PermGuard>} />
+            <Route path="/books/reports" element={<PermGuard perms={["accounting.view"]}><BooksReports /></PermGuard>} />
+            <Route path="/books/payables" element={<PermGuard perms={["accounting.view"]}><BooksPayables /></PermGuard>} />
+            <Route path="/books/claims" element={<PermGuard perms={["expenses.submit"]}><BooksClaims /></PermGuard>} />
+            <Route path="/books/reconciliation" element={<PermGuard perms={["accounting.view"]}><BooksReconciliation /></PermGuard>} />
+            <Route path="/books/assets" element={<PermGuard perms={["accounting.view"]}><BooksAssets /></PermGuard>} />
+            <Route path="/books/budgets" element={<PermGuard perms={["accounting.view"]}><BooksBudgets /></PermGuard>} />
+            <Route path="/books/close" element={<PermGuard perms={["accounting.view"]}><BooksClose /></PermGuard>} />
+            <Route path="/books/settings" element={<PermGuard perms={["accounting.view"]}><BooksSettings /></PermGuard>} />
             <Route path="/complaints" element={<Guard module="complaints"><Complaints /></Guard>} />
             <Route path="/crm" element={<Guard module="crm"><Crm /></Guard>} />
             <Route path="/call-center" element={<Guard module="call_center"><CallCenter /></Guard>} />

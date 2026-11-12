@@ -477,6 +477,17 @@ def run_weekly_summary():
         db.close()
 
 
+def run_books_autopost():
+    """WP14: every 10 minutes, post new loans, payments and Finyl invoices into
+    every DCP's books (one journal per record; safe to repeat)."""
+    from app.services import books_sources
+    db = SessionLocal()
+    try:
+        return books_sources.sync_all(db)
+    finally:
+        db.close()
+
+
 def run_mpesa_pull():
     """WP12: hourly, ask Safaricom for the last few hours of paybill and till
     payments and record any whose notification never arrived."""
@@ -717,6 +728,9 @@ def start_scheduler():
         sched.add_job(guarded("mpesa_pull", run_mpesa_pull), "cron", minute=20,
                       id="mpesa_pull", max_instances=1, coalesce=True,
                       replace_existing=True, timezone=tz)
+        sched.add_job(guarded("books_autopost", run_books_autopost, every_minutes=10), "interval",
+                      minutes=10, id="books_autopost", max_instances=1, coalesce=True,
+                      replace_existing=True)
         sched.add_job(guarded("purge_job_runs", purge_old_job_runs), "cron", hour=4, minute=30,
                       id="purge_job_runs", max_instances=1, coalesce=True,
                       replace_existing=True, timezone=tz)

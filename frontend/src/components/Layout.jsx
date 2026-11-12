@@ -74,10 +74,16 @@ const NAV = [
     { to: "/complaints", label: "Complaints", module: "complaints", icon: "⚠" },
     { to: "/impact", label: "Impact & Investors", module: "impact", icon: "🌱" },
   ]},
+  { group: "Accounting", items: [
+    { to: "/books", label: "Books", icon: "📗", module: "accounting", anyPerm: ["accounting.view"] },
+    { to: "/books/payables", label: "Bills & payments", icon: "🧾", module: "accounting", anyPerm: ["accounting.view"] },
+    { to: "/books/reports", label: "Financial statements", icon: "📑", module: "accounting", anyPerm: ["accounting.view"] },
+    { to: "/books/claims", label: "Expense claims", icon: "🧮", module: "accounting", anyPerm: ["expenses.submit"] },
+  ]},
   { group: "Reporting", items: [
     { to: "/reporting", label: "HQ Reporting", icon: "📊",
       anyPerm: ["reports.export", "reports.schedule", "reports.template", "reports.flag"] },
-    { to: "/accounting", label: "Accounting & GL", icon: "📒", anyPerm: ["accounting.export"] },
+    { to: "/accounting", label: "GL quick export", icon: "📒", anyPerm: ["accounting.export"] },
   ]},
   { group: "Messaging", items: [
     { to: "/messaging/opt-outs", label: "SMS Opt-Outs", icon: "🔕", anyPerm: ["messaging.manage"] },
@@ -182,7 +188,7 @@ export default function Layout() {
               <div className="px-2 pb-1 text-[10px] font-bold uppercase tracking-widest text-gray-400">{g.group}</div>
             )}
             {items.map((i) => (
-              <NavLink key={i.to} to={i.to} end={i.to === "/"} onClick={() => setOpen(false)}
+              <NavLink key={i.to} to={i.to} end={i.to === "/" || i.to === "/books"} onClick={() => setOpen(false)}
                 title={mini ? i.label : undefined} className={navClass(mini)}>
                 <span className="w-5 text-center text-base leading-none">{i.icon}</span>
                 {!mini && <span>{i.label}</span>}

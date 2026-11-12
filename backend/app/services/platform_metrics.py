@@ -227,7 +227,7 @@ def snapshot(db, day: date | None = None) -> dict:
     day = day or today_kenya()
     counts = recent_counts(db)
     n = 0
-    for t in db.query(Tenant).all():
+    for t in db.query(Tenant).filter(Tenant.is_internal.is_(False)).all():
         book = loan_book(db, t.id, day)
         f = flows(db, t.id, day, day)
         ops = operations(db, t.id)

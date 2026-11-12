@@ -11,7 +11,7 @@ compatible — none touch the existing money-movement, approval or lending table
 from datetime import datetime
 
 from sqlalchemy import (Boolean, Column, DateTime, ForeignKey, Integer, JSON,
-                        Numeric, String)
+                        Numeric, String, Text)
 
 from app.core.database import Base
 from app.core.timeutil import UTCDateTime
@@ -117,3 +117,10 @@ class ChartOfAccount(Base):
     name = Column(String(120), nullable=False)
     type = Column(String(12), nullable=False)   # asset | liability | income | expense | equity
     active = Column(Boolean, nullable=False, default=True)
+    # WP14 (migration 043): group used by the statements and cash-flow report,
+    # whether money sits in it (bank / M-Pesa / cash) and whether the system
+    # posts to it automatically (it can be renamed but not deleted or retyped).
+    subtype = Column(String(20))
+    is_cash = Column(Boolean, nullable=False, default=False)
+    is_system = Column(Boolean, nullable=False, default=False)
+    description = Column(Text)

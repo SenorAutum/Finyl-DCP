@@ -11,13 +11,14 @@ from app.core.timeutil import UTCDateTime
 MODULE_KEYS = [
     "lending", "payments", "dashboard", "complaints", "crm",
     "call_center", "impact", "cbk_reporting", "ai_agent",
+    "accounting",
 ]
 
 # WP7 (review 7.10): what a new DCP starts with. Everything else (CRM, call
 # centre, impact, CBK reporting, AI) is switched on by the Finyl super admin in
 # Super Admin -> modules once that DCP is ready for it. Complaints handling is
 # core because CBK consumer-protection rules require it from day one.
-CORE_MODULE_KEYS = ["lending", "payments", "dashboard", "complaints"]
+CORE_MODULE_KEYS = ["lending", "payments", "dashboard", "complaints", "accounting"]
 
 
 class Tenant(Base):
@@ -29,6 +30,8 @@ class Tenant(Base):
     logo_color = Column(String(16), default="#10B981")
     active = Column(Boolean, default=True)
     created_at = Column(UTCDateTime, default=datetime.utcnow)
+    # WP14: Finyl's own workspace (its books, staff). Kept out of DCP lists and billing.
+    is_internal = Column(Boolean, nullable=False, default=False)
 
     modules = relationship("TenantModule", back_populates="tenant", cascade="all, delete-orphan")
     users = relationship("User", back_populates="tenant")
