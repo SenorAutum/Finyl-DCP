@@ -82,6 +82,15 @@ import BooksAssets from "./pages/books/Assets";
 import BooksBudgets from "./pages/books/Budgets";
 import BooksClose from "./pages/books/Close";
 import BooksSettings from "./pages/books/Settings";
+// WP15 — HR and payroll
+import HrOverview from "./pages/hr/Overview";
+import HrEmployees, { EmployeeProfile } from "./pages/hr/Employees";
+import HrLeave from "./pages/hr/Leave";
+import HrAttendance from "./pages/hr/Attendance";
+import HrPayroll, { P9, PayrollRun, Payslip } from "./pages/hr/Payroll";
+import HrAppraisals from "./pages/hr/Appraisals";
+import HrSettings from "./pages/hr/Settings";
+import MyHr from "./pages/hr/MyHr";
 
 // Ordered fallbacks: first module the user can access becomes their home page.
 const HOME_ORDER = [
@@ -252,6 +261,18 @@ export default function App() {
             <Route path="/books/budgets" element={<PermGuard perms={["accounting.view"]}><BooksBudgets /></PermGuard>} />
             <Route path="/books/close" element={<PermGuard perms={["accounting.view"]}><BooksClose /></PermGuard>} />
             <Route path="/books/settings" element={<PermGuard perms={["accounting.view"]}><BooksSettings /></PermGuard>} />
+            <Route path="/hr" element={<PermGuard perms={["hr.view"]}><HrOverview /></PermGuard>} />
+            <Route path="/hr/employees" element={<PermGuard perms={["hr.view"]}><HrEmployees /></PermGuard>} />
+            <Route path="/hr/employees/:id" element={<PermGuard perms={["hr.view"]}><EmployeeProfile /></PermGuard>} />
+            <Route path="/hr/leave" element={<PermGuard perms={["hr.view", "leave.approve"]}><HrLeave /></PermGuard>} />
+            <Route path="/hr/attendance" element={<PermGuard perms={["hr.view"]}><HrAttendance /></PermGuard>} />
+            <Route path="/hr/payroll" element={<PermGuard perms={["hr.view"]}><HrPayroll /></PermGuard>} />
+            <Route path="/hr/payroll/:id" element={<PermGuard perms={["hr.view"]}><PayrollRun /></PermGuard>} />
+            <Route path="/hr/payslips/:id" element={<PermGuard perms={["hr.self"]}><Payslip /></PermGuard>} />
+            <Route path="/hr/p9/:id" element={<PermGuard perms={["hr.self"]}><P9 /></PermGuard>} />
+            <Route path="/hr/appraisals" element={<PermGuard perms={["hr.view", "appraisals.manage"]}><HrAppraisals /></PermGuard>} />
+            <Route path="/hr/settings" element={<PermGuard perms={["hr.view"]}><HrSettings /></PermGuard>} />
+            <Route path="/me/hr" element={<PermGuard perms={["hr.self"]}><MyHr /></PermGuard>} />
             <Route path="/complaints" element={<Guard module="complaints"><Complaints /></Guard>} />
             <Route path="/crm" element={<Guard module="crm"><Crm /></Guard>} />
             <Route path="/call-center" element={<Guard module="call_center"><CallCenter /></Guard>} />

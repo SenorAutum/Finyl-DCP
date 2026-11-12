@@ -162,6 +162,16 @@ POSTING_ROLES = {
     "platform_fees": ("6150", "expense", "Finyl platform invoices"),
     "sms_expense": ("6120", "expense", "SMS on Finyl invoices"),
     "platform_payment_account": ("1010", "asset", "Account Finyl invoices are paid from"),
+    # WP15 payroll
+    "salaries": ("6000", "expense", "Gross salaries and allowances"),
+    "employer_contributions": ("6010", "expense", "Employer NSSF, Housing Levy and NITA"),
+    "paye_payable": ("2200", "liability", "PAYE deducted, owed to KRA"),
+    "nssf_payable": ("2210", "liability", "NSSF (employee and employer), owed to NSSF"),
+    "shif_payable": ("2220", "liability", "SHIF deducted, owed to SHA"),
+    "housing_payable": ("2230", "liability", "Housing Levy (employee and employer), owed to KRA"),
+    "nita_payable": ("2240", "liability", "NITA levy, owed to NITA"),
+    "net_pay_payable": ("2250", "liability", "Net salaries not yet paid"),
+    "payroll_deductions": ("2260", "liability", "Other payroll deductions (SACCO, pension, insurance)"),
 }
 INTERNAL_ROLES = {
     "dcp_receivable": ("1210", "asset", "Invoices to DCPs"),

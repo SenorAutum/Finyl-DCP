@@ -33,7 +33,10 @@ PAGES = ["/", "/clients", "/borrowers", "/guarantors", "/loans", "/products", "/
          "/books", "/books/journals", "/books/reports", "/books/reports?tab=bs", "/books/reports?tab=cf",
          "/books/reports?tab=tb", "/books/reports?tab=aged", "/books/payables", "/books/payables?tab=payments",
          "/books/payables?tab=suppliers", "/books/claims", "/books/reconciliation", "/books/assets",
-         "/books/budgets", "/books/close", "/books/settings"]
+         "/books/budgets", "/books/close", "/books/settings",
+         # WP15: HR and payroll
+         "/hr", "/hr/employees", "/hr/employees/1", "/hr/leave", "/hr/attendance", "/hr/payroll", "/hr/payroll/1",
+         "/hr/payslips/1", "/hr/p9/1", "/hr/appraisals", "/hr/settings", "/me/hr"]
 # Finyl-only pages, opened by the Finyl super admin.
 SUPER_PAGES = ["/admin", "/access/payments", "/access/backups", "/approver-config",
                # WP13: the Finyl command centre
@@ -160,6 +163,30 @@ def test_accountant_works_in_the_books_and_officer_only_claims(browser):
         problems += _visit_all(o, ["/books/claims"])
         menu = {ln.strip() for ln in o.page.locator("aside").first.inner_text().splitlines()}
         assert "Expense claims" in menu and "Books" not in menu and "Financial statements" not in menu
+    finally:
+        o.close()
+    assert not problems, "\n" + "\n".join(problems)
+
+
+def test_hr_manager_and_staff_self_service(browser):
+    """WP15: HR sees the people screens; a loan officer sees only My HR, with
+    their own payslip and the leave they asked for."""
+    s = Session(browser, "hr@mularcredit.co.ke")
+    try:
+        problems = _visit_all(s, ["/hr", "/hr/employees", "/hr/leave", "/hr/payroll", "/hr/settings", "/me/hr"])
+        s.open("/hr/payroll")
+        assert s.page.get_by_text("paid").count(), "last month's payroll is not listed as paid"
+    finally:
+        s.close()
+    o = Session(browser, "officer@mularcredit.co.ke")
+    try:
+        problems += _visit_all(o, ["/me/hr"])
+        o.open("/me/hr")
+        menu = {ln.strip() for ln in o.page.locator("aside").first.inner_text().splitlines()}
+        assert "My HR" in menu and "Payroll" not in menu and "HR" not in menu
+        o.page.get_by_text("My payslips").click()
+        o.page.wait_for_timeout(800)
+        assert o.page.get_by_text("Open payslip").count() == 1, "the officer should see exactly one payslip"
     finally:
         o.close()
     assert not problems, "\n" + "\n".join(problems)

@@ -83,6 +83,14 @@ PERMISSIONS = {
     "accounting.close": "Run depreciation, loan-loss provision and month-end close; lock and reopen periods",
     "accounting.settings": "Chart of accounts, posting accounts, approval limits, suppliers' defaults, budgets",
     "expenses.submit": "Submit your own expense claims",
+    # WP15 — human resources and payroll
+    "hr.view": "View employee records, leave, attendance and payroll",
+    "hr.manage": "Add and edit employees, pay items, documents, attendance and leave types",
+    "leave.approve": "Approve or reject anyone's leave (managers can always decide for their own team)",
+    "payroll.run": "Prepare payroll, produce payslips, salary files and statutory returns",
+    "payroll.approve": "Approve payroll prepared by someone else (posts it to the books) and record payments",
+    "appraisals.manage": "Write and share performance appraisals",
+    "hr.self": "See your own payslips, leave and appraisals; apply for leave",
     # --- Phase 2 additive permissions ---------------------------------------
     # Guarantors
     "guarantors.manage": "Create / edit / validate guarantors and their documents",
@@ -272,10 +280,20 @@ for _role, _extra in {
     "director": {"accounting.view", "accounting.approve", "accounting.close"},
 }.items():
     ROLE_PERMISSIONS[_role] |= _extra
-# Every member of staff can claim their own expenses.
+# WP15 — HR roles.
+ROLE_PERMISSIONS["hr_manager"] = {
+    "hr.view", "hr.manage", "leave.approve", "payroll.run", "appraisals.manage",
+    "reports.export", "search.global",
+}
+for _role, _extra in {
+    "finance_manager": {"hr.view", "payroll.approve"},
+    "director": {"hr.view", "payroll.approve", "leave.approve", "appraisals.manage"},
+}.items():
+    ROLE_PERMISSIONS[_role] |= _extra
+# Every member of staff can claim their own expenses and see their own HR record.
 for _role, _perms in ROLE_PERMISSIONS.items():
     if WILDCARD not in _perms:
-        _perms.add("expenses.submit")
+        _perms.update({"expenses.submit", "hr.self"})
 
 # --- Backward-compatible legacy roles ---------------------------------------
 # tenant_admin keeps a broad superset so seeded data / existing demo logins keep
@@ -289,7 +307,7 @@ ROLE_PERMISSIONS["loan_officer"] = set(ROLE_PERMISSIONS["relationship_officer"])
 # give it portfolio-level read so it can look up clients it is calling.
 ROLE_PERMISSIONS["call_agent"] = {
     "clients.view_portfolio", "loans.view_portfolio", "dashboard.portfolio",
-    "expenses.submit",
+    "expenses.submit", "hr.self",
 }
 
 # Front-line roles whose data scope is pinned to their own staff record.
@@ -299,7 +317,7 @@ OFFICER_SCOPE_ROLES = {"relationship_officer", "loan_officer", "call_agent"}
 COMPANY_SCOPE_ROLES = {
     "super_admin", "tenant_admin", "system_admin",
     "disbursement_officer", "reconciliation_officer", "hq_operations",
-    "hq_credit_committee", "director", "accountant", "finance_manager",
+    "hq_credit_committee", "director", "accountant", "finance_manager", "hr_manager",
 }
 
 # Human-friendly labels for the UI.
@@ -320,6 +338,7 @@ ROLE_LABELS = {
     "platform_user": "Finyl staff / partner",
     "accountant": "Accountant",
     "finance_manager": "Finance Manager",
+    "hr_manager": "HR Manager",
 }
 
 # Roles that a System Administrator may assign to users within a tenant
@@ -329,7 +348,7 @@ ASSIGNABLE_ROLES = [
     "disbursement_officer", "reconciliation_officer", "hq_operations",
     "hq_credit_committee", "director",
     "tenant_admin", "loan_officer", "call_agent",
-    "accountant", "finance_manager",
+    "accountant", "finance_manager", "hr_manager",
 ]
 
 
