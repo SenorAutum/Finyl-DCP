@@ -114,10 +114,12 @@ def require_platform(perm: str):
 def check_tenant(acc: PlatformAccess, db, tenant_id: int) -> Tenant:
     """The DCP, if this person may see it; otherwise 404 (no hint it exists)."""
     tenant = db.get(Tenant, tenant_id)
-    if tenant is None or not acc.sees(tenant_id):
+    if tenant is None or getattr(tenant, "is_internal", False) or not acc.sees(tenant_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "DCP not found")
     return tenant
 
 
 def visible_tenants(acc: PlatformAccess, db) -> list[Tenant]:
-    return acc.tenant_filter(db.query(Tenant), Tenant.id).order_by(Tenant.name).all()
+    # WP14: Finyl's own workspace is not a DCP.
+    return (acc.tenant_filter(db.query(Tenant).filter(Tenant.is_internal.is_(False)), Tenant.id)
+            .order_by(Tenant.name).all())

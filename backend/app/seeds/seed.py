@@ -412,6 +412,88 @@ def _apply_migrations() -> None:
         raise SystemExit("Migrations failed; not seeding.")
 
 
+def _seed_books(db, mular, mk):
+    """WP14 demo: Finyl's own workspace, finance logins, and Mular Credit's books
+    (every loan and payment posted, a supplier bill paid, a laptop bought, a
+    staff expense claim waiting for approval)."""
+    from datetime import timedelta as _td
+    from app.models import AccSupplier, ChartOfAccount, TenantModule
+    from app.services import acc_ops, books_sources, ledger, payables
+
+    finyl = Tenant(name="Finyl (Afridon IT Solutions)", code="FINYL", logo_color="#0F172A", active=True,
+                   is_internal=True)
+    db.add(finyl)
+    db.flush()
+    for key in ("dashboard", "accounting"):
+        db.add(TenantModule(tenant_id=finyl.id, module_key=key, enabled=True))
+    accountant = mk("accountant@mularcredit.co.ke", "Grace Akinyi", "accountant", mular.id)
+    finance = mk("finance@mularcredit.co.ke", "Peter Mutua", "finance_manager", mular.id)
+    finyl_fin = mk("accounts@finyl.app", "Finyl Accounts (demo)", "finance_manager", finyl.id)
+    db.add_all([accountant, finance, finyl_fin])
+    db.commit()
+
+    for tid in (mular.id, finyl.id):
+        for _ in range(40):                 # posts in batches of 500 per kind
+            out = books_sources.sync(db, tid, limit=2000, force=True)
+            db.commit()
+            if not out.get("posted"):
+                break
+
+    b = ledger.Books(db, mular.id)
+    from sqlalchemy import func as _f
+    from app.models import Loan as _Loan
+    first = db.query(_f.min(_Loan.disbursement_date)).filter(_Loan.tenant_id == mular.id).scalar() or ledger.today()
+    capital = ledger.post_journal(db, mular.id, entry_date=first - _td(days=1), description="Share capital paid in by the owners",
+                                  lines=[ledger.line(b.account("bank"), debit=20000000),
+                                         ledger.line(db.query(ChartOfAccount).filter(ChartOfAccount.tenant_id == mular.id,
+                                                                                      ChartOfAccount.code == "3000").one(),
+                                                     credit=20000000)],
+                                  kind="manual", user=finance, reference="CAPITAL")
+    capital.approved_by_user_id = finance.id
+    # The DCP keeps its M-Pesa B2C float topped up from the bank (one entry for the demo).
+    b2c = b.account("mpesa_disbursement")
+    paid_out = -ledger.account_balance(db, mular.id, b2c.id)
+    if paid_out > 0:
+        top = ledger.post_journal(db, mular.id, entry_date=first, description="M-Pesa B2C float top-ups from the bank",
+                                  lines=[ledger.line(b2c, debit=paid_out + 50000), ledger.line(b.account("bank"), credit=paid_out + 50000)],
+                                  kind="manual", user=finance, reference="FLOAT")
+        top.approved_by_user_id = finance.id
+    acct = lambda code: db.query(ChartOfAccount).filter(ChartOfAccount.tenant_id == mular.id,  # noqa: E731
+                                                       ChartOfAccount.code == code).one()
+    today = ledger.today()
+    landlord = AccSupplier(tenant_id=mular.id, name="Kilimani Properties Ltd", kra_pin="P051234567X",
+                           payment_method="bank", bank_name="KCB", bank_account="1234567890",
+                           default_expense_account_id=acct("6100").id, wht_rate=0)
+    auditor = AccSupplier(tenant_id=mular.id, name="Kamau & Partners CPA", kra_pin="P052223334Y",
+                          payment_method="bank", default_expense_account_id=acct("6160").id, wht_rate=5)
+    db.add_all([landlord, auditor])
+    db.flush()
+    rent = payables.create_bill(db, mular.id, user=accountant, supplier=landlord, bill_date=today.replace(day=1),
+                                due_date=today.replace(day=5), supplier_ref="RENT-" + today.strftime("%b%y").upper(),
+                                description="Office rent", branch_id=None,
+                                lines=[{"account_id": acct("6100").id, "amount": 85000, "vat_rate": 16}])
+    payables.approve_bill(db, rent, finance)
+    payables.create_payment(db, mular.id, user=accountant, kind="bill", target_id=rent.id, amount=rent.total,
+                            paid_on=today.replace(day=1), account_id=b.account("bank").id, method="bank",
+                            reference="EFT-RENT", auto_approve=True)
+    payables.create_bill(db, mular.id, user=accountant, supplier=auditor, bill_date=today - _td(days=3),
+                         due_date=today + _td(days=27), supplier_ref="KP-2231", description="Audit fee (interim)",
+                         branch_id=None, lines=[{"account_id": acct("6160").id, "amount": 120000, "vat_rate": 16}])
+    acc_ops.ensure_categories(db, mular.id)
+    from app.models import AccAssetCategory, User as _U
+    comp = db.query(AccAssetCategory).filter(AccAssetCategory.tenant_id == mular.id,
+                                             AccAssetCategory.name.like("Computers%")).first()
+    acc_ops.register_asset(db, mular.id, user=accountant, category=comp, name="Laptops for loan officers (x4)",
+                           purchase_date=today.replace(day=1) - _td(days=45), in_service_date=None, cost=240000,
+                           funding="paid", paid_from_id=b.account("bank").id, custodian="IT desk")
+    officer = db.query(_U).filter(_U.email == "officer@mularcredit.co.ke").first()
+    if officer:
+        payables.create_claim(db, mular.id, user=officer, claim_date=today, description="Field visits, Kawangware",
+                              branch_id=None, lines=[{"account_id": acct("6130").id, "amount": 1800,
+                                                      "description": "Boda boda fares"}])
+    db.commit()
+
+
 def main(force=False):
     ensure_schema()
     _apply_migrations()
@@ -474,6 +556,7 @@ def main(force=False):
         db.add(partner)
         db.commit()
         _seed_command_centre(db, partner, mular, pesaf, jenga)
+        _seed_books(db, mular, _mk)
 
         # Fill the KYC onboarding fields (ID details, wallets, next of kin)
         from app.seeds.client_kyc import enrich

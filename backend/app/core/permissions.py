@@ -76,6 +76,13 @@ PERMISSIONS = {
     "reports.flag": "Flag data anomalies for Compliance",
     # Accounting
     "accounting.export": "Export the general ledger (double-entry) & view the Chart of Accounts",
+    # WP14 — the books (ERP accounting)
+    "accounting.view": "View the books: journals, ledgers, financial statements, payables, assets, budgets",
+    "accounting.post": "Enter journals, supplier bills and payments; import statements; register assets",
+    "accounting.approve": "Approve journals, bills, payments and expense claims entered by someone else",
+    "accounting.close": "Run depreciation, loan-loss provision and month-end close; lock and reopen periods",
+    "accounting.settings": "Chart of accounts, posting accounts, approval limits, suppliers' defaults, budgets",
+    "expenses.submit": "Submit your own expense claims",
     # --- Phase 2 additive permissions ---------------------------------------
     # Guarantors
     "guarantors.manage": "Create / edit / validate guarantors and their documents",
@@ -246,6 +253,30 @@ ROLE_PERMISSIONS = {
     },
 }
 
+# WP14 — finance roles for the books.
+ROLE_PERMISSIONS["accountant"] = {
+    "accounting.view", "accounting.post", "accounting.export", "accounting.close",
+    "reports.export", "dashboard.company", "loans.view_all", "clients.view_all",
+    "payments.bank_import", "search.global",
+}
+ROLE_PERMISSIONS["finance_manager"] = {
+    "accounting.view", "accounting.post", "accounting.approve", "accounting.close",
+    "accounting.settings", "accounting.export",
+    "reports.export", "reports.schedule", "dashboard.company", "loans.view_all", "clients.view_all",
+    "reconcile.approve", "refund.approve", "audit.view", "search.global",
+}
+for _role, _extra in {
+    "system_admin": {"accounting.view", "accounting.settings"},
+    "reconciliation_officer": {"accounting.view", "accounting.post"},
+    "hq_operations": {"accounting.view"},
+    "director": {"accounting.view", "accounting.approve", "accounting.close"},
+}.items():
+    ROLE_PERMISSIONS[_role] |= _extra
+# Every member of staff can claim their own expenses.
+for _role, _perms in ROLE_PERMISSIONS.items():
+    if WILDCARD not in _perms:
+        _perms.add("expenses.submit")
+
 # --- Backward-compatible legacy roles ---------------------------------------
 # tenant_admin keeps a broad superset so seeded data / existing demo logins keep
 # full function (everything except platform ownership).
@@ -258,6 +289,7 @@ ROLE_PERMISSIONS["loan_officer"] = set(ROLE_PERMISSIONS["relationship_officer"])
 # give it portfolio-level read so it can look up clients it is calling.
 ROLE_PERMISSIONS["call_agent"] = {
     "clients.view_portfolio", "loans.view_portfolio", "dashboard.portfolio",
+    "expenses.submit",
 }
 
 # Front-line roles whose data scope is pinned to their own staff record.
@@ -267,7 +299,7 @@ OFFICER_SCOPE_ROLES = {"relationship_officer", "loan_officer", "call_agent"}
 COMPANY_SCOPE_ROLES = {
     "super_admin", "tenant_admin", "system_admin",
     "disbursement_officer", "reconciliation_officer", "hq_operations",
-    "hq_credit_committee", "director",
+    "hq_credit_committee", "director", "accountant", "finance_manager",
 }
 
 # Human-friendly labels for the UI.
@@ -286,6 +318,8 @@ ROLE_LABELS = {
     "loan_officer": "Loan Officer (legacy)",
     "call_agent": "Call Agent",
     "platform_user": "Finyl staff / partner",
+    "accountant": "Accountant",
+    "finance_manager": "Finance Manager",
 }
 
 # Roles that a System Administrator may assign to users within a tenant
@@ -295,6 +329,7 @@ ASSIGNABLE_ROLES = [
     "disbursement_officer", "reconciliation_officer", "hq_operations",
     "hq_credit_committee", "director",
     "tenant_admin", "loan_officer", "call_agent",
+    "accountant", "finance_manager",
 ]
 
 

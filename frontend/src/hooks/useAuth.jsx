@@ -65,6 +65,7 @@ export function AuthProvider({ children }) {
     lending: ["clients.view_all", "clients.view_portfolio", "loans.view_all", "loans.view_portfolio"],
     payments: ["payments.upload", "disburse.execute", "reconcile.execute", "refund.execute"],
     impact: ["dashboard.company"],
+    accounting: ["accounting.view", "expenses.submit"],
   };
 
   // Role-based sidebar visibility (feature flags handled separately via user.modules).

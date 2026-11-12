@@ -15,6 +15,11 @@ const STATUS_STYLES = {
   sent: "bg-emerald-100 text-emerald-700", validated: "bg-emerald-100 text-emerald-700",
   draft: "bg-gray-200 text-gray-600", high: "bg-red-100 text-red-700",
   medium: "bg-amber-100 text-amber-700", low: "bg-gray-200 text-gray-600",
+  // WP14 books
+  posted: "bg-emerald-100 text-emerald-700", reversed: "bg-gray-200 text-gray-600",
+  part_paid: "bg-amber-100 text-amber-700", void: "bg-gray-200 text-gray-600",
+  submitted: "bg-blue-100 text-blue-700", matched: "bg-emerald-100 text-emerald-700",
+  disposed: "bg-gray-200 text-gray-600",
 };
 
 // A matching dot colour per status (softer accent for the optional indicator).

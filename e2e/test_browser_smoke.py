@@ -28,7 +28,12 @@ PAGES = ["/", "/clients", "/borrowers", "/guarantors", "/loans", "/products", "/
          "/face-validation", "/bank-statements", "/ratiba", "/search", "/security-config",
          "/validation-preferences", "/devices", "/otp-history", "/approvals", "/access/users",
          "/access/roles", "/access/org", "/access/thresholds", "/reporting", "/settings",
-         "/integrations", "/messaging", "/dcp-setup"]
+         "/integrations", "/messaging", "/dcp-setup",
+         # WP14: the books
+         "/books", "/books/journals", "/books/reports", "/books/reports?tab=bs", "/books/reports?tab=cf",
+         "/books/reports?tab=tb", "/books/reports?tab=aged", "/books/payables", "/books/payables?tab=payments",
+         "/books/payables?tab=suppliers", "/books/claims", "/books/reconciliation", "/books/assets",
+         "/books/budgets", "/books/close", "/books/settings"]
 # Finyl-only pages, opened by the Finyl super admin.
 SUPER_PAGES = ["/admin", "/access/payments", "/access/backups", "/approver-config",
                # WP13: the Finyl command centre
@@ -135,6 +140,28 @@ def test_loan_officer_menu_has_no_admin_sections(browser):
         problems = _visit_all(s, ["/", "/clients", "/loans"])
     finally:
         s.close()
+    assert not problems, "\n" + "\n".join(problems)
+
+
+def test_accountant_works_in_the_books_and_officer_only_claims(browser):
+    """WP14: the accountant sees the books; a loan officer only claims expenses."""
+    s = Session(browser, "accountant@mularcredit.co.ke")
+    try:
+        problems = _visit_all(s, ["/books", "/books/journals", "/books/reports", "/books/payables",
+                                  "/books/claims", "/books/assets", "/books/close"])
+        s.open("/books/reports?tab=bs")
+        assert s.page.get_by_text("Total assets").count(), "balance sheet did not render"
+        s.open("/books/claims")
+        assert s.page.get_by_text("Field visits, Kawangware").count(), "the officer's claim is not listed"
+    finally:
+        s.close()
+    o = Session(browser, "officer@mularcredit.co.ke")
+    try:
+        problems += _visit_all(o, ["/books/claims"])
+        menu = {ln.strip() for ln in o.page.locator("aside").first.inner_text().splitlines()}
+        assert "Expense claims" in menu and "Books" not in menu and "Financial statements" not in menu
+    finally:
+        o.close()
     assert not problems, "\n" + "\n".join(problems)
 
 

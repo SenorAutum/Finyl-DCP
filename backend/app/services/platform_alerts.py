@@ -159,7 +159,8 @@ def weekly_summary(db) -> dict:
     from app.services import mailer, platform_metrics as pm
     today = pm.today_kenya()
     start, end = today - _td(days=7), today - _td(days=1)
-    tenants = db.query(Tenant).filter(Tenant.active == True).order_by(Tenant.name).all()  # noqa: E712
+    tenants = (db.query(Tenant).filter(Tenant.active == True, Tenant.is_internal.is_(False))  # noqa: E712
+               .order_by(Tenant.name).all())
     rows = {}
     for t in tenants:
         book = pm.loan_book(db, t.id, end)
