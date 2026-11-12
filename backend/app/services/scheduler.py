@@ -415,6 +415,9 @@ def guarded(job_id: str, fn, every_minutes: int | None = None):
             except Exception as exc:        # jobs normally catch their own errors
                 status, detail = "failed", f"{type(exc).__name__}: {exc}"
                 logger.exception("scheduled_job_failed job=%s", job_id)
+                from app.services.platform_alerts import raise_alert      # WP13
+                raise_alert("job_failed", f"Background job '{job_id}' failed", severity="critical",
+                            key=job_id, detail=detail[:2000])
             try:
                 finish_run(db, run_id, status, detail)
             except Exception:
@@ -424,6 +427,54 @@ def guarded(job_id: str, fn, every_minutes: int | None = None):
             db.close()
     _run.__name__ = f"guarded_{job_id}"
     return _run
+
+
+def run_platform_daily():
+    """WP13: nightly figures per DCP (trends, month-end loan book for billing,
+    health alerts), then Finyl's overdue facilities and invoices."""
+    from app.services import platform_lending, platform_metrics
+    db = SessionLocal()
+    try:
+        out = platform_metrics.snapshot(db)
+        out.update(platform_lending.overdue_alerts(db))
+        db.commit()
+        return out
+    finally:
+        db.close()
+
+
+def run_platform_invoices():
+    """WP13: on the DCPs' invoice day, last month's invoices."""
+    from app.services import platform_billing
+    from app.services.platform_metrics import today_kenya
+    db = SessionLocal()
+    try:
+        if today_kenya().day != platform_billing.pricing(db).invoice_day:
+            db.rollback()
+            return {"skipped": "not the invoice day"}
+        return platform_billing.generate_due(db)
+    finally:
+        db.close()
+
+
+def run_alert_delivery():
+    """WP13: email (and SMS) new alerts to the people on Finyl's alert list."""
+    from app.services import platform_alerts
+    db = SessionLocal()
+    try:
+        return platform_alerts.deliver_pending(db)
+    finally:
+        db.close()
+
+
+def run_weekly_summary():
+    """WP13: Monday 07:15, last week's figures to the people on the alert list."""
+    from app.services import platform_alerts
+    db = SessionLocal()
+    try:
+        return platform_alerts.weekly_summary(db)
+    finally:
+        db.close()
 
 
 def run_mpesa_pull():
@@ -650,6 +701,18 @@ def start_scheduler():
                       replace_existing=True, timezone=tz)
         sched.add_job(guarded("report_schedules", run_report_schedules), "cron", minute=10,
                       id="report_schedules", max_instances=1, coalesce=True,
+                      replace_existing=True, timezone=tz)
+        sched.add_job(guarded("platform_daily", run_platform_daily), "cron", hour=0, minute=40,
+                      id="platform_daily", max_instances=1, coalesce=True,
+                      replace_existing=True, timezone=tz)
+        sched.add_job(guarded("platform_invoices", run_platform_invoices), "cron", hour=6, minute=10,
+                      id="platform_invoices", max_instances=1, coalesce=True,
+                      replace_existing=True, timezone=tz)
+        sched.add_job(guarded("alert_delivery", run_alert_delivery, every_minutes=2), "interval",
+                      minutes=2, id="alert_delivery", max_instances=1, coalesce=True,
+                      replace_existing=True)
+        sched.add_job(guarded("weekly_summary", run_weekly_summary), "cron", day_of_week="mon",
+                      hour=7, minute=15, id="weekly_summary", max_instances=1, coalesce=True,
                       replace_existing=True, timezone=tz)
         sched.add_job(guarded("mpesa_pull", run_mpesa_pull), "cron", minute=20,
                       id="mpesa_pull", max_instances=1, coalesce=True,

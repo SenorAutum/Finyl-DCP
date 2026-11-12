@@ -12,6 +12,15 @@ import GlobalSearch from "./GlobalSearch";
 // Nav items gate on a tenant module flag (`module`) and/or a permission key
 // (`perm` = require one, `anyPerm` = hold any of). Items with neither are always shown.
 const NAV = [
+  // WP13: Finyl's own screens. `platform` = a command-centre switch.
+  { group: "Finyl", items: [
+    { to: "/platform", label: "Command centre", icon: "🛰", platform: "platform.dashboard" },
+    { to: "/platform/billing", label: "Billing & revenue", icon: "🧾", platform: "platform.revenue" },
+    { to: "/platform/lending", label: "Loans to DCPs", icon: "🏦", platform: "platform.lending" },
+    { to: "/platform/pipeline", label: "Pipeline", icon: "🧭", platform: "platform.pipeline" },
+    { to: "/platform/alerts", label: "Alerts", icon: "🚨", platform: "platform.alerts" },
+    { to: "/platform/people", label: "Finyl people", icon: "🪪", platform: "platform.users_manage" },
+  ]},
   { group: "Overview", items: [
     { to: "/", label: "Dashboard", module: "dashboard", icon: "▦" },
     { to: "/dashboard/director", label: "Director View", icon: "📊", anyPerm: ["dashboard.company"] },
@@ -121,6 +130,8 @@ export default function Layout() {
     () => localStorage.getItem("finyl.sidebar.collapsed") === "1"
   );
   const isAdmin = user?.role === "super_admin";
+  const isFinylStaff = user?.role === "platform_user";
+  const hasSwitch = (p) => isAdmin || (user?.platform?.permissions || []).includes(p);
 
   useEffect(() => {
     if (isAdmin) api("/api/v1/auth/tenants").then(setTenants).catch(() => {});
@@ -133,7 +144,7 @@ export default function Layout() {
   // ⌘K / Ctrl+K opens the global search palette (component handles Esc to close).
   useEffect(() => {
     const h = (e) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k" && user?.role !== "platform_user") {
         e.preventDefault();
         setSearchOpen(true);
       }
@@ -157,7 +168,10 @@ export default function Layout() {
     <nav className={`flex-1 overflow-y-auto pb-4 space-y-4 ${mini ? "px-2" : "px-3"}`}>
       {NAV.map((g) => {
         if (g.superOnly && !isAdmin) return null;
+        // Finyl staff and partners belong to no DCP: only the Finyl group.
+        if (isFinylStaff && g.group !== "Finyl") return null;
         const items = g.items.filter((i) =>
+          (i.platform ? hasSwitch(i.platform) : true) &&
           (i.module ? canAccess(i.module) : true) &&
           (i.perm ? can(i.perm) : true) &&
           (i.anyPerm ? can(...i.anyPerm) : true));
@@ -250,15 +264,15 @@ export default function Layout() {
         <header className="sticky top-0 z-30 bg-surface/90 backdrop-blur border-b border-border px-4 py-3 flex items-center gap-3">
           <button className="lg:hidden btn-ghost !px-2.5" onClick={() => setOpen(true)}>☰</button>
           {/* Global search launcher (⌘K) */}
-          <button
+          {!isFinylStaff && <button
             onClick={() => setSearchOpen(true)}
             className="hidden md:flex items-center gap-2 w-72 max-w-full rounded-xl border border-border bg-canvas px-3 py-1.5 text-gray-400 hover:border-accent/40 transition-colors"
           >
             <span className="text-sm leading-none">🔍</span>
             <span className="flex-1 text-left text-sm">Search…</span>
             <kbd className="text-[10px] font-semibold border border-border rounded px-1.5 py-0.5">⌘K</kbd>
-          </button>
-          <button className="md:hidden btn-ghost !px-2.5" onClick={() => setSearchOpen(true)}>🔍</button>
+          </button>}
+          {!isFinylStaff && <button className="md:hidden btn-ghost !px-2.5" onClick={() => setSearchOpen(true)}>🔍</button>}
           <div className="flex-1" />
           {isAdmin && tenants.length > 0 && (
             <select className="input !w-auto text-sm" value={user?.tenant_id || ""}
@@ -271,7 +285,7 @@ export default function Layout() {
           )}
           <div className="text-right hidden sm:block">
             <div className="text-sm font-semibold leading-tight">{user?.full_name}</div>
-            <div className="text-[11px] text-gray-400 capitalize">{user?.role?.replace("_", " ")}</div>
+            <div className="text-[11px] text-gray-400">{user?.platform?.title || user?.role_label || user?.role?.replace("_", " ")}</div>
           </div>
           <div
             className="hidden sm:flex w-9 h-9 rounded-full bg-brand-gradient text-white items-center justify-center text-xs font-bold shrink-0"

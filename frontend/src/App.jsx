@@ -62,6 +62,15 @@ import Ratiba from "./pages/collections/Ratiba";
 import SearchResults from "./pages/search/SearchResults";
 import ValidationPrefs from "./pages/admin/ValidationPrefs";
 import { Spinner } from "./components/ui";
+import Toaster from "./components/Toaster";
+// WP13: the Finyl command centre.
+import CommandCentre from "./pages/platform/CommandCentre";
+import DcpDetail from "./pages/platform/DcpDetail";
+import PlatformBilling from "./pages/platform/Billing";
+import PlatformLending from "./pages/platform/Lending";
+import PlatformPipeline from "./pages/platform/Pipeline";
+import PlatformAlerts from "./pages/platform/Alerts";
+import PlatformPeople from "./pages/platform/People";
 
 // Ordered fallbacks: first module the user can access becomes their home page.
 const HOME_ORDER = [
@@ -133,13 +142,50 @@ function PermGuard({ perms, children }) {
   return children;
 }
 
+// WP13: Finyl screens, gated on the person's command-centre switches.
+function PlatformGuard({ perm, children }) {
+  const { user, loading } = useAuth();
+  if (loading) return <div className="min-h-screen flex items-center justify-center"><Spinner /></div>;
+  if (!user) return <Navigate to="/login" replace />;
+  const ok = user.role === "super_admin" || (user.platform?.permissions || []).includes(perm);
+  if (!ok) {
+    return (
+      <div className="card p-8 text-center max-w-md mx-auto mt-10">
+        <div className="text-3xl mb-2">🔒</div>
+        <h2 className="font-bold text-lg">Access denied</h2>
+        <p className="text-sm text-gray-400 mt-1">This Finyl screen is not switched on for you. Ask the Finyl super admin.</p>
+      </div>
+    );
+  }
+  return children;
+}
+
+function platformHome(user) {
+  const perms = user.platform?.permissions || [];
+  const order = [["platform.dashboard", "/platform"], ["platform.revenue", "/platform/billing"],
+    ["platform.lending", "/platform/lending"], ["platform.pipeline", "/platform/pipeline"],
+    ["platform.alerts", "/platform/alerts"], ["platform.users_manage", "/platform/people"]];
+  const hit = order.find(([p]) => perms.includes(p));
+  return hit ? hit[1] : null;
+}
+
 function HomeRedirect() {
   const { user, loading, canAccess, can } = useAuth();
   if (loading) return <div className="min-h-screen flex items-center justify-center"><Spinner /></div>;
   if (!user) return <Navigate to="/login" replace />;
-  // Super-admin lands on the platform command centre (all tenants), NOT the
-  // per-tenant executive dashboard.
-  if (user.role === "super_admin") return <SuperAdminDashboard />;
+  // Super-admin lands on the Finyl command centre (all tenants), NOT the
+  // per-tenant executive dashboard (WP13).
+  if (user.role === "super_admin") return <CommandCentre />;
+  // Finyl staff and partners belong to no DCP: their first permitted Finyl screen.
+  if (user.role === "platform_user") {
+    const home = platformHome(user);
+    return home ? <Navigate to={home} replace /> : (
+      <div className="card p-8 text-center max-w-md mx-auto mt-10">
+        <h2 className="font-bold text-lg">Nothing switched on yet</h2>
+        <p className="text-sm text-gray-400 mt-1">Ask the Finyl super admin to give you access.</p>
+      </div>
+    );
+  }
   if (canAccess("dashboard")) {
     // A relationship/loan officer sees their OWN portfolio (their clients +
     // onboarding + loan statuses); everyone else keeps the executive view.
@@ -163,6 +209,7 @@ function Shell() {
 export default function App() {
   return (
     <AuthProvider>
+      <Toaster />
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<Login />} />
@@ -223,6 +270,15 @@ export default function App() {
             <Route path="/reporting" element={<PermGuard perms={["reports.export", "reports.schedule", "reports.template", "reports.flag"]}><Reporting /></PermGuard>} />
             {/* Per-DCP configuration — DCP's own admin (system_admin holds thresholds.manage) */}
             <Route path="/settings" element={<PermGuard perms={["thresholds.manage"]}><Configuration /></PermGuard>} />
+            {/* WP13: Finyl command centre */}
+            <Route path="/platform" element={<PlatformGuard perm="platform.dashboard"><CommandCentre /></PlatformGuard>} />
+            <Route path="/platform/dcp/:id" element={<PlatformGuard perm="platform.dashboard"><DcpDetail /></PlatformGuard>} />
+            <Route path="/platform/billing" element={<PlatformGuard perm="platform.revenue"><PlatformBilling /></PlatformGuard>} />
+            <Route path="/platform/lending" element={<PlatformGuard perm="platform.lending"><PlatformLending /></PlatformGuard>} />
+            <Route path="/platform/pipeline" element={<PlatformGuard perm="platform.pipeline"><PlatformPipeline /></PlatformGuard>} />
+            <Route path="/platform/alerts" element={<PlatformGuard perm="platform.alerts"><PlatformAlerts /></PlatformGuard>} />
+            <Route path="/platform/people" element={<PlatformGuard perm="platform.users_manage"><PlatformPeople /></PlatformGuard>} />
+            <Route path="/platform/classic" element={<AdminGuard><SuperAdminDashboard /></AdminGuard>} />
             <Route path="/admin" element={<AdminGuard><Admin /></AdminGuard>} />
             <Route path="/integrations" element={<AdminGuard><Integrations /></AdminGuard>} />
             <Route path="/approver-config" element={<AdminGuard><ApproverConfig /></AdminGuard>} />

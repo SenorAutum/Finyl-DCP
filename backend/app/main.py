@@ -28,6 +28,7 @@ from app.routers import (guarantors, kyc_escalations, face_validation,
                          validation_prefs, field_ops, security_config, activity,
                          collections, third_party, client_edits, search)
 from app.routers import bank_import  # WP11
+from app.routers import platform as finyl_platform  # WP13
 
 # OPS-01: configure structured stdout/journald logging before the app is built.
 configure_logging()
@@ -124,6 +125,27 @@ async def enforce_password_reset(request: Request, call_next):
 # gives an immutable, tamper-evident trail of who changed what (CBK mandate).
 # It runs AFTER the handler so the real response status is captured, and never
 # blocks or fails the underlying request.
+@app.exception_handler(Exception)
+async def _unexpected_error_handler(request: Request, exc: Exception):
+    """WP13: an error nobody planned for. The person sees a plain message with a
+    reference they can quote; Finyl gets an alert with the details (never the
+    request body, which may hold personal data)."""
+    import logging
+    import re
+    import uuid
+    from app.services.platform_alerts import raise_alert
+    ref = uuid.uuid4().hex[:8].upper()
+    route = re.sub(r"/\d+(?=/|$)", "/{id}", request.url.path)     # one alert per endpoint, not per record
+    logging.getLogger("finyl.errors").exception("unexpected_error ref=%s path=%s", ref, request.url.path)
+    raise_alert("server_error", f"Unexpected error on {request.method} {route}",
+                severity="critical", key=f"{request.method} {route}"[:150],
+                detail=f"Reference {ref}: {type(exc).__name__}: {str(exc)[:1500]}")
+    return JSONResponse(status_code=500, content={"detail": {
+        "code": "server_error", "error_id": ref,
+        "message": f"Something went wrong on our side and it has been reported (reference {ref}). "
+                   "Please try again in a few minutes."}})
+
+
 @app.exception_handler(OwnershipError)
 async def _ownership_error_handler(request: Request, exc: OwnershipError):
     """A reference to a record outside the caller's tenant looks exactly like a
@@ -226,7 +248,9 @@ for r in (auth, admin, clients, lending, payments, notifications, dashboard,
           field_ops, security_config, activity, collections, third_party,
           search,
           # WP11
-          bank_import):
+          bank_import,
+          # WP13 — Finyl command centre
+          finyl_platform):
     app.include_router(r.router)
 
 # Phase 2 secondary routers (cross-prefix / distinct-auth endpoints).

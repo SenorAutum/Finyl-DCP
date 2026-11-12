@@ -643,6 +643,12 @@ def _process_c2b_callback(db, body) -> tuple[dict, int | None]:
 
     if shortcode:
         tenant_id = ws.shortcode_to_tenant(db, shortcode)
+        if tenant_id is None and settings.FINYL_PAYBILL and shortcode == settings.FINYL_PAYBILL.strip():
+            # WP13: a DCP paying Finyl itself (loan facility or invoice).
+            from app.services import platform_lending
+            platform_lending.apply_finyl_paybill(db, body)
+            db.commit()
+            return {"ResultCode": 0, "ResultDesc": "Confirmation received successfully"}, None
         if tenant_id is None:
             raise ws.WebhookUnresolved(f"paybill {shortcode} is not registered to any DCP")
     else:
@@ -926,6 +932,11 @@ async def bank_notification(key: str, request: Request, db: Session = Depends(ge
     why = bn.verify(bank, secret, raw, request.headers, client_ip(request))
     if why:
         logger.warning("bank_ipn_refused tenant_id=%s bank=%s: %s", tenant_id, bank.get("name"), why)
+        from app.services.platform_alerts import raise_alert              # WP13
+        raise_alert("bank_notice_refused", f"A notification for {bank.get('name')} was refused",
+                    severity="warning", tenant_id=tenant_id, key=bank.get("id"),
+                    detail=f"Reason: {why}. If this is the bank, check the shared secret, the "
+                           f"header name and the allowed addresses in DCP Configuration.")
         raise HTTPException(401, f"Not accepted: {why}")
     try:
         payload = json.loads(raw or b"{}")

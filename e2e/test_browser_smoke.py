@@ -30,7 +30,10 @@ PAGES = ["/", "/clients", "/borrowers", "/guarantors", "/loans", "/products", "/
          "/access/roles", "/access/org", "/access/thresholds", "/reporting", "/settings",
          "/integrations", "/messaging", "/dcp-setup"]
 # Finyl-only pages, opened by the Finyl super admin.
-SUPER_PAGES = ["/admin", "/access/payments", "/access/backups", "/approver-config"]
+SUPER_PAGES = ["/admin", "/access/payments", "/access/backups", "/approver-config",
+               # WP13: the Finyl command centre
+               "/platform", "/platform/dcp/1", "/platform/billing", "/platform/lending",
+               "/platform/pipeline", "/platform/alerts", "/platform/people", "/platform/classic"]
 
 
 @pytest.fixture(scope="module")
@@ -130,6 +133,26 @@ def test_loan_officer_menu_has_no_admin_sections(browser):
         for hidden in ("Staff & Access", "Security Config", "Device Management", "Payment Upload"):
             assert hidden not in menu, f"loan officer can see '{hidden}'"
         problems = _visit_all(s, ["/", "/clients", "/loans"])
+    finally:
+        s.close()
+    assert not problems, "\n" + "\n".join(problems)
+
+
+def test_finyl_partner_sees_only_finyl_screens_for_their_dcps(browser):
+    """WP13: the demo partner (director@finyl.app) is given Mular Credit only."""
+    s = Session(browser, "director@finyl.app")
+    try:
+        problems = _visit_all(s, ["/", "/platform", "/platform/dcp/1", "/platform/billing",
+                                  "/platform/lending", "/platform/pipeline", "/platform/alerts"])
+        s.open("/platform")
+        menu = {ln.strip() for ln in s.page.locator("aside").first.inner_text().splitlines()}
+        for hidden in ("Clients", "Loans", "Staff & Access", "Finyl people", "Super Admin"):
+            assert hidden not in menu, f"partner can see '{hidden}'"
+        assert "Command centre" in menu
+        table = s.page.locator("table").first.inner_text()
+        assert "Mular" in table and "PesaFlow" not in table and "Jenga" not in table
+        s.open("/platform/dcp/2")
+        assert s.page.get_by_text("not found", exact=False).count(), "partner opened a DCP not given to them"
     finally:
         s.close()
     assert not problems, "\n" + "\n".join(problems)
