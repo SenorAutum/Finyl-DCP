@@ -494,6 +494,96 @@ def _seed_books(db, mular, mk):
     db.commit()
 
 
+def _seed_hr(db, mular, mk):
+    """WP15 demo: an HR manager, employees from Mular's staff records (logins
+    linked), last month's payroll approved and paid, a leave request waiting."""
+    import random as _r
+    from datetime import date as _date, timedelta as _td
+    from app.models import HrEmployee, HrLeaveRequest, HrLeaveType, HrPayItem, TenantModule, User as _U
+    from app.services import hr as H, ledger, payroll as P
+
+    finyl = db.query(Tenant).filter(Tenant.code == "FINYL").first()
+    if finyl and not db.query(TenantModule).filter(TenantModule.tenant_id == finyl.id,
+                                                   TenantModule.module_key == "hrm").first():
+        db.add(TenantModule(tenant_id=finyl.id, module_key="hrm", enabled=True))
+    hrm = mk("hr@mularcredit.co.ke", "Mercy Wambui", "hr_manager", mular.id)
+    db.add(hrm)
+    db.commit()
+    H.ensure_leave_types(db, mular.id)
+    rng = _r.Random(15)
+    users_by_staff = {u.staff_id: u for u in db.query(_U).filter(_U.tenant_id == mular.id, _U.staff_id.isnot(None))}
+    others = {u.email: u for u in db.query(_U).filter(_U.tenant_id == mular.id)}
+    today = ledger.today()
+    managers = {}
+    staff = db.query(Staff).filter(Staff.tenant_id == mular.id).order_by(Staff.id).all()
+    female = set(FIRST_F) | {"Mercy", "Grace", "Cynthia", "Faith"}
+    for st in staff:
+        login = users_by_staff.get(st.id)
+        first, _, last = (login.full_name if login else st.name).partition(" ")
+        e = HrEmployee(tenant_id=mular.id, employee_no=H.next_employee_no(db, mular.id), first_name=first,
+                       last_name=last or first, staff_id=st.id, branch_id=st.branch_id,
+                       job_title={"loan_officer": "Loan Officer", "call_agent": "Call Centre Agent",
+                                  "branch_manager": "Branch Manager"}.get(st.role, st.role.replace("_", " ").title()),
+                       department="Operations" if st.role != "call_agent" else "Customer Care",
+                       employment_type="permanent", hire_date=st.hire_date or _date(2024, 1, 15),
+                       basic_salary=st.salary or 40000, pay_method=rng.choice(["bank", "bank", "mpesa"]),
+                       bank_name="Equity Bank", bank_branch="Kenyatta Avenue",
+                       bank_account=f"01802{rng.randint(10**7, 10**8 - 1)}", mpesa_phone=f"07{rng.randint(10**7, 10**8 - 1)}",
+                       kra_pin=f"A{rng.randint(10**8, 10**9 - 1)}{chr(65 + rng.randint(0, 25))}",
+                       national_id=str(rng.randint(2 * 10**7, 4 * 10**7)), nssf_no=str(rng.randint(10**8, 10**9)),
+                       shif_no=f"CR{rng.randint(10**9, 10**10)}", gender="female" if first in female else "male",
+                       date_of_birth=_date(rng.randint(1975, 2000), rng.randint(1, 12), rng.randint(1, 28)),
+                       user_id=getattr(users_by_staff.get(st.id), "id", None), status="active")
+        db.add(e)
+        db.flush()
+        if st.role == "branch_manager":
+            managers[st.branch_id] = e.id
+        if rng.random() < 0.5:
+            db.add(HrPayItem(tenant_id=mular.id, employee_id=e.id, kind="allowance", name="House allowance",
+                             amount=rng.choice([5000, 8000, 10000]), taxable=True))
+        if rng.random() < 0.3:
+            db.add(HrPayItem(tenant_id=mular.id, employee_id=e.id, kind="deduction", name="Stima SACCO",
+                             amount=rng.choice([2000, 3000, 5000]), taxable=False))
+    for e in db.query(HrEmployee).filter(HrEmployee.tenant_id == mular.id):
+        m = managers.get(e.branch_id)
+        if m and m != e.id:
+            e.manager_employee_id = m
+    # HR's own record, linked to the HR manager's login
+    db.add(HrEmployee(tenant_id=mular.id, employee_no=H.next_employee_no(db, mular.id), first_name="Mercy",
+                      last_name="Wambui", job_title="HR Manager", department="Human Resources",
+                      hire_date=_date(2023, 6, 1), basic_salary=120000, pay_method="bank", bank_name="KCB",
+                      bank_account="1200456789", kra_pin="A009876543Z", gender="female", user_id=hrm.id))
+    for email, title in (("officer@mularcredit.co.ke", "Loan Officer"), ("accountant@mularcredit.co.ke", "Accountant"),
+                         ("finance@mularcredit.co.ke", "Finance Manager")):
+        u = others.get(email)
+        if u and not db.query(HrEmployee).filter(HrEmployee.user_id == u.id).first():
+            fn, _, ln = u.full_name.partition(" ")
+            db.add(HrEmployee(tenant_id=mular.id, employee_no=H.next_employee_no(db, mular.id), first_name=fn,
+                              last_name=ln or fn, job_title=title, department="Finance" if "Fin" in title or "Acc" in title else "Operations",
+                              hire_date=_date(2024, 3, 1), basic_salary={"Loan Officer": 45000, "Accountant": 85000}.get(title, 150000),
+                              pay_method="bank", bank_name="NCBA", bank_account=f"77{rng.randint(10**7, 10**8 - 1)}",
+                              kra_pin=f"A{rng.randint(10**8, 10**9 - 1)}K", gender="female" if fn in female else "male",
+                              user_id=u.id))
+    db.commit()
+    # Last month's payroll: prepared by HR, approved and paid by finance
+    finance = others.get("finance@mularcredit.co.ke")
+    prev = (today.replace(day=1) - _td(days=1)).replace(day=1)
+    run = P.create_run(db, mular.id, prev, hrm)
+    if finance and run.employees:
+        P.approve_run(db, run, finance)
+        b = ledger.Books(db, mular.id)
+        P.pay_run(db, run, paid_on=min(today, prev.replace(day=28) + _td(days=3)), account_id=b.account("bank").id, user=finance)
+    officer = others.get("officer@mularcredit.co.ke")
+    emp = db.query(HrEmployee).filter(HrEmployee.user_id == getattr(officer, "id", -1)).first()
+    annual = db.query(HrLeaveType).filter(HrLeaveType.tenant_id == mular.id, HrLeaveType.name == "Annual leave").first()
+    if emp and annual:
+        start = today + _td(days=(7 - today.weekday()) + 7)
+        db.add(HrLeaveRequest(tenant_id=mular.id, employee_id=emp.id, leave_type_id=annual.id, start_date=start,
+                              end_date=start + _td(days=2), days=3, reason="Family visit in Kisii", status="pending",
+                              requested_by_user_id=officer.id))
+    db.commit()
+
+
 def main(force=False):
     ensure_schema()
     _apply_migrations()
@@ -557,6 +647,7 @@ def main(force=False):
         db.commit()
         _seed_command_centre(db, partner, mular, pesaf, jenga)
         _seed_books(db, mular, _mk)
+        _seed_hr(db, mular, _mk)
 
         # Fill the KYC onboarding fields (ID details, wallets, next of kin)
         from app.seeds.client_kyc import enrich

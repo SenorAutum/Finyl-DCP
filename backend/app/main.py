@@ -30,6 +30,7 @@ from app.routers import (guarantors, kyc_escalations, face_validation,
 from app.routers import bank_import  # WP11
 from app.routers import platform as finyl_platform  # WP13
 from app.routers import books  # WP14
+from app.routers import hr as hr_router  # WP15
 
 # OPS-01: configure structured stdout/journald logging before the app is built.
 configure_logging()
@@ -253,7 +254,9 @@ for r in (auth, admin, clients, lending, payments, notifications, dashboard,
           # WP13 — Finyl command centre
           finyl_platform,
           # WP14 — ERP accounting
-          books):
+          books,
+          # WP15 — HR and payroll
+          hr_router):
     app.include_router(r.router)
 
 # Phase 2 secondary routers (cross-prefix / distinct-auth endpoints).

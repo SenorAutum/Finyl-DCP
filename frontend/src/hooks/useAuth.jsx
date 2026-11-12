@@ -66,6 +66,7 @@ export function AuthProvider({ children }) {
     payments: ["payments.upload", "disburse.execute", "reconcile.execute", "refund.execute"],
     impact: ["dashboard.company"],
     accounting: ["accounting.view", "expenses.submit"],
+    hrm: ["hr.view", "hr.self"],
   };
 
   // Role-based sidebar visibility (feature flags handled separately via user.modules).

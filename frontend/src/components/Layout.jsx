@@ -80,6 +80,11 @@ const NAV = [
     { to: "/books/reports", label: "Financial statements", icon: "📑", module: "accounting", anyPerm: ["accounting.view"] },
     { to: "/books/claims", label: "Expense claims", icon: "🧮", module: "accounting", anyPerm: ["expenses.submit"] },
   ]},
+  { group: "People", items: [
+    { to: "/hr", label: "HR", icon: "🧑‍🤝‍🧑", module: "hrm", anyPerm: ["hr.view"] },
+    { to: "/hr/payroll", label: "Payroll", icon: "💵", module: "hrm", anyPerm: ["hr.view"] },
+    { to: "/me/hr", label: "My HR", icon: "🪪", module: "hrm", anyPerm: ["hr.self"] },
+  ]},
   { group: "Reporting", items: [
     { to: "/reporting", label: "HQ Reporting", icon: "📊",
       anyPerm: ["reports.export", "reports.schedule", "reports.template", "reports.flag"] },
@@ -188,7 +193,7 @@ export default function Layout() {
               <div className="px-2 pb-1 text-[10px] font-bold uppercase tracking-widest text-gray-400">{g.group}</div>
             )}
             {items.map((i) => (
-              <NavLink key={i.to} to={i.to} end={i.to === "/" || i.to === "/books"} onClick={() => setOpen(false)}
+              <NavLink key={i.to} to={i.to} end={["/", "/books", "/hr"].includes(i.to)} onClick={() => setOpen(false)}
                 title={mini ? i.label : undefined} className={navClass(mini)}>
                 <span className="w-5 text-center text-base leading-none">{i.icon}</span>
                 {!mini && <span>{i.label}</span>}

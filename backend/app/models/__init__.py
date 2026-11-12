@@ -67,3 +67,8 @@ from app.models.books import (AccSettings, AccJournal, AccJournalLine, AccSuppli
                               AccPaymentOut, AccAttachment, AccBankStatement, AccBankLine,
                               AccBudget, AccBudgetLine, AccAssetCategory, AccAsset,
                               AccDepreciationRun, AccDepreciationLine)
+
+# ── WP15: ERP human resources and payroll ──────────────────────────────────
+from app.models.hr import (HrSettings, HrEmployee, HrPayItem, HrLeaveType, HrLeaveBalance,  # noqa: E402
+                           HrLeaveRequest, HrAttendance, HrDocument, HrAppraisal, HrPayrollRun,
+                           HrPayslip)

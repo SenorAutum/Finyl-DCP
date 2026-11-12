@@ -11,14 +11,14 @@ from app.core.timeutil import UTCDateTime
 MODULE_KEYS = [
     "lending", "payments", "dashboard", "complaints", "crm",
     "call_center", "impact", "cbk_reporting", "ai_agent",
-    "accounting",
+    "accounting", "hrm",
 ]
 
 # WP7 (review 7.10): what a new DCP starts with. Everything else (CRM, call
 # centre, impact, CBK reporting, AI) is switched on by the Finyl super admin in
 # Super Admin -> modules once that DCP is ready for it. Complaints handling is
 # core because CBK consumer-protection rules require it from day one.
-CORE_MODULE_KEYS = ["lending", "payments", "dashboard", "complaints", "accounting"]
+CORE_MODULE_KEYS = ["lending", "payments", "dashboard", "complaints", "accounting", "hrm"]
 
 
 class Tenant(Base):
