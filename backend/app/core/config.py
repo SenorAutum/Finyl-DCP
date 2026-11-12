@@ -135,6 +135,9 @@ class Settings(BaseSettings):
     DARAJA_CONSUMER_KEY: str = "placeholder"
     DARAJA_CONSUMER_SECRET: str = "placeholder"
     DARAJA_SHORTCODE: str = "placeholder"
+    # WP13: Finyl's own paybill, where DCPs repay Finyl's loans and pay invoices
+    # (account = facility number, invoice number or DCP code). Blank = none.
+    FINYL_PAYBILL: str = ""
     DARAJA_PASSKEY: str = "placeholder"
     DARAJA_INITIATOR_NAME: str = "finyl-api"
     DARAJA_SECURITY_CREDENTIAL: str = "placeholder"   # encrypted initiator password (B2C)

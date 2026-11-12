@@ -53,3 +53,10 @@ from app.models.ops import ScheduledJobRun
 # `Client` is the canonical business name; the ORM class (and its table) keep the
 # historical `Borrower`/`borrowers` naming so existing joins/analytics keep working.
 Client = Borrower
+
+# ── WP13: the Finyl command centre ─────────────────────────────────────────
+from app.models.platform import (PlatformUserAccess, PlatformPricing, TenantBilling,  # noqa: E402
+                                 PlatformInvoice, PlatformInvoiceLine, PlatformPayment,
+                                 PlatformUnmatchedPayment, PlatformFacility, PlatformDrawdown,
+                                 PlatformLead, PlatformLeadEvent, PlatformAlert,
+                                 PlatformAlertRecipient, PlatformTenantDaily)

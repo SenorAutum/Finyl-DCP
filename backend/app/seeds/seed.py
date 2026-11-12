@@ -44,6 +44,36 @@ REGION_DATA = {
 NAIROBI_GEO = (-1.2864, 36.8172)
 
 
+def _seed_command_centre(db, partner, mular, pesaf, jenga):
+    """WP13 demo: billing switched on, one invoice, a loan facility from Finyl,
+    a few potential DCPs and tonight's figures, so every Finyl screen has data."""
+    from datetime import timedelta as _td
+    from app.models import PlatformLead, PlatformUserAccess
+    from app.services import platform_billing, platform_lending, platform_metrics
+    from app.services.platform_access import PRESETS
+    db.add(PlatformUserAccess(user_id=partner.id, preset="director", title="Partner",
+                              permissions=PRESETS["director"]["permissions"], all_tenants=False,
+                              tenant_ids=[mular.id]))
+    today = platform_metrics.today_kenya()
+    first = today.replace(day=1)
+    prev = (first - _td(days=1)).replace(day=1)
+    for t in (mular, pesaf):
+        platform_billing.switch_on(db, platform_billing.billing_for(db, t.id), prev)
+    db.flush()
+    platform_metrics.snapshot(db, today)
+    platform_billing.generate(db, mular.id, f"{prev:%Y-%m}")
+    fac = platform_lending.create(db, mular.id, {"limit_amount": 2000000, "interest_rate_pct": 2.5,
+                                                 "term_months": 12, "interest_method": "reducing",
+                                                 "start_date": prev.isoformat(),
+                                                 "purpose": "Working capital for on-lending"}, None)
+    platform_lending.drawdown(db, fac, 1000000, prev, "DEMO-DD-1", None, None)
+    for name, stage, book in (("Imara Capital", "demo", 12000000), ("Tujenge Loans", "proposal", 30000000),
+                              ("Mwangaza Credit", "lead", 5000000)):
+        db.add(PlatformLead(company_name=name, stage=stage, expected_loan_book=book, source="Referral",
+                            next_step="Follow up call", next_step_date=today + _td(days=7)))
+    db.commit()
+
+
 def kname(gender):
     first = random.choice(FIRST_F if gender == "female" else FIRST_M)
     middle = random.choice(LAST) if random.random() < 0.4 else None
@@ -438,7 +468,12 @@ def main(force=False):
         users[2].staff_id = officer_staff.id if officer_staff else None
         users[3].staff_id = agent_staff.id if agent_staff else None
         db.add_all(users)
+        # WP13: a Finyl partner who sees Mular Credit only (the super admin can
+        # reassign at any time under Finyl → Finyl people).
+        partner = _mk("director@finyl.app", "Finyl Partner (demo)", "platform_user", None)
+        db.add(partner)
         db.commit()
+        _seed_command_centre(db, partner, mular, pesaf, jenga)
 
         # Fill the KYC onboarding fields (ID details, wallets, next of kin)
         from app.seeds.client_kyc import enrich

@@ -182,6 +182,17 @@ def pull_for_tenant(db, tenant_id: int, hours: int = DEFAULT_HOURS, now=None) ->
                     out["recovered"] += 1
                     logger.warning("mpesa_pull_recovered tenant_id=%s shortcode=%s ref=%s",
                                    tenant_id, number, body["TransID"])
+    from app.services.platform_alerts import raise_alert                  # WP13
+    if out["errors"]:
+        raise_alert("mpesa_pull_failed", "Checking Safaricom for missed payments failed",
+                    severity="warning", tenant_id=tenant_id, key="pull",
+                    detail="; ".join(out["errors"][:5]))
+    if out["recovered"]:
+        raise_alert("mpesa_pull_recovered",
+                    f"{out['recovered']} M-Pesa payment(s) arrived without a notification",
+                    severity="info", tenant_id=tenant_id, key="recovered",
+                    detail="They have now been recorded. Many of these mean Safaricom cannot reach "
+                           "Finyl's payment address; check the paybill registration.")
     state = get_state(db, tenant_id)
     state["last_run"] = {"at": datetime.utcnow().isoformat() + "Z", "hours": hours,
                          "found": out["found"], "recovered": out["recovered"],

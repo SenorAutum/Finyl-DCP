@@ -285,6 +285,7 @@ ROLE_LABELS = {
     "director": "Director",
     "loan_officer": "Loan Officer (legacy)",
     "call_agent": "Call Agent",
+    "platform_user": "Finyl staff / partner",
 }
 
 # Roles that a System Administrator may assign to users within a tenant

@@ -102,7 +102,34 @@ async function withLocation(data) {
 }
 
 export class ApiError extends Error {
-  constructor(status, detail) { super(detail); this.status = status; this.detail = detail; }
+  constructor(status, detail, ref) { super(detail); this.status = status; this.detail = detail; this.ref = ref; }
+}
+
+// WP13: one clear message, the same everywhere, when Finyl cannot be reached or
+// fails on its side. The Toaster (components/Toaster.jsx) shows it; the page
+// still gets the error to handle as before.
+export function notify(message, { tone = "error", ref } = {}) {
+  try { window.dispatchEvent(new CustomEvent("finyl:notify", { detail: { message, tone, ref } })); } catch { /* ignore */ }
+}
+const OFFLINE = "Finyl could not be reached. Check your internet connection and try again.";
+async function send(url, init) {
+  try { return await fetch(url, init); }
+  catch {
+    notify(OFFLINE);
+    throw new ApiError(0, OFFLINE);
+  }
+}
+function serverFailure(status, data) {
+  const d = data?.detail;
+  if (d && typeof d === "object" && d.code === "server_error") {
+    notify(d.message, { ref: d.error_id });
+    return new ApiError(status, d.message, d.error_id);
+  }
+  const msg = status === 502 || status === 503 || status === 504
+    ? "Finyl is briefly unavailable (maintenance or heavy load). Please try again in a minute."
+    : `Something went wrong on our side (error ${status}). Please try again; if it keeps happening, tell support.`;
+  notify(msg);
+  return new ApiError(status, msg);
 }
 
 // Auth endpoints authenticate the user; a 401/423 from them is a *login failure*
@@ -124,7 +151,7 @@ export async function api(path, { method = "GET", body, raw, retried } = {}) {
   if (body) headers["Content-Type"] = "application/json";
   securityHeaders(headers);
 
-  const res = await fetch(`${BASE}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  const res = await send(`${BASE}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined });
   if (res.status === 401 && !isAuthEndpoint(path)) return sessionEnded(res);
   if (res.status === 428 && !retried && !isAuthEndpoint(path)) {
     const d = await res.clone().json().catch(() => ({}));
@@ -132,6 +159,7 @@ export async function api(path, { method = "GET", body, raw, retried } = {}) {
   }
   if (raw) return res;
   const data = await res.json().catch(() => ({}));
+  if (res.status >= 500) throw serverFailure(res.status, data);
   if (!res.ok) throw new ApiError(res.status, errorDetail(res.status, data.detail));
   return data;
 }
@@ -161,9 +189,10 @@ export async function upload(path, formData, retried = false) {
   if (tenant) headers["X-Tenant-Id"] = tenant;
   securityHeaders(headers);
 
-  const res = await fetch(`${BASE}${path}`, { method: "POST", headers, body: formData });
+  const res = await send(`${BASE}${path}`, { method: "POST", headers, body: formData });
   if (res.status === 401 && !isAuthEndpoint(path)) return sessionEnded(res);
   const data = await res.json().catch(() => ({}));
+  if (res.status >= 500) throw serverFailure(res.status, data);
   if (needsLocation(res.status, data) && !retried) { await withLocation(data); return upload(path, formData, true); }
   if (!res.ok) throw new ApiError(res.status, errorDetail(res.status, data.detail));
   return data;
@@ -172,12 +201,14 @@ export async function upload(path, formData, retried = false) {
 // Authenticated blob URL — used to preview saved document images inline.
 export async function blobUrl(path) {
   const res = await api(path, { raw: true });
+  if (res.status >= 500) throw serverFailure(res.status, await res.json().catch(() => ({})));
   if (!res.ok) throw new ApiError(res.status, "Could not load file");
   return URL.createObjectURL(await res.blob());
 }
 
 export async function download(path, filename) {
   const res = await api(path, { raw: true });
+  if (res.status >= 500) throw serverFailure(res.status, await res.json().catch(() => ({})));
   if (!res.ok) throw new ApiError(res.status, "Download failed");
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);

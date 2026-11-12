@@ -90,6 +90,13 @@ import app.models  # noqa: E402,F401
 from app.core.database import Base  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _alerts_use_test_db(monkeypatch):
+    """WP13: failure alerts open their own session; point it at the test DB."""
+    from app.services import platform_alerts
+    monkeypatch.setattr(platform_alerts, "SessionLocal", TestingSessionLocal)
+
+
 @pytest.fixture()
 def db():
     """A fresh, fully-isolated DB session per test.

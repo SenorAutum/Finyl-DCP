@@ -302,10 +302,23 @@ def send_sms(db: Session, tenant_id: int, phone: str, message: str,
             log.billable = True  # sent counts as billable even if rate not yet set
     else:
         log.billable = False
+        # WP13: tell Finyl when SMS start failing (one alert per DCP, counted).
+        if result["status"] == "failed":
+            from app.services.platform_alerts import raise_alert
+            raise_alert("sms_failed", "SMS are failing to send", severity="warning",
+                        tenant_id=tenant_id, key=trigger_type,
+                        detail=f"Last error: {(result.get('error') or '')[:500]} "
+                               f"(message type: {trigger_type})")
 
     db.add(log)
     db.flush()
     return log
+
+
+def send_platform_sms(db: Session, phone: str, message: str) -> bool:
+    """WP13: an SMS from Finyl itself (e.g. a critical alert to Finyl staff).
+    Not charged to any DCP and not in any DCP's SMS log."""
+    return _dispatch_to_provider(phone, message).get("status") == "sent"
 
 
 # --- Per-DCP customizable templates ------------------------------------------

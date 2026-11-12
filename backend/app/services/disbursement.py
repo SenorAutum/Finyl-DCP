@@ -257,6 +257,11 @@ def apply_b2c_result(db, tenant_id, txn: PaymentTransaction, result_code, receip
 
     # Definite failure — revert the loan so it can be retried through the normal flow.
     txn.status = "failed"
+    from app.services.platform_alerts import raise_alert          # WP13
+    raise_alert("payout_failed", "A loan payout failed at Safaricom", severity="warning",
+                tenant_id=tenant_id, key="b2c",
+                detail=f"Loan id {txn.loan_id}, amount {txn.amount}. The loan went back to "
+                       f"'approved' so it can be paid out again.")
     if loan is not None and loan.status == "processing":
         loan.status = "approved"
     return {"applied": True, "status": "failed", "loan_status": loan.status if loan else None,

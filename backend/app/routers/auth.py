@@ -189,8 +189,9 @@ def _geo_from_request(request: Request | None):
 def _enforce_login_fences(db: Session, user: User, request: Request, ip: str) -> None:
     """Phase 2 login guard: block a correct-password login that violates the
     tenant's time-fence / geo-fence / device-binding policy. Each control is
-    independent and skipped when disabled; super_admin bypasses entirely."""
-    if user.role == "super_admin":
+    independent and skipped when disabled; super_admin bypasses entirely, and
+    so do Finyl's own staff and partners (WP13), who belong to no DCP."""
+    if user.role in ("super_admin", "platform_user"):
         return
     # WP7 (review 7.10): staff of a deactivated DCP cannot sign in.
     tenant = db.get(Tenant, user.tenant_id) if user.tenant_id else None
@@ -510,6 +511,14 @@ def me(user: User = Depends(get_current_user),
             flags[m.module_key] = m.enabled
     if user.role == "super_admin":
         flags = {k: True for k in MODULE_KEYS}  # super_admin sees everything
+    perms = sorted(effective_permissions(db, tenant_id, user.role)) if tenant_id or user.role == "super_admin" else []
+    platform = None
+    if user.role in ("super_admin", "platform_user"):
+        # WP13: the Finyl command-centre switches this person has, and which DCPs.
+        from app.services.platform_access import access_for
+        acc = access_for(db, user)
+        platform = acc.as_dict()
+        perms = sorted(set(perms) | set(acc.permissions))
     return {
         "id": user.id, "email": user.email, "full_name": user.full_name,
         "role": user.role, "role_label": ROLE_LABELS.get(user.role, user.role),
@@ -519,7 +528,8 @@ def me(user: User = Depends(get_current_user),
         "modules": flags,
         # Effective permissions layer per-tenant grant/revoke overrides on top of
         # the static role map (super_admin still resolves to the full catalog).
-        "permissions": sorted(effective_permissions(db, tenant_id, user.role)),
+        "permissions": perms,
+        "platform": platform,
         "scope": scope.as_dict(),
         "staff_id": user.staff_id,
         "branch_id": getattr(user, "branch_id", None),

@@ -342,3 +342,12 @@ def alert_dead_letter(db, event):
                  "attempts=%s dead_total=%s last_error=%s",
                  event.id, event.endpoint, event.tenant_id, event.attempts,
                  dead_count, (event.last_error or "")[:200])
+    from app.services.platform_alerts import raise_alert          # WP13
+    unrouted = (event.last_error or "").startswith("unresolved:")
+    raise_alert("payment_unroutable" if unrouted else "webhook_dead",
+                ("A payment notification could not be matched to any DCP" if unrouted else
+                 "A payment notification failed after every retry"),
+                severity="critical", tenant_id=event.tenant_id, key=event.endpoint,
+                detail=f"Event {event.id} ({event.endpoint}), {event.attempts} attempts. "
+                       f"Last error: {(event.last_error or '')[:300]}. It is kept in the "
+                       f"webhook log and can be replayed once the cause is fixed.")
