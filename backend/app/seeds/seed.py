@@ -624,6 +624,87 @@ def _seed_lending_plus(db, mular):
     db.commit()
 
 
+def _seed_crm_plus(db, mular):
+    """WP17 demo: contact logged with clients and leads, follow-ups (some
+    overdue), marketing consent for half the clients, three segments, a sent
+    service campaign and an offer campaign waiting for a manager's approval."""
+    import random as _r
+    from datetime import datetime as _dt, timedelta as _td
+    from app.models import (Borrower, CrmCampaign, CrmInteraction, CrmLead, CrmSegment, CrmTask, KycConsent,
+                            User as _U)
+    from app.services import crm_plus as C, ledger
+    rnd = _r.Random(17)
+    today = ledger.today()
+    users = {u.email: u for u in db.query(_U).filter(_U.tenant_id == mular.id)}
+    officer = users.get("officer@mularcredit.co.ke")
+    ro = users.get("ro@mularcredit.co.ke") or officer
+    bm = users.get("branchmgr@mularcredit.co.ke")
+    admin = users.get("admin@mularcredit.co.ke")
+    if not (officer and bm and admin):
+        return
+    clients = db.query(Borrower).filter(Borrower.tenant_id == mular.id).order_by(Borrower.id).all()
+    for i, b in enumerate(clients):
+        if i % 2 == 0:
+            db.add(KycConsent(tenant_id=mular.id, borrower_id=b.id, consent_data_processing=True, consent_credit_check=True,
+                              consent_marketing=True, consent_version="2026-01", consented_at=_dt.utcnow() - _td(days=30)))
+    notes = [("call", "Asked about a bigger loan", "Wants KES 40,000 to buy stock before December", "interested"),
+             ("visit", "Shop visit", "Stall busy, stock well kept. Spouse helps on weekends", "reached"),
+             ("call", "Reminder about Friday's instalment", "Said she will pay on Thursday evening", "promise"),
+             ("sms", "Sent paybill details", None, "reached"),
+             ("call", "Follow-up on application", "Phone off", "no_answer"),
+             ("whatsapp", "Sent photos of new stock", "Client sent photos; looks genuine", "reached")]
+    for b in clients[:24]:
+        for k in range(rnd.randint(1, 3)):
+            kind, subj, note, outcome = rnd.choice(notes)
+            who = rnd.choice([officer, ro])
+            db.add(CrmInteraction(tenant_id=mular.id, borrower_id=b.id, kind=kind, direction="out", subject=subj, notes=note,
+                                  outcome=outcome, user_id=who.id,
+                                  happened_at=_dt.utcnow() - _td(days=rnd.randint(1, 45), hours=rnd.randint(0, 8))))
+    titles = ["Call to remind about the next instalment", "Visit the shop with the top-up form", "Collect a copy of the business permit",
+              "Check whether the new stock arrived", "Ask for a guarantor's ID copy"]
+    for i, b in enumerate(clients[:14]):
+        db.add(CrmTask(tenant_id=mular.id, title=titles[i % len(titles)], due_date=today + _td(days=rnd.randint(-4, 6)),
+                       priority=rnd.choice(["normal", "normal", "high", "low"]), status="open",
+                       assigned_user_id=(officer if i % 2 == 0 else ro).id, borrower_id=b.id, created_by_user_id=bm.id))
+    for i, b in enumerate(clients[14:18]):
+        db.add(CrmTask(tenant_id=mular.id, title=titles[i % len(titles)], due_date=today - _td(days=rnd.randint(2, 20)),
+                       status="done", assigned_user_id=officer.id, borrower_id=b.id, created_by_user_id=officer.id,
+                       completed_at=_dt.utcnow() - _td(days=1), completion_note="Done; client co-operative"))
+    for ld in db.query(CrmLead).filter(CrmLead.tenant_id == mular.id, CrmLead.stage == "disbursed",
+                                       CrmLead.conversion_triggered_at.is_(None)):
+        ld.conversion_triggered_at = ld.created_at + _td(days=rnd.randint(5, 21))
+    for ld in db.query(CrmLead).filter(CrmLead.tenant_id == mular.id).order_by(CrmLead.id).limit(10):
+        db.add(CrmInteraction(tenant_id=mular.id, lead_id=ld.id, kind=rnd.choice(["call", "visit", "meeting"]), direction="out",
+                              subject="First conversation", notes=f"{ld.notes or 'Enquiry'}. Explained the 4-week product and fees.",
+                              outcome="interested", user_id=officer.id, happened_at=_dt.utcnow() - _td(days=rnd.randint(1, 20))))
+        if ld.stage in ("lead", "contacted"):
+            db.add(CrmTask(tenant_id=mular.id, title="Book a field visit", due_date=today + _td(days=rnd.randint(0, 5)),
+                           assigned_user_id=officer.id, lead_id=ld.id, created_by_user_id=officer.id))
+    db.flush()
+    segs = [("Repaid, idle 30 days", "Good payers with no loan now: offer a repeat loan",
+             {"loan_state": "repaid_no_open", "dormant_days": 30}),
+            ("Behind on a loan", "Anyone with a loan past its due date", {"loan_state": "in_arrears"}),
+            ("Women in retail", None, {"gender": "female", "sector": "retail"})]
+    made = []
+    for name, desc, rules in segs:
+        s = CrmSegment(tenant_id=mular.id, name=name, description=desc, rules=C.clean_rules(rules), created_by_user_id=bm.id)
+        db.add(s)
+        made.append(s)
+    db.flush()
+    sent = CrmCampaign(tenant_id=mular.id, name="Paybill reminder", segment_id=made[1].id, purpose="service",
+                       message="Hi {{first_name}}, a reminder that {{dcp_name}} payments go to paybill {{paybill}} with your ID number as the account.",
+                       status="approved", created_by_user_id=bm.id, approved_by_user_id=admin.id,
+                       approved_at=_dt.utcnow() - _td(days=3), created_at=_dt.utcnow() - _td(days=3))
+    db.add(sent)
+    db.flush()
+    C.send_campaign(db, sent)
+    sent.started_at = sent.finished_at = _dt.utcnow() - _td(days=3)
+    db.add(CrmCampaign(tenant_id=mular.id, name="December repeat-loan offer", segment_id=made[0].id, purpose="marketing",
+                       message="Hi {{first_name}}, thank you for repaying on time. {{dcp_name}} has a December offer for you: apply on the app or call your officer.",
+                       status="pending", created_by_user_id=bm.id, send_at=None))
+    db.commit()
+
+
 def main(force=False):
     ensure_schema()
     _apply_migrations()
@@ -697,6 +778,7 @@ def main(force=False):
         # RBAC demo users, approval thresholds and portfolio/scoping wiring
         from app.seeds.rbac_seed import seed_rbac
         print("RBAC seed:", seed_rbac(db))
+        _seed_crm_plus(db, mular)   # WP17 (needs the RBAC users)
 
         # Run AML scan for each tenant to materialise flags from the structuring seeds
         from app.services.aml import run_aml_scan

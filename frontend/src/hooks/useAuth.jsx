@@ -67,6 +67,8 @@ export function AuthProvider({ children }) {
     impact: ["dashboard.company"],
     accounting: ["accounting.view", "expenses.submit"],
     hrm: ["hr.view", "hr.self"],
+    // WP17: CRM — the pipeline (front-line roles) and the CRM screens (crm.view).
+    crm: ["crm.view", "clients.create", "clients.approve"],
   };
 
   // Role-based sidebar visibility (feature flags handled separately via user.modules).

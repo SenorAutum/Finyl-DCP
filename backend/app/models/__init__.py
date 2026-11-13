@@ -76,3 +76,7 @@ from app.models.hr import (HrSettings, HrEmployee, HrPayItem, HrLeaveType, HrLea
 # ── WP16: lending additions ────────────────────────────────────────────────
 from app.models.lending_plus import (LoanAction, LoanCollateral, LendingGroup,  # noqa: E402
                                      LendingGroupMember, LendingGroupMeeting)
+
+# ── WP17: CRM expansion ────────────────────────────────────────────────────
+from app.models.crm_plus import (CrmInteraction, CrmTask, CrmSegment, CrmCampaign,  # noqa: E402
+                                 CrmCampaignRecipient)

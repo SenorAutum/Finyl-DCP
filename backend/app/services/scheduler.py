@@ -488,6 +488,16 @@ def run_books_autopost():
         db.close()
 
 
+def run_crm_campaigns():
+    """WP17: every 5 minutes, send approved SMS campaigns whose send time has come."""
+    from app.services import crm_plus
+    db = SessionLocal()
+    try:
+        return {"sent_campaigns": crm_plus.send_due(db)}
+    finally:
+        db.close()
+
+
 def run_mpesa_pull():
     """WP12: hourly, ask Safaricom for the last few hours of paybill and till
     payments and record any whose notification never arrived."""
@@ -730,6 +740,9 @@ def start_scheduler():
                       replace_existing=True, timezone=tz)
         sched.add_job(guarded("books_autopost", run_books_autopost, every_minutes=10), "interval",
                       minutes=10, id="books_autopost", max_instances=1, coalesce=True,
+                      replace_existing=True)
+        sched.add_job(guarded("crm_campaigns", run_crm_campaigns, every_minutes=5), "interval",
+                      minutes=5, id="crm_campaigns", max_instances=1, coalesce=True,
                       replace_existing=True)
         sched.add_job(guarded("purge_job_runs", purge_old_job_runs), "cron", hour=4, minute=30,
                       id="purge_job_runs", max_instances=1, coalesce=True,

@@ -38,7 +38,10 @@ PAGES = ["/", "/clients", "/borrowers", "/guarantors", "/loans", "/products", "/
          "/hr", "/hr/employees", "/hr/employees/1", "/hr/leave", "/hr/attendance", "/hr/payroll", "/hr/payroll/1",
          "/hr/payslips/1", "/hr/p9/1", "/hr/appraisals", "/hr/settings", "/me/hr",
          # WP16: lending additions
-         "/loan-requests", "/collateral", "/groups", "/groups/1", "/loans/1"]
+         "/loan-requests", "/collateral", "/groups", "/groups/1", "/loans/1",
+         # WP17: CRM
+         "/crm/tasks", "/crm/segments", "/crm/campaigns", "/crm/campaigns/1", "/crm/campaigns/2", "/crm/report",
+         "/clients/1"]
 # Finyl-only pages, opened by the Finyl super admin.
 SUPER_PAGES = ["/admin", "/access/payments", "/access/backups", "/approver-config",
                # WP13: the Finyl command centre
@@ -211,4 +214,34 @@ def test_finyl_partner_sees_only_finyl_screens_for_their_dcps(browser):
         assert s.page.get_by_text("not found", exact=False).count(), "partner opened a DCP not given to them"
     finally:
         s.close()
+    assert not problems, "\n" + "\n".join(problems)
+
+
+def test_crm_follow_ups_and_campaign_approval(browser):
+    """WP17: the officer sees their follow-ups and a client's timeline; the
+    branch manager who drafted the offer cannot approve it, the admin can."""
+    o = Session(browser, "officer@mularcredit.co.ke")
+    try:
+        problems = _visit_all(o, ["/crm", "/crm/tasks"])
+        o.open("/crm/tasks")
+        assert o.page.locator("table tbody tr").count() > 0, "the officer has no follow-ups listed"
+        menu = {ln.strip() for ln in o.page.locator("aside").first.inner_text().splitlines()}
+        assert "Follow-ups" in menu
+    finally:
+        o.close()
+    b = Session(browser, "branchmgr@mularcredit.co.ke")
+    try:
+        problems += _visit_all(b, ["/crm/campaigns", "/crm/campaigns/2", "/crm/segments"])
+        b.open("/crm/campaigns/2")
+        assert b.page.get_by_text("Someone else must approve this").count(), "the drafter was offered approval"
+    finally:
+        b.close()
+    a = Session(browser, "admin@mularcredit.co.ke")
+    try:
+        a.open("/crm/campaigns/2")
+        assert a.page.get_by_role("button", name="Approve and send").count(), "the admin cannot approve the offer"
+        problems += [f"client record: {e}" for e in _open_first_record(a, "/clients")]
+        a.page.get_by_test_id("client-crm").wait_for(timeout=10000)
+    finally:
+        a.close()
     assert not problems, "\n" + "\n".join(problems)
