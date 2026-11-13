@@ -7,6 +7,7 @@ import { Badge, Empty, KpiCard, Modal, PageHeader, Spinner } from "../../compone
 import { useAuth } from "../../hooks/useAuth";
 import ClientForm from "./ClientForm";
 import CreditAnalysis from "./CreditAnalysis";
+import ClientCrm from "../crm/ClientCrm";
 
 const ID_DOC_TYPES = ["national_id_front", "national_id_back", "passport"];
 
@@ -360,6 +361,8 @@ export default function ClientDetail() {
           <Row label="Baseline Monthly Sales" value={fmtKES(c.baseline_monthly_sales)} />
         </div>
       </div>
+
+      <ClientCrm clientId={c.id} name={c.full_name} />
 
       <KycDecisionPanel d={kyc} />
 

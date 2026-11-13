@@ -4,6 +4,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { api, fmtDate, fmtKES } from "../../lib/api";
 import { Modal, PageHeader, Spinner } from "../../components/ui";
 import { useAuth } from "../../hooks/useAuth";
+import { CrmTabs, KIND_LABEL, LogContact, OUTCOME_LABEL } from "./common";
 
 const STAGE_LABELS = { lead: "Lead", contacted: "Contacted", field_visit: "Field Visit", app_setup: "App Setup", disbursed: "Disbursed" };
 const STAGE_COLORS = { lead: "border-gray-300", contacted: "border-blue-400", field_visit: "border-amber-400", app_setup: "border-teal", disbursed: "border-accent" };
@@ -38,6 +39,7 @@ export default function Crm() {
   const [creating, setCreating] = useState(false);
   const [visitFor, setVisitFor] = useState(null);  // lead when logging a visit
   const [visits, setVisits] = useState(null);      // {lead, list} when viewing visits
+  const [contactFor, setContactFor] = useState(null);  // WP17: lead whose contact history is open
   const [convertFor, setConvertFor] = useState(null); // lead when converting to client
   const [err, setErr] = useState("");
   const { can } = useAuth();
@@ -135,6 +137,7 @@ export default function Crm() {
     <div>
       <PageHeader title="CRM Pipeline" crumbs={["Engagement", "CRM"]}
         actions={<button className="btn-primary" onClick={() => setCreating(true)}>+ New Lead</button>} />
+      <CrmTabs />
       {err && <div className="mb-3 text-sm text-red-600 bg-red-50 rounded-lg p-3">{err}</div>}
 
       {/* Kanban — horizontal scroll on mobile */}
@@ -201,6 +204,7 @@ export default function Crm() {
                       <button className="btn-ghost !py-0.5 !px-2 text-xs" disabled={idx === 0} onClick={() => move(lead, -1)} title="Move back">‹</button>
                       <button className="btn-ghost !py-0.5 !px-2 text-xs" disabled={idx === board.stages.length - 1} onClick={() => move(lead, 1)} title="Move forward">›</button>
                       <div className="flex-1" />
+                      {can("crm.view") && <button className="btn-ghost !py-0.5 !px-2 text-[11px]" onClick={() => setContactFor(lead)}>Contact</button>}
                       <button className="btn-ghost !py-0.5 !px-2 text-[11px]" onClick={() => showVisits(lead)}>Visits</button>
                       <button className="btn-ghost !py-0.5 !px-2 text-[11px]" onClick={() => setVisitFor(lead)}>+ Visit</button>
                     </div>
@@ -285,6 +289,8 @@ export default function Crm() {
           navigate={navigate} />
       )}
 
+      {contactFor && <LeadContact lead={contactFor} onClose={() => setContactFor(null)} />}
+
       {visits && (
         <Modal title={`Site Visits — ${visits.lead.name}`} onClose={() => setVisits(null)} wide>
           {visits.list.length === 0 ? <p className="text-sm text-gray-400">No visits logged yet.</p> : (
@@ -346,6 +352,33 @@ function ConvertModal({ lead, onClose, onConverted, navigate }) {
           <button type="button" className="btn-primary" disabled={busy} onClick={() => convert(true)}>Onboard Now</button>
         </div>
       </div>
+    </Modal>
+  );
+}
+
+// WP17: every call, visit and message with a lead, its follow-ups, and a way to log more.
+function LeadContact({ lead, onClose }) {
+  const { can } = useAuth();
+  const [d, setD] = useState(null);
+  const [logging, setLogging] = useState(false);
+  const load = () => api(`/api/v1/crm-plus/leads/${lead.id}/interactions`).then(setD).catch(() => setD({ interactions: [], tasks: [] }));
+  useEffect(() => { load(); }, [lead.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (logging) return <LogContact leadId={lead.id} name={lead.name} onClose={() => setLogging(false)} onDone={() => { setLogging(false); load(); }} />;
+  return (
+    <Modal title={`Contact with ${lead.name}`} onClose={onClose} wide>
+      {can("crm.log") && <div className="flex justify-end mb-3"><button className="btn-primary !py-1" onClick={() => setLogging(true)}>Log contact</button></div>}
+      {!d ? <Spinner /> : <>
+        {d.tasks.filter((t) => t.status === "open").map((t) => (
+          <div key={t.id} className={`text-sm mb-1 ${t.overdue ? "text-red-600 font-semibold" : ""}`}>☑ {t.title} · by {fmtDate(t.due_date)} · {t.assigned_to}</div>))}
+        {d.interactions.length === 0 ? <p className="text-sm text-gray-400">Nothing logged yet.</p> : (
+          <ul className="divide-y divide-border">{d.interactions.map((i) => (
+            <li key={i.id} className="py-2 text-sm">
+              <div className="flex justify-between gap-3"><span className="font-semibold">{KIND_LABEL[i.kind] || i.kind}{i.subject ? `: ${i.subject}` : ""}
+                {i.outcome && <span className="ml-2 font-normal text-xs text-gray-500">({OUTCOME_LABEL[i.outcome] || i.outcome})</span>}</span>
+                <span className="text-xs text-gray-400 shrink-0">{new Date(i.happened_at.endsWith("Z") ? i.happened_at : `${i.happened_at}Z`).toLocaleString("en-KE", { dateStyle: "medium", timeStyle: "short" })} · {i.by}</span></div>
+              {i.notes && <div className="text-gray-600 whitespace-pre-line">{i.notes}</div>}
+            </li>))}</ul>
+        )}</>}
     </Modal>
   );
 }

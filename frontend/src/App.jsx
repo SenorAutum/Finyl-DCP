@@ -95,6 +95,11 @@ import MyHr from "./pages/hr/MyHr";
 import LoanRequests from "./pages/lending/LoanRequests";
 import CollateralPage from "./pages/lending/Collateral";
 import GroupsPage, { GroupDetail } from "./pages/lending/Groups";
+// WP17 — CRM expansion
+import CrmTasks from "./pages/crm/Tasks";
+import CrmSegments from "./pages/crm/Segments";
+import CrmCampaigns, { CampaignDetail } from "./pages/crm/Campaigns";
+import CrmReport from "./pages/crm/Report";
 
 // Ordered fallbacks: first module the user can access becomes their home page.
 const HOME_ORDER = [
@@ -283,6 +288,11 @@ export default function App() {
             <Route path="/groups/:id" element={<Guard module="lending"><GroupDetail /></Guard>} />
             <Route path="/complaints" element={<Guard module="complaints"><Complaints /></Guard>} />
             <Route path="/crm" element={<Guard module="crm"><Crm /></Guard>} />
+            <Route path="/crm/tasks" element={<Guard module="crm"><PermGuard perms={["crm.view"]}><CrmTasks /></PermGuard></Guard>} />
+            <Route path="/crm/segments" element={<Guard module="crm"><PermGuard perms={["crm.view"]}><CrmSegments /></PermGuard></Guard>} />
+            <Route path="/crm/campaigns" element={<Guard module="crm"><PermGuard perms={["crm.view"]}><CrmCampaigns /></PermGuard></Guard>} />
+            <Route path="/crm/campaigns/:id" element={<Guard module="crm"><PermGuard perms={["crm.view"]}><CampaignDetail /></PermGuard></Guard>} />
+            <Route path="/crm/report" element={<Guard module="crm"><PermGuard perms={["crm.view"]}><CrmReport /></PermGuard></Guard>} />
             <Route path="/call-center" element={<Guard module="call_center"><CallCenter /></Guard>} />
             <Route path="/impact" element={<Guard module="impact"><Impact /></Guard>} />
             <Route path="/cbk" element={<Guard module="cbk_reporting"><Cbk /></Guard>} />

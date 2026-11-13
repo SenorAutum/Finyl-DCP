@@ -96,6 +96,11 @@ PERMISSIONS = {
     "loans.topup": "Start a top-up (a new loan that first settles the client's current loan)",
     "collateral.manage": "Record and release collateral (logbooks, title deeds, equipment, savings)",
     "groups.manage": "Create lending groups, add members and record meetings",
+    # WP17 — CRM
+    "crm.view": "See client timelines, follow-up tasks, segments and the sales pipeline report",
+    "crm.log": "Log calls, visits and other contact with clients and leads; create follow-up tasks",
+    "crm.campaigns": "Build client segments and draft SMS campaigns",
+    "crm.campaigns_approve": "Approve SMS campaigns drafted by someone else (sends them)",
     # --- Phase 2 additive permissions ---------------------------------------
     # Guarantors
     "guarantors.manage": "Create / edit / validate guarantors and their documents",
@@ -295,6 +300,17 @@ for _role, _extra in {
 }.items():
     ROLE_PERMISSIONS[_role] |= _extra
 
+# WP17 — CRM.
+for _role, _extra in {
+    "relationship_officer": {"crm.view", "crm.log"},
+    "branch_manager": {"crm.view", "crm.log", "crm.campaigns", "crm.campaigns_approve"},
+    "regional_manager": {"crm.view", "crm.log", "crm.campaigns_approve"},
+    "hq_operations": {"crm.view"},
+    "director": {"crm.view", "crm.campaigns_approve"},
+    "system_admin": {"crm.view"},
+}.items():
+    ROLE_PERMISSIONS[_role] |= _extra
+
 # WP15 — HR roles.
 ROLE_PERMISSIONS["hr_manager"] = {
     "hr.view", "hr.manage", "leave.approve", "payroll.run", "appraisals.manage",
@@ -321,7 +337,7 @@ ROLE_PERMISSIONS["loan_officer"] = set(ROLE_PERMISSIONS["relationship_officer"])
 # call_agent works out of the call_center / complaints modules (module-flag gated);
 # give it portfolio-level read so it can look up clients it is calling.
 ROLE_PERMISSIONS["call_agent"] = {
-    "clients.view_portfolio", "loans.view_portfolio", "dashboard.portfolio",
+    "clients.view_portfolio", "loans.view_portfolio", "dashboard.portfolio", "crm.view", "crm.log",
     "expenses.submit", "hr.self",
 }
 
